@@ -74,13 +74,12 @@ jobs:
               docker login ${{ secrets.REGISTRY }} \
               -u "${{ secrets.REGISTRY_USERNAME }}" --password-stdin
 
-            docker pull ${{ secrets.REGISTRY }}/spacetrk/orchestrator:latest
-            docker stop orchestrator || true
-            docker rm orchestrator || true
-            docker run -d \
-              --name orchestrator \
-              --restart=always \
-              -p 127.0.0.1:8080:8080 \
-              ${{ secrets.REGISTRY }}/spacetrk/orchestrator:latest
+            cd /opt/spacetrk
+            git pull origin main
+
+            echo "${{ secrets.CONFIG_YAML }}" > configs/config.yaml
+
+            docker compose pull api
+            docker compose up -d --no-deps migrate api
 
             docker logout ${{ secrets.REGISTRY }}
