@@ -1,0 +1,50 @@
+version: '3.9'
+name: spacetrk
+
+services:
+  db:
+    container_name: spacetrk-db
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: spacetrk
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: spacetrk
+    ports:
+      - "5432:5432"
+    volumes:
+      - spacetrk-psql-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spacetrk -d spacetrk"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: migrate/migrate:v4.19.1
+    container_name: spacetrk-migrate
+    volumes:
+      - ./migrations:/migrations
+    # Run migrations on startup, then exit successfully
+    command: ["-path", "/migrations", "-database", "postgres://spacetrk:password@db:5432/spacetrk?sslmode=disable", "up"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    restart: unless-stopped
+    container_name: spacetrk-api
+    environment:
+      CONFIG_PATH: /app/configs/config.yaml
+    volumes:
+      - ./configs:/app/configs:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  spacetrk-psql-data:

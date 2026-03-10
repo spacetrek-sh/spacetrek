@@ -1,0 +1,12 @@
+DROP TYPE IF EXISTS environment_type;
+DROP TYPE IF EXISTS volume_type;
+DROP TYPE IF EXISTS snapshot_type;
+DROP TYPE IF EXISTS vm_provider;
+DROP TYPE IF EXISTS vm_status;
+DROP TYPE IF EXISTS task_status;
+DROP TYPE IF EXISTS task_type;
+DROP TYPE IF EXISTS message_content_type;
+DROP TYPE IF EXISTS message_role;
+DROP TYPE IF EXISTS chat_status;
+DROP TYPE IF EXISTS agent_status;
+DROP TYPE IF EXISTS user_role;

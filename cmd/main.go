@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kumori-sh/spacetrk/pkg/config"
 	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
 	apihttp "github.com/kumori-sh/spacetrk/src/api/http"
 	agenthttp "github.com/kumori-sh/spacetrk/src/api/http/v1/agent"
@@ -19,6 +20,13 @@ import (
 )
 
 func main() {
+	// ── Config ────────────────────────────────────────────────────────────
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("failed to load config", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	// ── Logger ────────────────────────────────────────────────────────────
 	logger := pkglog.New(pkglog.DefaultConfig())
 	pkglog.SetAsDefault(logger)
@@ -36,13 +44,12 @@ func main() {
 	sessionHandler := sessionhttp.NewHandler(sessionService)
 
 	// ── HTTP Server ───────────────────────────────────────────────────────
-	addr := envOr("HTTP_ADDR", ":8080")
 	srv := apihttp.New(apihttp.Config{
-		Addr:           addr,
+		Addr:           cfg.Server.HTTPAddr,
 		Logger:         logger,
-		ReadTimeout:    15 * time.Second,
-		WriteTimeout:   30 * time.Second,
-		IdleTimeout:    60 * time.Second,
+		ReadTimeout:    cfg.Server.ReadTimeout,
+		WriteTimeout:   cfg.Server.WriteTimeout,
+		IdleTimeout:    cfg.Server.IdleTimeout,
 		AgentHandler:   agentHandler,
 		SessionHandler: sessionHandler,
 	})
@@ -68,11 +75,4 @@ func main() {
 		logger.Error("shutdown error", slog.Any("error", err))
 	}
 	logger.Info("server stopped")
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
