@@ -56,7 +56,10 @@ type LLMConfig struct {
 }
 
 type SecurityConfig struct {
-	MaxTaskDuration time.Duration `yaml:"max_task_duration"`
+	JWTSecret          string        `yaml:"jwt_secret"`
+	AccessTokenExpiry  time.Duration `yaml:"access_token_expiry"`
+	RefreshTokenExpiry time.Duration `yaml:"refresh_token_expiry"`
+	MaxTaskDuration    time.Duration `yaml:"max_task_duration"`
 }
 
 type ObservabilityConfig struct {

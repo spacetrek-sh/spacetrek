@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	httputil "github.com/kumori-sh/spacetrk/pkg/http"
 	agenthttp "github.com/kumori-sh/spacetrk/src/api/http/v1/agent"
+	authhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/auth"
 	sessionhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/session"
 	"github.com/kumori-sh/spacetrk/src/middleware"
 )
@@ -22,6 +23,7 @@ type Config struct {
 	IdleTimeout    time.Duration
 	AgentHandler   *agenthttp.Handler
 	SessionHandler *sessionhttp.Handler
+	AuthHandler    *authhttp.Handler
 }
 
 // New builds and returns a configured *http.Server with all routes and the
@@ -58,6 +60,7 @@ func registerRoutes(r chi.Router, cfg Config) {
 
 	// ── API v1 ────────────────────────────────────────────────────────────
 	r.Route("/api/v1", func(r chi.Router) {
+		cfg.AuthHandler.RegisterRoutes(r)
 		cfg.AgentHandler.RegisterRoutes(r)
 		cfg.SessionHandler.RegisterRoutes(r)
 	})
