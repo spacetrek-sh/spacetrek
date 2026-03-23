@@ -11,6 +11,7 @@ import (
 	agenthttp "github.com/kumori-sh/spacetrk/src/api/http/v1/agent"
 	authhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/auth"
 	sessionhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/session"
+	vmhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/vm"
 	"github.com/kumori-sh/spacetrk/src/middleware"
 )
 
@@ -24,6 +25,7 @@ type Config struct {
 	AgentHandler   *agenthttp.Handler
 	SessionHandler *sessionhttp.Handler
 	AuthHandler    *authhttp.Handler
+	VMHandler      *vmhttp.Handler
 }
 
 // New builds and returns a configured *http.Server with all routes and the
@@ -63,5 +65,8 @@ func registerRoutes(r chi.Router, cfg Config) {
 		cfg.AuthHandler.RegisterRoutes(r)
 		cfg.AgentHandler.RegisterRoutes(r)
 		cfg.SessionHandler.RegisterRoutes(r)
+		if cfg.VMHandler != nil {
+			cfg.VMHandler.RegisterRoutes(r)
+		}
 	})
 }

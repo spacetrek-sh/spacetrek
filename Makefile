@@ -1,4 +1,4 @@
-.PHONY: migrate-up migrate-down migrate-down-one migrate-create migrate-version migrate-force
+.PHONY: migrate-up migrate-down migrate-down-one migrate-create migrate-version migrate-force seed-env seed-env-local
 
 DB_URL="postgres://spacetrk:password@db:5432/spacetrk?sslmode=disable"
 
@@ -25,3 +25,11 @@ migrate-version:
 migrate-force:
 	@echo "Forcing version to $(VERSION)..."
 	docker compose run --rm migrate -path /migrations -database "$(DB_URL)" force $(VERSION)
+
+seed-env:
+	@echo "Seeding environments from JSON (docker compose)..."
+	docker compose run --rm --entrypoint /app/seed api
+
+seed-env-local:
+	@echo "Seeding environments from JSON (local)..."
+	go run ./cmd/seed

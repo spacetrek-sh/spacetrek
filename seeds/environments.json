@@ -1,0 +1,10 @@
+[
+  {
+    "id": "",
+    "type": "alpine",
+    "image_path": "/var/lib/firecracker/alpine-base.ext4",
+    "vcpu": 1,
+    "memory_mb": 512,
+    "disk_mb": 1024
+  }
+]

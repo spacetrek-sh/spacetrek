@@ -47,6 +47,20 @@ type VMConfig struct {
 	NetworkEnabled bool          `yaml:"network_enabled"`
 	IdleTimeout    time.Duration `yaml:"idle_timeout"`
 	MaxLifetime    time.Duration `yaml:"max_lifetime"`
+
+	Firecracker VMFirecrackerConfig `yaml:"firecracker"`
+}
+
+type VMFirecrackerConfig struct {
+	BinaryPath      string `yaml:"binary_path"`
+	KernelPath      string `yaml:"kernel_path"`
+	BaseDir         string `yaml:"base_dir"`
+	KernelArgs      string `yaml:"kernel_args"`
+	MacAddress      string `yaml:"mac_address"`
+	SocketTimeout   int    `yaml:"socket_timeout"`
+	ShutdownTimeout int    `yaml:"shutdown_timeout"`
+	SMT             bool   `yaml:"smt"`
+	EnableMmds      bool   `yaml:"enable_mmds"`
 }
 
 type LLMConfig struct {
