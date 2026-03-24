@@ -13,27 +13,38 @@ type createVMRequest struct {
 
 // createVMResponse is the JSON response for successful VM creation.
 type createVMResponse struct {
-	ID            string  `json:"id"`
-	EnvironmentID string  `json:"environment_id"`
-	Provider      string  `json:"provider"`
-	Status        string  `json:"status"`
+	ID              string  `json:"id"`
+	EnvironmentID   string  `json:"environment_id"`
+	Provider        string  `json:"provider"`
+	Status          string  `json:"status"`
+	RuntimeID       *string `json:"runtime_id,omitempty"`
+	RuntimeState    *string `json:"runtime_state,omitempty"`
+	PID             *int    `json:"pid,omitempty"`
+	LastHeartbeatAt *string `json:"last_heartbeat_at,omitempty"`
+	IdleDeadlineAt  *string `json:"idle_deadline_at,omitempty"`
 	// Effective resources (what was actually provisioned)
-	VCPU     int    `json:"vcpu"`
-	MemoryMB int    `json:"memory_mb"`
-	DiskMB   int    `json:"disk_mb"`
+	VCPU     int `json:"vcpu"`
+	MemoryMB int `json:"memory_mb"`
+	DiskMB   int `json:"disk_mb"`
 }
 
 // getVMResponse is the JSON response for GET /api/v1/vm/{id}.
 type getVMResponse struct {
-	ID            string  `json:"id"`
-	EnvironmentID string  `json:"environment_id"`
-	Provider      string  `json:"provider"`
-	Status        string  `json:"status"`
+	ID            string `json:"id"`
+	EnvironmentID string `json:"environment_id"`
+	Provider      string `json:"provider"`
+	Status        string `json:"status"`
+	// Runtime observed metadata
+	RuntimeID       *string `json:"runtime_id,omitempty"`
+	RuntimeState    *string `json:"runtime_state,omitempty"`
+	PID             *int    `json:"pid,omitempty"`
+	LastHeartbeatAt *string `json:"last_heartbeat_at,omitempty"`
+	IdleDeadlineAt  *string `json:"idle_deadline_at,omitempty"`
 	// Resource configuration
-	VCPU         *int    `json:"vcpu,omitempty"`          // nil = using environment default
-	MemoryMB     *int    `json:"memory_mb,omitempty"`     // nil = using environment default
-	DiskMB       *int    `json:"disk_mb,omitempty"`       // nil = using environment default
-	HasOverrides bool    `json:"has_overrides"`           // true if any override is set
+	VCPU         *int `json:"vcpu,omitempty"`      // nil = using environment default
+	MemoryMB     *int `json:"memory_mb,omitempty"` // nil = using environment default
+	DiskMB       *int `json:"disk_mb,omitempty"`   // nil = using environment default
+	HasOverrides bool `json:"has_overrides"`       // true if any override is set
 	// Network
 	IPAddress *string `json:"ip_address,omitempty"`
 	// Session binding
@@ -57,4 +68,62 @@ type executeCommandRequest struct {
 // executeCommandResponse is the JSON response for successful command execution.
 type executeCommandResponse struct {
 	Output string `json:"output"`
+}
+
+// runtimeSnapshotResponse represents runtime-observed VM state for monitoring streams.
+type runtimeSnapshotResponse struct {
+	ID                   string  `json:"id"`
+	EnvironmentID        string  `json:"environment_id"`
+	Provider             string  `json:"provider"`
+	Status               string  `json:"status"`
+	RuntimeID            *string `json:"runtime_id,omitempty"`
+	RuntimeState         *string `json:"runtime_state,omitempty"`
+	PID                  *int    `json:"pid,omitempty"`
+	LastHeartbeatAt      *string `json:"last_heartbeat_at,omitempty"`
+	IdleDeadlineAt       *string `json:"idle_deadline_at,omitempty"`
+	ChatID               *string `json:"chat_id,omitempty"`
+	CPUUsagePercent      float64 `json:"cpu_usage_percent"`
+	MemoryUsedMB         int     `json:"memory_used_mb"`
+	MemoryLimitMB        int     `json:"memory_limit_mb"`
+	MemoryPercent        float64 `json:"memory_percent"`
+	DiskUsedMB           int     `json:"disk_used_mb"`
+	DiskLimitMB          int     `json:"disk_limit_mb"`
+	NetworkBytesSent     int64   `json:"network_bytes_sent"`
+	NetworkBytesReceived int64   `json:"network_bytes_received"`
+	CollectedAt          int64   `json:"collected_at"`
+}
+
+// vmMetricsResponse returns realtime resource usage for one VM runtime.
+type vmMetricsResponse struct {
+	VMID                 string  `json:"vm_id"`
+	CPUUsagePercent      float64 `json:"cpu_usage_percent"`
+	MemoryUsedMB         int     `json:"memory_used_mb"`
+	MemoryLimitMB        int     `json:"memory_limit_mb"`
+	MemoryPercent        float64 `json:"memory_percent"`
+	DiskUsedMB           int     `json:"disk_used_mb"`
+	DiskLimitMB          int     `json:"disk_limit_mb"`
+	DiskPercent          float64 `json:"disk_percent"`
+	NetworkBytesSent     int64   `json:"network_bytes_sent"`
+	NetworkBytesReceived int64   `json:"network_bytes_received"`
+	CollectedAt          int64   `json:"collected_at"`
+}
+
+// vmMetricsHistoryPointResponse is one historical metrics point.
+type vmMetricsHistoryPointResponse struct {
+	CPUUsagePercent      float64 `json:"cpu_usage_percent"`
+	MemoryUsedMB         int     `json:"memory_used_mb"`
+	MemoryLimitMB        int     `json:"memory_limit_mb"`
+	MemoryPercent        float64 `json:"memory_percent"`
+	DiskUsedMB           int     `json:"disk_used_mb"`
+	DiskLimitMB          int     `json:"disk_limit_mb"`
+	DiskPercent          float64 `json:"disk_percent"`
+	NetworkBytesSent     int64   `json:"network_bytes_sent"`
+	NetworkBytesReceived int64   `json:"network_bytes_received"`
+	CollectedAt          int64   `json:"collected_at"`
+}
+
+// vmMetricsHistoryResponse returns historical timeseries points for one VM.
+type vmMetricsHistoryResponse struct {
+	VMID   string                          `json:"vm_id"`
+	Points []vmMetricsHistoryPointResponse `json:"points"`
 }

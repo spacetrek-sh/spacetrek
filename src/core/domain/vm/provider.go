@@ -9,6 +9,8 @@ import (
 
 // CreateSpec combines environment and runtime configuration for VM creation.
 type CreateSpec struct {
+	// InstanceID is the orchestrator-side VM identity and must be unique per runtime.
+	InstanceID    string
 	EnvironmentID string
 	ImagePath     string
 	Resources     environment.ResourceLimits
@@ -44,7 +46,7 @@ type Backend interface {
 // RuntimeStatus represents the actual runtime status of a VM from the provider.
 type RuntimeStatus struct {
 	ID        string `json:"id"`
-	State     string `json:"state"`     // "running", "stopped", "paused"
+	State     string `json:"state"`      // "running", "stopped", "paused"
 	PID       int    `json:"pid"`        // Process ID (if applicable)
 	VCPU      int    `json:"vcpu"`       // Actual vCPUs assigned
 	MemoryMB  int    `json:"memory_mb"`  // Actual memory in MB

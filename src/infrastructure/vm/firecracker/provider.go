@@ -2,10 +2,12 @@
 package firecracker
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,6 +24,13 @@ type Provider struct {
 	config Config
 	mu     sync.RWMutex
 	vms    map[string]*VMInstance // Track running VMs
+	prev   map[string]cpuSample
+}
+
+type cpuSample struct {
+	procTicks  uint64
+	totalTicks uint64
+	time       time.Time
 }
 
 // VMInstance represents a running Firecracker VM.
@@ -48,6 +57,7 @@ func NewProvider(cfg Config) (*Provider, error) {
 	return &Provider{
 		config: cfg,
 		vms:    make(map[string]*VMInstance),
+		prev:   make(map[string]cpuSample),
 	}, nil
 }
 
@@ -55,12 +65,16 @@ func NewProvider(cfg Config) (*Provider, error) {
 func (p *Provider) Create(ctx context.Context, spec vmdomain.CreateSpec) (string, error) {
 	logger := pkglog.FromContext(ctx)
 
-	vmID := spec.EnvironmentID // Use environment ID as VM ID for now
+	vmID := spec.InstanceID
+	if vmID == "" {
+		// Backward compatibility for call sites that haven't been updated yet.
+		vmID = spec.EnvironmentID
+	}
 	vmDir := p.config.VMDir(vmID)
 	socketPath := p.config.SocketPath(vmID)
 
 	if vmID == "" {
-		return "", fmt.Errorf("environment ID is required")
+		return "", fmt.Errorf("instance ID is required")
 	}
 
 	// Create VM directory
@@ -97,9 +111,12 @@ func (p *Provider) Create(ctx context.Context, spec vmdomain.CreateSpec) (string
 	cmd := fcsdk.VMCommandBuilder{}.
 		WithBin(p.config.BinaryPath).
 		WithSocketPath(socketPath).
-		Build(ctx)
+		Build(context.Background())
 
-	machine, err := fcsdk.NewMachine(ctx, fcCfg, fcsdk.WithProcessRunner(cmd))
+	initCtx, initCancel := context.WithTimeout(context.Background(), time.Duration(p.config.SocketTimeout)*time.Second)
+	defer initCancel()
+
+	machine, err := fcsdk.NewMachine(initCtx, fcCfg, fcsdk.WithProcessRunner(cmd))
 	if err != nil {
 		_ = os.RemoveAll(vmDir)
 		return "", fmt.Errorf("failed to create machine: %w", err)
@@ -268,6 +285,7 @@ func (p *Provider) Execute(ctx context.Context, id string, cmd []string) (string
 
 // GetMetrics returns resource usage metrics for the VM.
 func (p *Provider) GetMetrics(ctx context.Context, id string) (vmdomain.Metrics, error) {
+	_ = ctx
 	p.mu.RLock()
 	vmInstance, exists := p.vms[id]
 	p.mu.RUnlock()
@@ -276,17 +294,63 @@ func (p *Provider) GetMetrics(ctx context.Context, id string) (vmdomain.Metrics,
 		return vmdomain.Metrics{}, fmt.Errorf("VM not found: %s", id)
 	}
 
+	pid, err := vmInstance.Machine.PID()
+	if err != nil || pid <= 0 {
+		return vmdomain.Metrics{}, fmt.Errorf("failed to resolve VM PID: %w", err)
+	}
+
+	procTicks, err := readProcTicks(pid)
+	if err != nil {
+		return vmdomain.Metrics{}, err
+	}
+	totalTicks, err := readTotalCPUTicks()
+	if err != nil {
+		return vmdomain.Metrics{}, err
+	}
+	memoryUsedMB, err := readProcessRSSMB(pid)
+	if err != nil {
+		return vmdomain.Metrics{}, err
+	}
+	readBytes, writeBytes, _ := readProcessIOBytes(pid)
+
+	now := time.Now().UTC()
+	cpuPercent := 0.0
+	p.mu.Lock()
+	if prev, ok := p.prev[id]; ok {
+		deltaProc := procTicks - prev.procTicks
+		deltaTotal := totalTicks - prev.totalTicks
+		if deltaTotal > 0 {
+			cpuPercent = (float64(deltaProc) / float64(deltaTotal)) * 100.0
+			if cpuPercent < 0 {
+				cpuPercent = 0
+			}
+		}
+	}
+	p.prev[id] = cpuSample{procTicks: procTicks, totalTicks: totalTicks, time: now}
+	p.mu.Unlock()
+
+	memoryLimit := vmInstance.Config.Resources.MemoryMB
+	memoryPercent := 0.0
+	if memoryLimit > 0 {
+		memoryPercent = (float64(memoryUsedMB) / float64(memoryLimit)) * 100.0
+		if memoryPercent > 100 {
+			memoryPercent = 100
+		}
+	}
+
+	diskUsedMB := int((readBytes + writeBytes) / (1024 * 1024))
+
 	return vmdomain.Metrics{
-		CPUUsagePercent:      0,
-		MemoryUsedMB:         0, // Firecracker doesn't expose memory usage
-		MemoryLimitMB:        vmInstance.Config.Resources.MemoryMB,
-		CollectedAt:          time.Now().Unix(),
+		CPUUsagePercent:      cpuPercent,
+		MemoryUsedMB:         memoryUsedMB,
+		MemoryLimitMB:        memoryLimit,
+		MemoryPercent:        memoryPercent,
+		CollectedAt:          now.Unix(),
 		TasksExecuted:        0,
 		TasksFailed:          0,
-		DiskUsedMB:           0,
-		DiskLimitMB:          0,
+		DiskUsedMB:           diskUsedMB,
+		DiskLimitMB:          vmInstance.Config.Resources.DiskMB,
 		DiskPercent:          0,
-		MemoryPercent:        0,
 		NetworkBytesSent:     0,
 		NetworkBytesReceived: 0,
 	}, nil
@@ -299,6 +363,7 @@ func (p *Provider) cleanup(ctx context.Context, id string, removeDir bool) error
 	vm, exists := p.vms[id]
 	if exists {
 		delete(p.vms, id)
+		delete(p.prev, id)
 	}
 	p.mu.Unlock()
 
@@ -357,4 +422,98 @@ func stringValue(v *string) string {
 		return ""
 	}
 	return *v
+}
+
+func readProcTicks(pid int) (uint64, error) {
+	content, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, fmt.Errorf("read proc stat: %w", err)
+	}
+	fields := strings.Fields(string(content))
+	if len(fields) < 17 {
+		return 0, fmt.Errorf("invalid /proc/%d/stat format", pid)
+	}
+	utime, err := strconv.ParseUint(fields[13], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse utime: %w", err)
+	}
+	stime, err := strconv.ParseUint(fields[14], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse stime: %w", err)
+	}
+	return utime + stime, nil
+}
+
+func readTotalCPUTicks() (uint64, error) {
+	f, err := os.Open("/proc/stat")
+	if err != nil {
+		return 0, fmt.Errorf("open /proc/stat: %w", err)
+	}
+	defer f.Close()
+
+	s := bufio.NewScanner(f)
+	if !s.Scan() {
+		return 0, fmt.Errorf("empty /proc/stat")
+	}
+	line := s.Text()
+	parts := strings.Fields(line)
+	if len(parts) < 2 || parts[0] != "cpu" {
+		return 0, fmt.Errorf("invalid /proc/stat cpu line")
+	}
+
+	var total uint64
+	for _, v := range parts[1:] {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			continue
+		}
+		total += n
+	}
+	return total, nil
+}
+
+func readProcessRSSMB(pid int) (int, error) {
+	content, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0, fmt.Errorf("read proc status: %w", err)
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		if !strings.HasPrefix(line, "VmRSS:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			break
+		}
+		kb, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse VmRSS: %w", err)
+		}
+		return int(kb / 1024), nil
+	}
+	return 0, nil
+}
+
+func readProcessIOBytes(pid int) (uint64, uint64, error) {
+	content, err := os.ReadFile(fmt.Sprintf("/proc/%d/io", pid))
+	if err != nil {
+		return 0, 0, err
+	}
+	var readBytes uint64
+	var writeBytes uint64
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.HasPrefix(line, "read_bytes:") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 {
+				readBytes, _ = strconv.ParseUint(fields[1], 10, 64)
+			}
+		}
+		if strings.HasPrefix(line, "write_bytes:") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 {
+				writeBytes, _ = strconv.ParseUint(fields[1], 10, 64)
+			}
+		}
+	}
+	return readBytes, writeBytes, nil
 }

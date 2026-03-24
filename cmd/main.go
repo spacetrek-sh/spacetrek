@@ -53,7 +53,8 @@ func main() {
 	agentRepo := memory.NewAgentRepository()
 	sessionRepo := memory.NewSessionRepository()
 	environmentRepo := postgresrepo.NewEnvironmentRepository(db)
-	vmRepo := memory.NewVMRepository()
+	vmRepo := postgresrepo.NewVMRepository(db)
+	vmMetricsHistoryRepo := postgresrepo.NewVMMetricsHistoryRepository(db)
 	userRepo := postgresrepo.NewUserRepository(db)
 	authRepo := postgresrepo.NewAuthRepository(db)
 
@@ -86,7 +87,7 @@ func main() {
 		vmBackend = provider
 	}
 
-	vmService := vmsvc.NewService(vmRepo, vmBackend, environmentRepo)
+	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, cfg.VM.IdleTimeout)
 
 	// ── Handlers ────────────────────────────────────────────────────────────
 	agentHandler := agenthttp.NewHandler(agentService)
@@ -118,6 +119,10 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+
+	go vmService.StartIdleReaper(pkglog.WithLogger(ctx, logger), time.Minute)
+	go vmService.StartRuntimeReconciler(pkglog.WithLogger(ctx, logger), 30*time.Second)
+	go vmService.StartMetricsCollector(pkglog.WithLogger(ctx, logger), 10*time.Second)
 
 	<-ctx.Done()
 	logger.Info("shutting down...")

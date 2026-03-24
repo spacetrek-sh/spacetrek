@@ -29,21 +29,29 @@ const (
 // VM represents a microVM instance for secure task execution.
 // Aligned with database table vm_instances.
 type VM struct {
-	ID            string     `db:"id"`
-	EnvironmentID string     `db:"environment_id"` // FK to environments
-	Provider      Provider   `db:"provider"`
-	Status        Status     `db:"status"`
+	ID            string   `db:"id"`
+	EnvironmentID string   `db:"environment_id"` // FK to environments
+	Provider      Provider `db:"provider"`
+	Status        Status   `db:"status"`
+
+	// Runtime metadata (nullable, persisted for reconciliation)
+	RuntimeID       *string    `db:"runtime_id"`
+	SocketPath      *string    `db:"socket_path"`
+	PID             *int       `db:"pid"`
+	RuntimeState    *string    `db:"runtime_state_source"`
+	LastHeartbeatAt *time.Time `db:"last_heartbeat_at"`
+	IdleDeadlineAt  *time.Time `db:"idle_deadline_at"`
 
 	// Resource overrides (NULL = use environment default)
-	VCPU      *int `db:"vcpu"`       // Optional vCPU override
-	MemoryMB  *int `db:"memory_mb"`  // Optional memory override in MB
-	DiskMB    *int `db:"disk_mb"`    // Optional disk size override in MB
+	VCPU     *int `db:"vcpu"`      // Optional vCPU override
+	MemoryMB *int `db:"memory_mb"` // Optional memory override in MB
+	DiskMB   *int `db:"disk_mb"`   // Optional disk size override in MB
 
 	// Network
 	IPAddress *string `db:"ip_address"` // Assigned IP (nullable)
 
 	// Session binding (mapped from chat_id in DB)
-	ChatID     *string    `db:"chat_id"` // Bound chat/session (nullable)
+	ChatID     *string    `db:"chat_id"`     // Bound chat/session (nullable)
 	AssignedAt *time.Time `db:"assigned_at"` // When VM was assigned
 
 	// Lifecycle
@@ -148,4 +156,22 @@ func (v *VM) IsTerminated() bool {
 // GetAssignedChatID returns the assigned chat ID if any.
 func (v *VM) GetAssignedChatID() *string {
 	return v.ChatID
+}
+
+// SetRuntimeMetadata stores provider runtime metadata for reconciliation.
+func (v *VM) SetRuntimeMetadata(runtimeID, socketPath string, pid int, state string) {
+	now := time.Now().UTC()
+	if runtimeID != "" {
+		v.RuntimeID = &runtimeID
+	}
+	if socketPath != "" {
+		v.SocketPath = &socketPath
+	}
+	if state != "" {
+		v.RuntimeState = &state
+	}
+	v.LastHeartbeatAt = &now
+	if pid > 0 {
+		v.PID = &pid
+	}
 }
