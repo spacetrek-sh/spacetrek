@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/kumori-sh/spacetrk/pkg/exception"
@@ -21,7 +20,6 @@ type Service struct {
 	backend     vmdomain.Backend // VM provider (Firecracker, etc.)
 	envRepo     EnvironmentRepository
 	idleTimeout time.Duration
-	assignMu    sync.Mutex
 }
 
 // EnvironmentRepository defines the interface for fetching environment details.
@@ -144,8 +142,12 @@ func (s *Service) reconcileRuntimeStates(ctx context.Context) {
 				vm.RuntimeState = &state
 				vm.PID = nil
 				vm.LastHeartbeatAt = &now
+				vm.IdleDeadlineAt = nil
 				if vm.Status != vmdomain.StatusTerminated {
 					vm.Unassign()
+				}
+				if repoErr := s.repo.ReleaseActiveLeaseByVM(ctx, vm.ID); repoErr != nil {
+					logger.WarnContext(ctx, "VM runtime reconciler failed to release lease for not-found VM", "vm_id", vm.ID, "error", repoErr)
 				}
 				if err := s.repo.Update(ctx, vm); err != nil {
 					logger.WarnContext(ctx, "VM runtime reconciler failed to persist not-found state", "vm_id", vm.ID, "error", err)
@@ -184,6 +186,26 @@ func (s *Service) reapIdleVMs(ctx context.Context) {
 		}
 
 		if err := s.backend.Stop(ctx, vm.ID); err != nil {
+			// If VM is not found in backend, it was already stopped/cleaned up.
+			// Reconcile the database state to reflect reality instead of failing.
+			if strings.Contains(strings.ToLower(err.Error()), "not found") {
+				vm.Unassign()
+				state := "stopped"
+				vm.RuntimeState = &state
+				vm.PID = nil
+				vm.IdleDeadlineAt = nil
+				vm.LastHeartbeatAt = &now
+
+				if repoErr := s.repo.ReleaseActiveLeaseByVM(ctx, vm.ID); repoErr != nil {
+					logger.WarnContext(ctx, "VM idle reaper failed to release lease for already-stopped VM", "vm_id", vm.ID, "error", repoErr)
+				}
+				if repoErr := s.repo.Update(ctx, vm); repoErr != nil {
+					logger.WarnContext(ctx, "VM idle reaper failed to persist state for already-stopped VM", "vm_id", vm.ID, "error", repoErr)
+				} else {
+					logger.InfoContext(ctx, "VM idle reaper reconciled already-stopped VM", "vm_id", vm.ID)
+				}
+				continue
+			}
 			logger.WarnContext(ctx, "VM idle reaper failed to stop VM", "vm_id", vm.ID, "error", err)
 			continue
 		}
@@ -196,6 +218,9 @@ func (s *Service) reapIdleVMs(ctx context.Context) {
 		nowCopy := now
 		vm.LastHeartbeatAt = &nowCopy
 
+		if err := s.repo.ReleaseActiveLeaseByVM(ctx, vm.ID); err != nil {
+			logger.WarnContext(ctx, "VM idle reaper failed to release VM lease", "vm_id", vm.ID, "error", err)
+		}
 		if err := s.repo.Update(ctx, vm); err != nil {
 			logger.WarnContext(ctx, "VM idle reaper failed to persist VM state", "vm_id", vm.ID, "error", err)
 			continue
@@ -422,29 +447,20 @@ func (s *Service) GetAvailable(ctx context.Context, provider vmdomain.Provider) 
 func (s *Service) AssignToChat(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 
-	// First-pass protection against duplicate concurrent assignment attempts.
-	s.assignMu.Lock()
-	defer s.assignMu.Unlock()
-
-	vm, err := s.repo.GetByID(ctx, vmID)
+	deadline := time.Now().UTC().Add(s.idleTimeout)
+	vm, err := s.repo.AssignToChatIfAvailable(ctx, vmID, chatID, &deadline)
 	if err != nil {
-		logger.WarnContext(ctx, "VM not found", "vm_id", vmID, "error", err)
-		return nil, err
-	}
-
-	if !vm.IsAvailable() {
-		return nil, exception.BadRequest("VM is not available")
-	}
-
-	vm.AssignTo(chatID)
-	s.refreshIdleDeadline(vm)
-	if err := s.repo.Update(ctx, vm); err != nil {
 		logger.ErrorContext(ctx, "failed to assign VM to chat", "vm_id", vmID, "chat_id", chatID, "error", err)
 		return nil, err
 	}
 
 	logger.InfoContext(ctx, "VM assigned to chat", "vm_id", vmID, "chat_id", chatID)
 	return vm, nil
+}
+
+// ListActiveLeasesByChat returns all active VM leases for a chat/session.
+func (s *Service) ListActiveLeasesByChat(ctx context.Context, chatID string) ([]vmdomain.Lease, error) {
+	return s.repo.ListActiveLeasesByChat(ctx, chatID)
 }
 
 // Unassign releases a VM from its current chat.
@@ -459,6 +475,10 @@ func (s *Service) Unassign(ctx context.Context, vmID string) (*vmdomain.VM, erro
 
 	vm.Unassign()
 	s.refreshIdleDeadline(vm)
+	if err := s.repo.ReleaseActiveLeaseByVM(ctx, vmID); err != nil {
+		logger.ErrorContext(ctx, "failed to release VM lease", "vm_id", vmID, "error", err)
+		return nil, err
+	}
 	if err := s.repo.Update(ctx, vm); err != nil {
 		logger.ErrorContext(ctx, "failed to unassign VM", "vm_id", vmID, "error", err)
 		return nil, err
@@ -487,6 +507,10 @@ func (s *Service) Stop(ctx context.Context, id string) (*vmdomain.VM, error) {
 	// Release from chat and update status
 	vm.Unassign()
 	vm.IdleDeadlineAt = nil
+	if err := s.repo.ReleaseActiveLeaseByVM(ctx, id); err != nil {
+		logger.ErrorContext(ctx, "failed to release VM lease", "vm_id", id, "error", err)
+		return nil, err
+	}
 	if err := s.repo.Update(ctx, vm); err != nil {
 		logger.ErrorContext(ctx, "failed to update VM status", "vm_id", id, "error", err)
 		return nil, err
@@ -515,6 +539,10 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	// Mark VM as terminated
 	vm.Terminate()
 	vm.IdleDeadlineAt = nil
+	if err := s.repo.ReleaseActiveLeaseByVM(ctx, id); err != nil {
+		logger.ErrorContext(ctx, "failed to release VM lease", "vm_id", id, "error", err)
+		return err
+	}
 	if err := s.repo.Update(ctx, vm); err != nil {
 		logger.ErrorContext(ctx, "failed to update VM status", "vm_id", id, "error", err)
 		return err

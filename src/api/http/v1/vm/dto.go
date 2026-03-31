@@ -70,6 +70,19 @@ type executeCommandResponse struct {
 	Output string `json:"output"`
 }
 
+// assignVMRequest is the JSON body for POST /api/v1/vm/{id}/assign.
+type assignVMRequest struct {
+	ChatID string `json:"chat_id" validate:"required"`
+}
+
+// vmLeaseResponse represents one active VM lease.
+type vmLeaseResponse struct {
+	ID       string `json:"id"`
+	ChatID   string `json:"chat_id"`
+	VMID     string `json:"vm_id"`
+	LeasedAt string `json:"leased_at"`
+}
+
 // runtimeSnapshotResponse represents runtime-observed VM state for monitoring streams.
 type runtimeSnapshotResponse struct {
 	ID                   string  `json:"id"`

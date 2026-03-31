@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/kumori-sh/spacetrk/pkg/exception"
 	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
@@ -11,12 +12,16 @@ import (
 
 // VMRepository is a thread-safe in-memory VM repository.
 type VMRepository struct {
-	mu  sync.RWMutex
-	vms map[string]*vmdomain.VM
+	mu     sync.RWMutex
+	vms    map[string]*vmdomain.VM
+	leases map[string]*vmdomain.Lease
 }
 
 func NewVMRepository() *VMRepository {
-	return &VMRepository{vms: make(map[string]*vmdomain.VM)}
+	return &VMRepository{
+		vms:    make(map[string]*vmdomain.VM),
+		leases: make(map[string]*vmdomain.Lease),
+	}
 }
 
 func (r *VMRepository) Create(_ context.Context, vm *vmdomain.VM) error {
@@ -144,6 +149,66 @@ func (r *VMRepository) GetActiveVMs(_ context.Context) ([]*vmdomain.VM, error) {
 		cp := *vm
 		out = append(out, &cp)
 	}
+
+	return out, nil
+}
+
+func (r *VMRepository) AssignToChatIfAvailable(_ context.Context, vmID, chatID string, idleDeadlineAt *time.Time) (*vmdomain.VM, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	vm, ok := r.vms[vmID]
+	if !ok {
+		return nil, exception.NotFound("vm", vmID)
+	}
+
+	if !vm.IsAvailable() {
+		return nil, exception.BadRequest("VM is not available")
+	}
+
+	vm.AssignTo(chatID)
+	vm.IdleDeadlineAt = idleDeadlineAt
+	now := time.Now().UTC()
+	r.leases[vmID] = &vmdomain.Lease{
+		ID:       vmID + ":" + now.Format(time.RFC3339Nano),
+		ChatID:   chatID,
+		VMID:     vmID,
+		LeasedAt: now,
+	}
+
+	cp := *vm
+	return &cp, nil
+}
+
+func (r *VMRepository) ReleaseActiveLeaseByVM(_ context.Context, vmID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	lease, ok := r.leases[vmID]
+	if !ok {
+		return nil
+	}
+	now := time.Now().UTC()
+	lease.ReleasedAt = &now
+	delete(r.leases, vmID)
+	return nil
+}
+
+func (r *VMRepository) ListActiveLeasesByChat(_ context.Context, chatID string) ([]vmdomain.Lease, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]vmdomain.Lease, 0)
+	for _, lease := range r.leases {
+		if lease.ChatID != chatID || lease.ReleasedAt != nil {
+			continue
+		}
+		out = append(out, *lease)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].LeasedAt.After(out[j].LeasedAt)
+	})
 
 	return out, nil
 }

@@ -35,6 +35,14 @@ type vmRow struct {
 	CreatedAt          time.Time  `db:"created_at"`
 }
 
+type vmLeaseRow struct {
+	ID         string     `db:"id"`
+	ChatID     string     `db:"chat_id"`
+	VMID       string     `db:"vm_id"`
+	LeasedAt   time.Time  `db:"leased_at"`
+	ReleasedAt *time.Time `db:"released_at"`
+}
+
 // NewVMRepository creates a VM repository backed by PostgreSQL.
 func NewVMRepository(db *DB) vmdomain.Repository {
 	return &vmRepository{db: db}
@@ -283,6 +291,129 @@ func (r *vmRepository) GetActiveVMs(ctx context.Context) ([]*vmdomain.VM, error)
 			return nil, err
 		}
 		out = append(out, vm)
+	}
+
+	return out, nil
+}
+
+func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID string, idleDeadlineAt *time.Time) (*vmdomain.VM, error) {
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, exception.Internal(fmt.Errorf("begin vm assignment tx: %w", err))
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	lockQuery := `
+		SELECT id, environment_id, provider, status,
+		       runtime_id, socket_path, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
+		       vcpu, memory_mb, disk_mb,
+		       ip_address, chat_id, assigned_at, terminated_at, created_at
+		FROM vm_instances
+		WHERE id = $1
+		FOR UPDATE
+	`
+
+	var row vmRow
+	if err := tx.GetContext(ctx, &row, lockQuery, vmID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, exception.NotFound("vm", vmID)
+		}
+		return nil, exception.Internal(fmt.Errorf("lock vm for assignment: %w", err))
+	}
+
+	v, err := mapVMRow(row)
+	if err != nil {
+		return nil, err
+	}
+
+	if !v.IsAvailable() {
+		return nil, exception.BadRequest("VM is not available")
+	}
+
+	updateQuery := `
+		UPDATE vm_instances
+		SET status = $2,
+		    chat_id = $3,
+		    assigned_at = NOW(),
+		    idle_deadline_at = $4
+		WHERE id = $1
+	`
+
+	if _, err := tx.ExecContext(ctx, updateQuery, vmID, string(vmdomain.StatusRunning), chatID, idleDeadlineAt); err != nil {
+		return nil, exception.Internal(fmt.Errorf("update vm assignment: %w", err))
+	}
+
+	insertLeaseQuery := `
+		INSERT INTO vm_leases (chat_id, vm_id, leased_at)
+		VALUES ($1, $2, NOW())
+	`
+	if _, err := tx.ExecContext(ctx, insertLeaseQuery, chatID, vmID); err != nil {
+		return nil, exception.Internal(fmt.Errorf("create vm lease: %w", err))
+	}
+
+	readQuery := `
+		SELECT id, environment_id, provider, status,
+		       runtime_id, socket_path, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
+		       vcpu, memory_mb, disk_mb,
+		       ip_address, chat_id, assigned_at, terminated_at, created_at
+		FROM vm_instances
+		WHERE id = $1
+	`
+
+	if err := tx.GetContext(ctx, &row, readQuery, vmID); err != nil {
+		return nil, exception.Internal(fmt.Errorf("read assigned vm: %w", err))
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, exception.Internal(fmt.Errorf("commit vm assignment tx: %w", err))
+	}
+	tx = nil
+
+	return mapVMRow(row)
+}
+
+func (r *vmRepository) ReleaseActiveLeaseByVM(ctx context.Context, vmID string) error {
+	query := `
+		UPDATE vm_leases
+		SET released_at = NOW()
+		WHERE vm_id = $1
+		  AND released_at IS NULL
+	`
+
+	if _, err := r.db.ExecContext(ctx, query, vmID); err != nil {
+		return exception.Internal(fmt.Errorf("release vm lease: %w", err))
+	}
+
+	return nil
+}
+
+func (r *vmRepository) ListActiveLeasesByChat(ctx context.Context, chatID string) ([]vmdomain.Lease, error) {
+	query := `
+		SELECT id, chat_id, vm_id, leased_at, released_at
+		FROM vm_leases
+		WHERE chat_id = $1
+		  AND released_at IS NULL
+		ORDER BY leased_at DESC
+	`
+
+	rows := make([]vmLeaseRow, 0)
+	if err := r.db.SelectContext(ctx, &rows, query, chatID); err != nil {
+		return nil, exception.Internal(fmt.Errorf("list active vm leases: %w", err))
+	}
+
+	out := make([]vmdomain.Lease, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, vmdomain.Lease{
+			ID:         row.ID,
+			ChatID:     row.ChatID,
+			VMID:       row.VMID,
+			LeasedAt:   row.LeasedAt.UTC(),
+			ReleasedAt: row.ReleasedAt,
+		})
 	}
 
 	return out, nil

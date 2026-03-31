@@ -6,7 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,11 +86,30 @@ func (p *Provider) Create(ctx context.Context, spec vmdomain.CreateSpec) (string
 	}
 	_ = os.Remove(socketPath)
 
+	// Clone environment base image to a per-VM writable rootfs for isolation.
+	vmRootfsPath := filepath.Join(vmDir, "rootfs.ext4")
+	cloneMode, cloneFallbackReason, err := cloneRootfs(spec.ImagePath, vmRootfsPath)
+	if err != nil {
+		_ = os.RemoveAll(vmDir)
+		return "", fmt.Errorf("failed to clone rootfs image: %w", err)
+	}
+
+	if cloneFallbackReason != "" {
+		logger.Warn(
+			"Rootfs reflink unavailable, using full copy",
+			"vm_id", vmID,
+			"source_image", spec.ImagePath,
+			"destination_image", vmRootfsPath,
+			"reason", cloneFallbackReason,
+		)
+	}
+	logger.Info("Rootfs clone mode selected", "vm_id", vmID, "clone_mode", cloneMode, "source_image", spec.ImagePath, "destination_image", vmRootfsPath)
+
 	fcCfg := fcsdk.Config{
 		SocketPath:      socketPath,
 		KernelImagePath: p.config.KernelPath,
 		KernelArgs:      p.config.KernelArgs,
-		Drives:          fcsdk.NewDrivesBuilder(spec.ImagePath).Build(),
+		Drives:          fcsdk.NewDrivesBuilder(vmRootfsPath).Build(),
 		MachineCfg: models.MachineConfiguration{
 			VcpuCount:  fcsdk.Int64(int64(spec.Resources.VCPU)),
 			MemSizeMib: fcsdk.Int64(int64(spec.Resources.MemoryMB)),
@@ -142,7 +164,7 @@ func (p *Provider) Create(ctx context.Context, spec vmdomain.CreateSpec) (string
 	p.mu.Unlock()
 
 	pid, _ := machine.PID()
-	logger.Info("Firecracker VM created", "vm_id", vmID, "pid", pid, "socket", socketPath)
+	logger.Info("Firecracker VM created", "vm_id", vmID, "pid", pid, "socket", socketPath, "rootfs_path", vmRootfsPath, "rootfs_clone_mode", cloneMode)
 	return vmID, nil
 }
 
@@ -516,4 +538,77 @@ func readProcessIOBytes(pid int) (uint64, uint64, error) {
 		}
 	}
 	return readBytes, writeBytes, nil
+}
+
+func copyFile(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("open source image: %w", err)
+	}
+	defer src.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+		return fmt.Errorf("create destination dir: %w", err)
+	}
+
+	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("create destination image: %w", err)
+	}
+
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		return fmt.Errorf("copy image bytes: %w", err)
+	}
+
+	if err := dst.Sync(); err != nil {
+		_ = dst.Close()
+		return fmt.Errorf("sync destination image: %w", err)
+	}
+
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("close destination image: %w", err)
+	}
+
+	return nil
+}
+
+func cloneRootfs(srcPath, dstPath string) (string, string, error) {
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+		return "", "", fmt.Errorf("create destination dir: %w", err)
+	}
+
+	_ = os.Remove(dstPath)
+
+	// Try filesystem-level COW clone first. On supported filesystems (xfs/btrfs), this
+	// avoids copying all bytes while keeping a raw disk image Firecracker can boot.
+	reflinkErr := reflinkClone(srcPath, dstPath)
+	if reflinkErr == nil {
+		return "reflink", "", nil
+	}
+
+	if err := copyFile(srcPath, dstPath); err != nil {
+		return "", "", err
+	}
+
+	return "copy", reflinkErr.Error(), nil
+}
+
+func reflinkClone(srcPath, dstPath string) error {
+	cpPath, err := exec.LookPath("cp")
+	if err != nil {
+		return fmt.Errorf("cp not found: %w", err)
+	}
+
+	cmd := exec.Command(cpPath, "--reflink=always", "--sparse=always", srcPath, dstPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return fmt.Errorf("reflink clone failed: %w: %s", err, msg)
+		}
+		return fmt.Errorf("reflink clone failed: %w", err)
+	}
+
+	return nil
 }

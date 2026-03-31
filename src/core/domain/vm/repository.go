@@ -1,7 +1,10 @@
 // Package vm defines the VM repository interface.
 package vm
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Repository defines the persistence contract for VM entities.
 type Repository interface {
@@ -17,4 +20,9 @@ type Repository interface {
 	GetByEnvironmentID(ctx context.Context, envID string) ([]*VM, error)
 	GetByChatID(ctx context.Context, chatID string) (*VM, error)
 	GetActiveVMs(ctx context.Context) ([]*VM, error)
+
+	// Assignment lease operations
+	AssignToChatIfAvailable(ctx context.Context, vmID, chatID string, idleDeadlineAt *time.Time) (*VM, error)
+	ReleaseActiveLeaseByVM(ctx context.Context, vmID string) error
+	ListActiveLeasesByChat(ctx context.Context, chatID string) ([]Lease, error)
 }

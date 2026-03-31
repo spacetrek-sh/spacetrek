@@ -49,17 +49,98 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Use(middleware.Authenticate(h.jwtManager))
 			r.Use(middleware.RequireRole("admin"))
 			r.Post("/", h.Create)
+			r.Get("/leases", h.ListLeases)
 			r.Get("/runtimes", h.ListRuntimes)
 			r.Get("/runtimes/stream", h.StreamRuntimes)
 			r.Get("/{id}/metrics", h.GetMetrics)
 			r.Get("/{id}/metrics/history", h.GetMetricsHistory)
 			r.Get("/{id}/stream", h.StreamRuntime)
+			r.Post("/{id}/assign", h.Assign)
+			r.Post("/{id}/unassign", h.Unassign)
+			// Deprecated soon for ownership lookups: prefer /vm/leases?chat_id=... for lease-aware ownership state.
 			r.Get("/{id}", h.Get)
 			r.Delete("/{id}", h.Stop)
 			r.Delete("/{id}/destroy", h.Destroy)
 			r.Post("/{id}/execute", h.ExecuteCommand)
 		})
 	})
+}
+
+// ListLeases handles GET /api/v1/vm/leases?chat_id=... and returns active leases for a chat.
+func (h *Handler) ListLeases(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	chatID := r.URL.Query().Get("chat_id")
+	if chatID == "" {
+		httputil.WriteError(w, exception.BadRequest("missing chat_id"))
+		return
+	}
+
+	leases, err := h.vmservice.ListActiveLeasesByChat(ctx, chatID)
+	if err != nil {
+		httputil.WriteError(w, err)
+		return
+	}
+
+	out := make([]vmLeaseResponse, 0, len(leases))
+	for _, lease := range leases {
+		out = append(out, vmLeaseResponse{
+			ID:       lease.ID,
+			ChatID:   lease.ChatID,
+			VMID:     lease.VMID,
+			LeasedAt: lease.LeasedAt.UTC().Format(time.RFC3339),
+		})
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, "active VM leases", out)
+}
+
+// Assign handles POST /api/v1/vm/{id}/assign.
+func (h *Handler) Assign(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		httputil.WriteError(w, exception.BadRequest("missing VM ID"))
+		return
+	}
+
+	var req assignVMRequest
+	if err := httputil.BindJSON(r, &req); err != nil {
+		logger.WarnContext(ctx, "VM assign failed", "vm_id", id, "error", err)
+		httputil.WriteError(w, err)
+		return
+	}
+
+	vm, err := h.vmservice.AssignToChat(ctx, id, req.ChatID)
+	if err != nil {
+		logger.WarnContext(ctx, "VM assign failed", "vm_id", id, "chat_id", req.ChatID, "error", err)
+		httputil.WriteError(w, err)
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, "VM assigned", toGetVMResponse(vm))
+}
+
+// Unassign handles POST /api/v1/vm/{id}/unassign.
+func (h *Handler) Unassign(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		httputil.WriteError(w, exception.BadRequest("missing VM ID"))
+		return
+	}
+
+	vm, err := h.vmservice.Unassign(ctx, id)
+	if err != nil {
+		logger.WarnContext(ctx, "VM unassign failed", "vm_id", id, "error", err)
+		httputil.WriteError(w, err)
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, "VM unassigned", toGetVMResponse(vm))
 }
 
 // GetMetricsHistory handles GET /api/v1/vm/{id}/metrics/history.
@@ -272,6 +353,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 // Get handles GET /api/v1/vm/{id}. Retrieves details of the specified VM.
+// Deprecated soon for lease ownership reads: prefer GET /api/v1/vm/leases?chat_id=... .
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := pkglog.FromContext(ctx)
