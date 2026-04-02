@@ -48,6 +48,8 @@ type RuntimeStatus struct {
 	ID        string `json:"id"`
 	State     string `json:"state"`      // "running", "stopped", "paused"
 	PID       int    `json:"pid"`        // Process ID (if applicable)
+	VsockPath string `json:"vsock_path"` // Host-side unix socket path for vsock
+	GuestCID  uint32 `json:"guest_cid"`  // Guest CID allocated to the vsock device
 	VCPU      int    `json:"vcpu"`       // Actual vCPUs assigned
 	MemoryMB  int    `json:"memory_mb"`  // Actual memory in MB
 	UptimeSec int    `json:"uptime_sec"` // Uptime in seconds

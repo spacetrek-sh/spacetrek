@@ -13,6 +13,14 @@ import (
 	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
 )
 
+const (
+	executeReadinessMaxAttempts  = 8
+	executeReadinessPollInterval = 350 * time.Millisecond
+	executeMaxAttempts           = 3
+	executeRetryInterval         = 450 * time.Millisecond
+	executeLogPreviewLimit       = 512
+)
+
 // Service handles VM business logic.
 type Service struct {
 	repo        vmdomain.Repository
@@ -561,6 +569,9 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 // ExecuteCommand executes a command on the specified VM.
 func (s *Service) ExecuteCommand(ctx context.Context, id, command string) (string, error) {
 	logger := pkglog.FromContext(ctx)
+	commandPreview := logPreview(command, executeLogPreviewLimit)
+
+	logger.DebugContext(ctx, "execute command requested", "vm_id", id, "command_len", len(command), "command_preview", commandPreview)
 
 	vm, err := s.repo.GetByID(ctx, id)
 	if err != nil {
@@ -572,19 +583,135 @@ func (s *Service) ExecuteCommand(ctx context.Context, id, command string) (strin
 		return "", exception.BadRequest("VM is not active")
 	}
 
-	// Execute via backend
-	stdout, _, exitCode, err := s.backend.Execute(ctx, id, []string{"/bin/sh", "-c", command})
-	if err != nil {
-		logger.ErrorContext(ctx, "command execution failed", "vm_id", id, "exit_code", exitCode, "error", err)
-		return "", exception.Internal(err)
+	if err := s.waitForExecuteReadiness(ctx, id); err != nil {
+		logger.WarnContext(ctx, "VM execute readiness check failed", "vm_id", id, "error", err)
+		return "", err
 	}
 
-	logger.DebugContext(ctx, "command executed", "vm_id", id, "command", command, "exit_code", exitCode)
-	s.refreshIdleDeadline(vm)
-	if err := s.repo.Update(ctx, vm); err != nil {
-		logger.WarnContext(ctx, "failed to refresh VM idle deadline after command", "vm_id", id, "error", err)
+	var lastErr error
+	for attempt := 1; attempt <= executeMaxAttempts; attempt++ {
+		stdout, stderr, exitCode, execErr := s.backend.Execute(ctx, id, []string{"/bin/sh", "-c", command})
+		if execErr == nil {
+			logger.DebugContext(ctx, "command executed", "vm_id", id, "attempt", attempt, "exit_code", exitCode, "stdout_len", len(stdout), "stderr_len", len(stderr), "stdout_preview", logPreview(stdout, executeLogPreviewLimit), "stderr_preview", logPreview(stderr, executeLogPreviewLimit))
+			s.refreshIdleDeadline(vm)
+			if err := s.repo.Update(ctx, vm); err != nil {
+				logger.WarnContext(ctx, "failed to refresh VM idle deadline after command", "vm_id", id, "error", err)
+			}
+			return stdout, nil
+		}
+
+		lastErr = execErr
+		transient := isTransientExecuteError(execErr)
+		if !transient || attempt == executeMaxAttempts {
+			logger.ErrorContext(ctx, "command execution failed", "vm_id", id, "attempt", attempt, "exit_code", exitCode, "stdout_preview", logPreview(stdout, executeLogPreviewLimit), "stderr_preview", logPreview(stderr, executeLogPreviewLimit), "error", execErr)
+			if transient {
+				return "", exception.ServiceUnavailable("VM command channel is still initializing, retry shortly")
+			}
+			return "", exception.Internal(execErr)
+		}
+
+		logger.DebugContext(ctx, "transient command execution failure; retrying", "vm_id", id, "attempt", attempt, "max_attempts", executeMaxAttempts, "retry_in", executeRetryInterval.String(), "error", execErr)
+		if !sleepWithContext(ctx, executeRetryInterval) {
+			return "", exception.ServiceUnavailable("VM command execution canceled while waiting to retry")
+		}
 	}
-	return stdout, nil
+
+	if lastErr != nil {
+		return "", exception.Internal(lastErr)
+	}
+	return "", exception.Internal(fmt.Errorf("command execution failed for unknown reason"))
+
+}
+
+func (s *Service) waitForExecuteReadiness(ctx context.Context, vmID string) error {
+	logger := pkglog.FromContext(ctx)
+
+	for attempt := 1; attempt <= executeReadinessMaxAttempts; attempt++ {
+		status, err := s.backend.Status(ctx, vmID)
+		if err == nil && isRuntimeReadyForExecute(status) {
+			logger.DebugContext(ctx, "VM execute readiness confirmed", "vm_id", vmID, "attempt", attempt, "runtime_state", status.State, "pid", status.PID, "vsock_path", status.VsockPath, "guest_cid", status.GuestCID)
+			return nil
+		}
+
+		reason := ""
+		if err != nil {
+			reason = err.Error()
+		} else {
+			reason = fmt.Sprintf("state=%s pid=%d vsock_path_set=%t guest_cid=%d", status.State, status.PID, status.VsockPath != "", status.GuestCID)
+		}
+
+		if attempt == executeReadinessMaxAttempts {
+			logger.WarnContext(ctx, "VM execute readiness timed out", "vm_id", vmID, "attempts", executeReadinessMaxAttempts, "reason", reason)
+			return exception.ServiceUnavailable("VM command channel is not ready yet, retry shortly")
+		}
+
+		logger.DebugContext(ctx, "VM not ready for execute yet", "vm_id", vmID, "attempt", attempt, "max_attempts", executeReadinessMaxAttempts, "reason", reason, "retry_in", executeReadinessPollInterval.String())
+		if !sleepWithContext(ctx, executeReadinessPollInterval) {
+			return exception.ServiceUnavailable("VM readiness check canceled")
+		}
+	}
+
+	return exception.ServiceUnavailable("VM command channel is not ready yet, retry shortly")
+}
+
+func isRuntimeReadyForExecute(status vmdomain.RuntimeStatus) bool {
+	state := strings.ToLower(strings.TrimSpace(status.State))
+	return state == "running" && status.PID > 0 && status.VsockPath != "" && status.GuestCID > 0
+}
+
+func isTransientExecuteError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	transientSubstrings := []string{
+		"vsock command channel is not configured",
+		"connect guest agent",
+		"open guest vsock stream",
+		"read execute response",
+		"guest vsock connect failed",
+		"agent_unavailable",
+		"connection refused",
+		"no such file or directory",
+		"timeout",
+	}
+
+	for _, substr := range transientSubstrings {
+		if strings.Contains(message, substr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func sleepWithContext(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func logPreview(text string, limit int) string {
+	normalized := strings.TrimSpace(text)
+	if normalized == "" {
+		return ""
+	}
+
+	normalized = strings.ReplaceAll(normalized, "\r", "\\r")
+	normalized = strings.ReplaceAll(normalized, "\n", "\\n")
+
+	if limit <= 0 || len(normalized) <= limit {
+		return normalized
+	}
+
+	return normalized[:limit] + "...(truncated)"
 }
 
 // GetMetrics returns resource usage metrics for the specified VM.

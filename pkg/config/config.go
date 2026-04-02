@@ -52,15 +52,23 @@ type VMConfig struct {
 }
 
 type VMFirecrackerConfig struct {
-	BinaryPath      string `yaml:"binary_path"`
-	KernelPath      string `yaml:"kernel_path"`
-	BaseDir         string `yaml:"base_dir"`
-	KernelArgs      string `yaml:"kernel_args"`
-	MacAddress      string `yaml:"mac_address"`
-	SocketTimeout   int    `yaml:"socket_timeout"`
-	ShutdownTimeout int    `yaml:"shutdown_timeout"`
-	SMT             bool   `yaml:"smt"`
-	EnableMmds      bool   `yaml:"enable_mmds"`
+	BinaryPath         string        `yaml:"binary_path"`
+	KernelPath         string        `yaml:"kernel_path"`
+	BaseDir            string        `yaml:"base_dir"`
+	KernelArgs         string        `yaml:"kernel_args"`
+	MacAddress         string        `yaml:"mac_address"`
+	SocketTimeout      int           `yaml:"socket_timeout"`
+	ShutdownTimeout    int           `yaml:"shutdown_timeout"`
+	SMT                bool          `yaml:"smt"`
+	EnableMmds         bool          `yaml:"enable_mmds"`
+	ExecEnabled        bool          `yaml:"exec_enabled"`
+	GuestAgentPort     uint32        `yaml:"guest_agent_port"`
+	VsockSocketName    string        `yaml:"vsock_socket_name"`
+	CIDMin             uint32        `yaml:"cid_min"`
+	CIDMax             uint32        `yaml:"cid_max"`
+	DefaultExecTimeout time.Duration `yaml:"default_exec_timeout"`
+	MaxStdoutBytes     int           `yaml:"max_stdout_bytes"`
+	MaxStderrBytes     int           `yaml:"max_stderr_bytes"`
 }
 
 type LLMConfig struct {

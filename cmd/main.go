@@ -68,15 +68,23 @@ func main() {
 	authService := authservice.NewService(jwtManager, authRepo, userRepo)
 
 	fcCfg := firecracker.Config{
-		BinaryPath:      cfg.VM.Firecracker.BinaryPath,
-		KernelPath:      cfg.VM.Firecracker.KernelPath,
-		BaseDir:         cfg.VM.Firecracker.BaseDir,
-		KernelArgs:      cfg.VM.Firecracker.KernelArgs,
-		MacAddress:      cfg.VM.Firecracker.MacAddress,
-		SocketTimeout:   cfg.VM.Firecracker.SocketTimeout,
-		ShutdownTimeout: cfg.VM.Firecracker.ShutdownTimeout,
-		SMT:             cfg.VM.Firecracker.SMT,
-		EnableMmds:      cfg.VM.Firecracker.EnableMmds,
+		BinaryPath:         cfg.VM.Firecracker.BinaryPath,
+		KernelPath:         cfg.VM.Firecracker.KernelPath,
+		BaseDir:            cfg.VM.Firecracker.BaseDir,
+		KernelArgs:         cfg.VM.Firecracker.KernelArgs,
+		MacAddress:         cfg.VM.Firecracker.MacAddress,
+		SocketTimeout:      cfg.VM.Firecracker.SocketTimeout,
+		ShutdownTimeout:    cfg.VM.Firecracker.ShutdownTimeout,
+		SMT:                cfg.VM.Firecracker.SMT,
+		EnableMmds:         cfg.VM.Firecracker.EnableMmds,
+		ExecEnabled:        cfg.VM.Firecracker.ExecEnabled,
+		GuestAgentPort:     cfg.VM.Firecracker.GuestAgentPort,
+		VsockSocketName:    cfg.VM.Firecracker.VsockSocketName,
+		CIDMin:             cfg.VM.Firecracker.CIDMin,
+		CIDMax:             cfg.VM.Firecracker.CIDMax,
+		DefaultExecTimeout: cfg.VM.Firecracker.DefaultExecTimeout,
+		MaxStdoutBytes:     cfg.VM.Firecracker.MaxStdoutBytes,
+		MaxStderrBytes:     cfg.VM.Firecracker.MaxStderrBytes,
 	}
 	var vmBackend vmdomain.Backend
 	provider, err := firecracker.NewProvider(fcCfg)

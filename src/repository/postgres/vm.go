@@ -21,6 +21,8 @@ type vmRow struct {
 	Status             string     `db:"status"`
 	RuntimeID          *string    `db:"runtime_id"`
 	SocketPath         *string    `db:"socket_path"`
+	VsockPath          *string    `db:"vsock_path"`
+	GuestCID           *int64     `db:"guest_cid"`
 	PID                *int       `db:"pid"`
 	RuntimeStateSource *string    `db:"runtime_state_source"`
 	LastHeartbeatAt    *time.Time `db:"last_heartbeat_at"`
@@ -52,21 +54,23 @@ func (r *vmRepository) Create(ctx context.Context, vm *vmdomain.VM) error {
 	query := `
 		INSERT INTO vm_instances (
 			id, environment_id, provider, status,
-			runtime_id, socket_path, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
+			runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 			vcpu, memory_mb, disk_mb,
 			ip_address, chat_id, assigned_at, terminated_at, created_at
 		)
 		VALUES (
 			$1, $2, $3, $4,
-			$5, $6, $7, $8, $9, $10,
-			$11, $12, $13,
-			$14, $15, $16, $17, $18
+			$5, $6, $7, $8, $9, $10, $11, $12,
+			$13, $14, $15,
+			$16, $17, $18, $19, $20
 		)
 	`
 
+	guestCID := toNullableInt64(vm.GuestCID)
+
 	if _, err := r.db.ExecContext(ctx, query,
 		vm.ID, vm.EnvironmentID, string(vm.Provider), string(vm.Status),
-		vm.RuntimeID, vm.SocketPath, vm.PID, vm.RuntimeState, vm.LastHeartbeatAt, vm.IdleDeadlineAt,
+		vm.RuntimeID, vm.SocketPath, vm.VsockPath, guestCID, vm.PID, vm.RuntimeState, vm.LastHeartbeatAt, vm.IdleDeadlineAt,
 		vm.VCPU, vm.MemoryMB, vm.DiskMB,
 		vm.IPAddress, vm.ChatID, vm.AssignedAt, vm.TerminatedAt, vm.CreatedAt,
 	); err != nil {
@@ -79,7 +83,7 @@ func (r *vmRepository) Create(ctx context.Context, vm *vmdomain.VM) error {
 func (r *vmRepository) GetByID(ctx context.Context, id string) (*vmdomain.VM, error) {
 	query := `
 		SELECT id, environment_id, provider, status,
-		       runtime_id, socket_path, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
+		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, terminated_at, created_at
 		FROM vm_instances
@@ -105,23 +109,27 @@ func (r *vmRepository) Update(ctx context.Context, vm *vmdomain.VM) error {
 		    status = $4,
 		    runtime_id = $5,
 		    socket_path = $6,
-		    pid = $7,
-		    runtime_state_source = $8,
-		    last_heartbeat_at = $9,
-		    idle_deadline_at = $10,
-		    vcpu = $11,
-		    memory_mb = $12,
-		    disk_mb = $13,
-		    ip_address = $14,
-		    chat_id = $15,
-		    assigned_at = $16,
-		    terminated_at = $17
+		    vsock_path = $7,
+		    guest_cid = $8,
+		    pid = $9,
+		    runtime_state_source = $10,
+		    last_heartbeat_at = $11,
+		    idle_deadline_at = $12,
+		    vcpu = $13,
+		    memory_mb = $14,
+		    disk_mb = $15,
+		    ip_address = $16,
+		    chat_id = $17,
+		    assigned_at = $18,
+		    terminated_at = $19
 		WHERE id = $1
 	`
 
+	guestCID := toNullableInt64(vm.GuestCID)
+
 	result, err := r.db.ExecContext(ctx, query,
 		vm.ID, vm.EnvironmentID, string(vm.Provider), string(vm.Status),
-		vm.RuntimeID, vm.SocketPath, vm.PID, vm.RuntimeState, vm.LastHeartbeatAt, vm.IdleDeadlineAt,
+		vm.RuntimeID, vm.SocketPath, vm.VsockPath, guestCID, vm.PID, vm.RuntimeState, vm.LastHeartbeatAt, vm.IdleDeadlineAt,
 		vm.VCPU, vm.MemoryMB, vm.DiskMB,
 		vm.IPAddress, vm.ChatID, vm.AssignedAt, vm.TerminatedAt,
 	)
@@ -162,7 +170,7 @@ func (r *vmRepository) Delete(ctx context.Context, id string) error {
 func (r *vmRepository) List(ctx context.Context) ([]*vmdomain.VM, error) {
 	query := `
 		SELECT id, environment_id, provider, status,
-		       runtime_id, socket_path, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
+		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, terminated_at, created_at
 		FROM vm_instances
@@ -189,7 +197,7 @@ func (r *vmRepository) List(ctx context.Context) ([]*vmdomain.VM, error) {
 func (r *vmRepository) GetAvailablePool(ctx context.Context, provider vmdomain.Provider, limit int) ([]*vmdomain.VM, error) {
 	query := `
 		SELECT id, environment_id, provider, status,
-		       runtime_id, socket_path, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
+		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, terminated_at, created_at
 		FROM vm_instances
@@ -220,7 +228,7 @@ func (r *vmRepository) GetAvailablePool(ctx context.Context, provider vmdomain.P
 func (r *vmRepository) GetByEnvironmentID(ctx context.Context, envID string) ([]*vmdomain.VM, error) {
 	query := `
 		SELECT id, environment_id, provider, status,
-		       runtime_id, socket_path, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
+		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, terminated_at, created_at
 		FROM vm_instances
@@ -248,7 +256,7 @@ func (r *vmRepository) GetByEnvironmentID(ctx context.Context, envID string) ([]
 func (r *vmRepository) GetByChatID(ctx context.Context, chatID string) (*vmdomain.VM, error) {
 	query := `
 		SELECT id, environment_id, provider, status,
-		       runtime_id, socket_path, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
+		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, terminated_at, created_at
 		FROM vm_instances
@@ -271,7 +279,7 @@ func (r *vmRepository) GetByChatID(ctx context.Context, chatID string) (*vmdomai
 func (r *vmRepository) GetActiveVMs(ctx context.Context) ([]*vmdomain.VM, error) {
 	query := `
 		SELECT id, environment_id, provider, status,
-		       runtime_id, socket_path, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
+		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, terminated_at, created_at
 		FROM vm_instances
@@ -309,7 +317,7 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 
 	lockQuery := `
 		SELECT id, environment_id, provider, status,
-		       runtime_id, socket_path, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
+		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, terminated_at, created_at
 		FROM vm_instances
@@ -357,7 +365,7 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 
 	readQuery := `
 		SELECT id, environment_id, provider, status,
-		       runtime_id, socket_path, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
+		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, terminated_at, created_at
 		FROM vm_instances
@@ -427,6 +435,7 @@ func mapVMRow(row vmRow) (*vmdomain.VM, error) {
 		Status:        vmdomain.Status(row.Status),
 		RuntimeID:     row.RuntimeID,
 		SocketPath:    row.SocketPath,
+		VsockPath:     row.VsockPath,
 		PID:           row.PID,
 		RuntimeState:  row.RuntimeStateSource,
 		VCPU:          row.VCPU,
@@ -442,5 +451,21 @@ func mapVMRow(row vmRow) (*vmdomain.VM, error) {
 	v.LastHeartbeatAt = row.LastHeartbeatAt
 	v.IdleDeadlineAt = row.IdleDeadlineAt
 
+	if row.GuestCID != nil {
+		if *row.GuestCID < 0 || *row.GuestCID > 4294967295 {
+			return nil, exception.Internal(fmt.Errorf("invalid guest cid value %d for vm %s", *row.GuestCID, row.ID))
+		}
+		cid := uint32(*row.GuestCID)
+		v.GuestCID = &cid
+	}
+
 	return v, nil
+}
+
+func toNullableInt64(v *uint32) *int64 {
+	if v == nil {
+		return nil
+	}
+	r := int64(*v)
+	return &r
 }

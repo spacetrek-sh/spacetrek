@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -435,13 +436,16 @@ func (h *Handler) ExecuteCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger.DebugContext(ctx, "execute command request received", "vm_id", id, "command_len", len(req.Command), "command_preview", logPreview(req.Command, 256))
+
 	output, err := h.vmservice.ExecuteCommand(ctx, id, req.Command)
 	if err != nil {
-		logger.WarnContext(ctx, "command execution failed", "vm_id", id, "error", err)
+		logger.WarnContext(ctx, "command execution failed", "vm_id", id, "command_preview", logPreview(req.Command, 256), "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
 
+	logger.DebugContext(ctx, "execute command result", "vm_id", id, "output_len", len(output), "output_preview", logPreview(output, 256))
 	logger.InfoContext(ctx, "command executed", "vm_id", id, "command", req.Command)
 	httputil.WriteJSON(w, http.StatusOK, "command executed", executeCommandResponse{Output: output})
 }
@@ -495,6 +499,22 @@ func formatTimePtr(t *time.Time) *string {
 	}
 	formatted := t.Format("2006-01-02T15:04:05Z")
 	return &formatted
+}
+
+func logPreview(text string, limit int) string {
+	normalized := strings.TrimSpace(text)
+	if normalized == "" {
+		return ""
+	}
+
+	normalized = strings.ReplaceAll(normalized, "\r", "\\r")
+	normalized = strings.ReplaceAll(normalized, "\n", "\\n")
+
+	if limit <= 0 || len(normalized) <= limit {
+		return normalized
+	}
+
+	return normalized[:limit] + "...(truncated)"
 }
 
 func toRuntimeSnapshotResponse(vm *vmdomain.VM, metrics vmdomain.Metrics) runtimeSnapshotResponse {

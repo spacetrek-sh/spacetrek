@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 // Config holds the Firecracker provider configuration.
@@ -27,6 +28,16 @@ type Config struct {
 	// Features
 	SMT        bool `json:"smt" env:"FIRECRACKER_SMT"`                 // Simultaneous Multithreading
 	EnableMmds bool `json:"enable_mmds" env:"FIRECRACKER_ENABLE_MMDS"` // MicroVM Metadata Service
+
+	// Execute command over vsock
+	ExecEnabled        bool          `json:"exec_enabled" env:"FIRECRACKER_EXEC_ENABLED"`
+	GuestAgentPort     uint32        `json:"guest_agent_port" env:"FIRECRACKER_GUEST_AGENT_PORT"`
+	VsockSocketName    string        `json:"vsock_socket_name" env:"FIRECRACKER_VSOCK_SOCKET_NAME"`
+	CIDMin             uint32        `json:"cid_min" env:"FIRECRACKER_CID_MIN"`
+	CIDMax             uint32        `json:"cid_max" env:"FIRECRACKER_CID_MAX"`
+	DefaultExecTimeout time.Duration `json:"default_exec_timeout" env:"FIRECRACKER_DEFAULT_EXEC_TIMEOUT"`
+	MaxStdoutBytes     int           `json:"max_stdout_bytes" env:"FIRECRACKER_MAX_STDOUT_BYTES"`
+	MaxStderrBytes     int           `json:"max_stderr_bytes" env:"FIRECRACKER_MAX_STDERR_BYTES"`
 }
 
 // DefaultConfig returns the default Firecracker configuration.
@@ -43,15 +54,23 @@ func DefaultConfig() Config {
 	}
 
 	return Config{
-		BinaryPath:      "firecracker",
-		KernelPath:      kernelPath,
-		BaseDir:         baseDir,
-		KernelArgs:      "console=ttyS0 reboot=k panic=1 pci=off",
-		MacAddress:      "02:FC:00:00:00:01",
-		SocketTimeout:   30,
-		ShutdownTimeout: 10,
-		SMT:             false,
-		EnableMmds:      true,
+		BinaryPath:         "firecracker",
+		KernelPath:         kernelPath,
+		BaseDir:            baseDir,
+		KernelArgs:         "console=ttyS0 reboot=k panic=1 pci=off rw",
+		MacAddress:         "02:FC:00:00:00:01",
+		SocketTimeout:      30,
+		ShutdownTimeout:    10,
+		SMT:                false,
+		EnableMmds:         true,
+		ExecEnabled:        false,
+		GuestAgentPort:     10789,
+		VsockSocketName:    "agent.vsock",
+		CIDMin:             1024,
+		CIDMax:             65535,
+		DefaultExecTimeout: 60 * time.Second,
+		MaxStdoutBytes:     5 * 1024 * 1024,
+		MaxStderrBytes:     5 * 1024 * 1024,
 	}
 }
 
@@ -96,6 +115,34 @@ func (c Config) Validate() error {
 		return fmt.Errorf("shutdown_timeout must be between 1 and 300 seconds")
 	}
 
+	if c.VsockSocketName == "" {
+		return fmt.Errorf("vsock_socket_name is required")
+	}
+
+	if c.GuestAgentPort == 0 || c.GuestAgentPort > 65535 {
+		return fmt.Errorf("guest_agent_port must be between 1 and 65535")
+	}
+
+	if c.CIDMin < 3 {
+		return fmt.Errorf("cid_min must be >= 3")
+	}
+
+	if c.CIDMax < c.CIDMin {
+		return fmt.Errorf("cid_max must be >= cid_min")
+	}
+
+	if c.DefaultExecTimeout < 1*time.Second || c.DefaultExecTimeout > 15*time.Minute {
+		return fmt.Errorf("default_exec_timeout must be between 1s and 15m")
+	}
+
+	if c.MaxStdoutBytes < 1024 || c.MaxStdoutBytes > 32*1024*1024 {
+		return fmt.Errorf("max_stdout_bytes must be between 1024 and 33554432")
+	}
+
+	if c.MaxStderrBytes < 1024 || c.MaxStderrBytes > 32*1024*1024 {
+		return fmt.Errorf("max_stderr_bytes must be between 1024 and 33554432")
+	}
+
 	return nil
 }
 
@@ -107,4 +154,13 @@ func (c Config) VMDir(vmID string) string {
 // SocketPath returns the API socket path for a specific VM.
 func (c Config) SocketPath(vmID string) string {
 	return filepath.Join(c.VMDir(vmID), "api.sock")
+}
+
+// VsockPath returns the host UDS path used for vsock for a specific VM.
+func (c Config) VsockPath(vmID string) string {
+	name := c.VsockSocketName
+	if name == "" {
+		name = "agent.vsock"
+	}
+	return filepath.Join(c.VMDir(vmID), name)
 }

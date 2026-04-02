@@ -37,6 +37,8 @@ type VM struct {
 	// Runtime metadata (nullable, persisted for reconciliation)
 	RuntimeID       *string    `db:"runtime_id"`
 	SocketPath      *string    `db:"socket_path"`
+	VsockPath       *string    `db:"vsock_path"`
+	GuestCID        *uint32    `db:"guest_cid"`
 	PID             *int       `db:"pid"`
 	RuntimeState    *string    `db:"runtime_state_source"`
 	LastHeartbeatAt *time.Time `db:"last_heartbeat_at"`
@@ -174,4 +176,20 @@ func (v *VM) SetRuntimeMetadata(runtimeID, socketPath string, pid int, state str
 	if pid > 0 {
 		v.PID = &pid
 	}
+}
+
+// SetRuntimeVsockMetadata stores provider vsock metadata used for guest agent execution.
+func (v *VM) SetRuntimeVsockMetadata(vsockPath string, guestCID uint32) {
+	if vsockPath != "" {
+		v.VsockPath = &vsockPath
+	}
+	if guestCID > 0 {
+		v.GuestCID = &guestCID
+	}
+}
+
+// ClearRuntimeVsockMetadata releases provider vsock metadata for CID reuse.
+func (v *VM) ClearRuntimeVsockMetadata() {
+	v.VsockPath = nil
+	v.GuestCID = nil
 }
