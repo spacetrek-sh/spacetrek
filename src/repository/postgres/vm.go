@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kumori-sh/spacetrk/pkg/exception"
+	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
 	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
 )
 
@@ -51,6 +52,7 @@ func NewVMRepository(db *DB) vmdomain.Repository {
 }
 
 func (r *vmRepository) Create(ctx context.Context, vm *vmdomain.VM) error {
+	logger := pkglog.FromContext(ctx)
 	query := `
 		INSERT INTO vm_instances (
 			id, environment_id, provider, status,
@@ -74,6 +76,7 @@ func (r *vmRepository) Create(ctx context.Context, vm *vmdomain.VM) error {
 		vm.VCPU, vm.MemoryMB, vm.DiskMB,
 		vm.IPAddress, vm.ChatID, vm.AssignedAt, vm.TerminatedAt, vm.CreatedAt,
 	); err != nil {
+		logger.ErrorContext(ctx, "postgres: create vm failed", "vm_id", vm.ID, "error", err)
 		return exception.Internal(fmt.Errorf("create vm: %w", err))
 	}
 
@@ -81,6 +84,7 @@ func (r *vmRepository) Create(ctx context.Context, vm *vmdomain.VM) error {
 }
 
 func (r *vmRepository) GetByID(ctx context.Context, id string) (*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
 	query := `
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
@@ -95,6 +99,7 @@ func (r *vmRepository) GetByID(ctx context.Context, id string) (*vmdomain.VM, er
 		if err == sql.ErrNoRows {
 			return nil, exception.NotFound("vm", id)
 		}
+		logger.ErrorContext(ctx, "postgres: get vm by id failed", "vm_id", id, "error", err)
 		return nil, exception.Internal(fmt.Errorf("get vm by id: %w", err))
 	}
 
@@ -102,6 +107,7 @@ func (r *vmRepository) GetByID(ctx context.Context, id string) (*vmdomain.VM, er
 }
 
 func (r *vmRepository) Update(ctx context.Context, vm *vmdomain.VM) error {
+	logger := pkglog.FromContext(ctx)
 	query := `
 		UPDATE vm_instances
 		SET environment_id = $2,
@@ -134,6 +140,7 @@ func (r *vmRepository) Update(ctx context.Context, vm *vmdomain.VM) error {
 		vm.IPAddress, vm.ChatID, vm.AssignedAt, vm.TerminatedAt,
 	)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: update vm failed", "vm_id", vm.ID, "error", err)
 		return exception.Internal(fmt.Errorf("update vm: %w", err))
 	}
 
@@ -149,10 +156,12 @@ func (r *vmRepository) Update(ctx context.Context, vm *vmdomain.VM) error {
 }
 
 func (r *vmRepository) Delete(ctx context.Context, id string) error {
+	logger := pkglog.FromContext(ctx)
 	query := `DELETE FROM vm_instances WHERE id = $1`
 
 	result, err := r.db.ExecContext(ctx, query, id)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: delete vm failed", "vm_id", id, "error", err)
 		return exception.Internal(fmt.Errorf("delete vm: %w", err))
 	}
 
@@ -168,6 +177,7 @@ func (r *vmRepository) Delete(ctx context.Context, id string) error {
 }
 
 func (r *vmRepository) List(ctx context.Context) ([]*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
 	query := `
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
@@ -179,6 +189,7 @@ func (r *vmRepository) List(ctx context.Context) ([]*vmdomain.VM, error) {
 
 	rows := make([]vmRow, 0)
 	if err := r.db.SelectContext(ctx, &rows, query); err != nil {
+		logger.ErrorContext(ctx, "postgres: list vms failed", "error", err)
 		return nil, exception.Internal(fmt.Errorf("list vms: %w", err))
 	}
 
@@ -195,6 +206,7 @@ func (r *vmRepository) List(ctx context.Context) ([]*vmdomain.VM, error) {
 }
 
 func (r *vmRepository) GetAvailablePool(ctx context.Context, provider vmdomain.Provider, limit int) ([]*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
 	query := `
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
@@ -210,6 +222,7 @@ func (r *vmRepository) GetAvailablePool(ctx context.Context, provider vmdomain.P
 
 	rows := make([]vmRow, 0)
 	if err := r.db.SelectContext(ctx, &rows, query, string(provider), limit); err != nil {
+		logger.ErrorContext(ctx, "postgres: get available vm pool failed", "provider", provider, "error", err)
 		return nil, exception.Internal(fmt.Errorf("get available vm pool: %w", err))
 	}
 
@@ -226,6 +239,7 @@ func (r *vmRepository) GetAvailablePool(ctx context.Context, provider vmdomain.P
 }
 
 func (r *vmRepository) GetByEnvironmentID(ctx context.Context, envID string) ([]*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
 	query := `
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
@@ -238,6 +252,7 @@ func (r *vmRepository) GetByEnvironmentID(ctx context.Context, envID string) ([]
 
 	rows := make([]vmRow, 0)
 	if err := r.db.SelectContext(ctx, &rows, query, envID); err != nil {
+		logger.ErrorContext(ctx, "postgres: get vms by environment id failed", "env_id", envID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("get vms by environment id: %w", err))
 	}
 
@@ -254,6 +269,7 @@ func (r *vmRepository) GetByEnvironmentID(ctx context.Context, envID string) ([]
 }
 
 func (r *vmRepository) GetByChatID(ctx context.Context, chatID string) (*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
 	query := `
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
@@ -270,6 +286,7 @@ func (r *vmRepository) GetByChatID(ctx context.Context, chatID string) (*vmdomai
 		if err == sql.ErrNoRows {
 			return nil, exception.NotFound("vm chat", chatID)
 		}
+		logger.ErrorContext(ctx, "postgres: get vm by chat id failed", "chat_id", chatID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("get vm by chat id: %w", err))
 	}
 
@@ -277,6 +294,7 @@ func (r *vmRepository) GetByChatID(ctx context.Context, chatID string) (*vmdomai
 }
 
 func (r *vmRepository) GetActiveVMs(ctx context.Context) ([]*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
 	query := `
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
@@ -289,6 +307,7 @@ func (r *vmRepository) GetActiveVMs(ctx context.Context) ([]*vmdomain.VM, error)
 
 	rows := make([]vmRow, 0)
 	if err := r.db.SelectContext(ctx, &rows, query); err != nil {
+		logger.ErrorContext(ctx, "postgres: get active vms failed", "error", err)
 		return nil, exception.Internal(fmt.Errorf("get active vms: %w", err))
 	}
 
@@ -305,8 +324,11 @@ func (r *vmRepository) GetActiveVMs(ctx context.Context) ([]*vmdomain.VM, error)
 }
 
 func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID string, idleDeadlineAt *time.Time) (*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
+
 	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: begin vm assignment tx failed", "vm_id", vmID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("begin vm assignment tx: %w", err))
 	}
 	defer func() {
@@ -330,6 +352,7 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 		if err == sql.ErrNoRows {
 			return nil, exception.NotFound("vm", vmID)
 		}
+		logger.ErrorContext(ctx, "postgres: lock vm for assignment failed", "vm_id", vmID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("lock vm for assignment: %w", err))
 	}
 
@@ -352,6 +375,7 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 	`
 
 	if _, err := tx.ExecContext(ctx, updateQuery, vmID, string(vmdomain.StatusRunning), chatID, idleDeadlineAt); err != nil {
+		logger.ErrorContext(ctx, "postgres: update vm assignment failed", "vm_id", vmID, "chat_id", chatID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("update vm assignment: %w", err))
 	}
 
@@ -360,6 +384,7 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 		VALUES ($1, $2, NOW())
 	`
 	if _, err := tx.ExecContext(ctx, insertLeaseQuery, chatID, vmID); err != nil {
+		logger.ErrorContext(ctx, "postgres: create vm lease failed", "vm_id", vmID, "chat_id", chatID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("create vm lease: %w", err))
 	}
 
@@ -373,10 +398,12 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 	`
 
 	if err := tx.GetContext(ctx, &row, readQuery, vmID); err != nil {
+		logger.ErrorContext(ctx, "postgres: read assigned vm failed", "vm_id", vmID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("read assigned vm: %w", err))
 	}
 
 	if err := tx.Commit(); err != nil {
+		logger.ErrorContext(ctx, "postgres: commit vm assignment tx failed", "vm_id", vmID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("commit vm assignment tx: %w", err))
 	}
 	tx = nil
@@ -385,6 +412,7 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 }
 
 func (r *vmRepository) ReleaseActiveLeaseByVM(ctx context.Context, vmID string) error {
+	logger := pkglog.FromContext(ctx)
 	query := `
 		UPDATE vm_leases
 		SET released_at = NOW()
@@ -393,6 +421,7 @@ func (r *vmRepository) ReleaseActiveLeaseByVM(ctx context.Context, vmID string) 
 	`
 
 	if _, err := r.db.ExecContext(ctx, query, vmID); err != nil {
+		logger.ErrorContext(ctx, "postgres: release vm lease failed", "vm_id", vmID, "error", err)
 		return exception.Internal(fmt.Errorf("release vm lease: %w", err))
 	}
 
@@ -400,6 +429,7 @@ func (r *vmRepository) ReleaseActiveLeaseByVM(ctx context.Context, vmID string) 
 }
 
 func (r *vmRepository) ListActiveLeasesByChat(ctx context.Context, chatID string) ([]vmdomain.Lease, error) {
+	logger := pkglog.FromContext(ctx)
 	query := `
 		SELECT id, chat_id, vm_id, leased_at, released_at
 		FROM vm_leases
@@ -410,6 +440,7 @@ func (r *vmRepository) ListActiveLeasesByChat(ctx context.Context, chatID string
 
 	rows := make([]vmLeaseRow, 0)
 	if err := r.db.SelectContext(ctx, &rows, query, chatID); err != nil {
+		logger.ErrorContext(ctx, "postgres: list active vm leases failed", "chat_id", chatID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("list active vm leases: %w", err))
 	}
 

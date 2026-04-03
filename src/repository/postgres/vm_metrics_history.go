@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kumori-sh/spacetrk/pkg/exception"
+	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
 	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
 )
 
@@ -33,6 +34,8 @@ func NewVMMetricsHistoryRepository(db *DB) vmdomain.MetricsHistoryRepository {
 }
 
 func (r *vmMetricsHistoryRepository) Insert(ctx context.Context, point vmdomain.MetricsPoint) error {
+	logger := pkglog.FromContext(ctx)
+
 	query := `
 		INSERT INTO vm_metrics_history (
 			vm_id, collected_at,
@@ -57,6 +60,7 @@ func (r *vmMetricsHistoryRepository) Insert(ctx context.Context, point vmdomain.
 		point.DiskUsedMB, point.DiskLimitMB, point.DiskPercent,
 		point.NetworkBytesSent, point.NetworkBytesReceived,
 	); err != nil {
+		logger.ErrorContext(ctx, "postgres: insert vm metrics history failed", "vm_id", point.VMID, "error", err)
 		return exception.Internal(fmt.Errorf("insert vm metrics history: %w", err))
 	}
 
@@ -64,6 +68,8 @@ func (r *vmMetricsHistoryRepository) Insert(ctx context.Context, point vmdomain.
 }
 
 func (r *vmMetricsHistoryRepository) ListByVM(ctx context.Context, vmID string, from, to *time.Time, limit int) ([]vmdomain.MetricsPoint, error) {
+	logger := pkglog.FromContext(ctx)
+
 	if limit <= 0 {
 		limit = 300
 	}
@@ -88,6 +94,7 @@ func (r *vmMetricsHistoryRepository) ListByVM(ctx context.Context, vmID string, 
 
 	rows := make([]vmMetricsHistoryRow, 0)
 	if err := r.db.SelectContext(ctx, &rows, query, vmID, from, to, limit); err != nil {
+		logger.ErrorContext(ctx, "postgres: list vm metrics history failed", "vm_id", vmID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("list vm metrics history: %w", err))
 	}
 

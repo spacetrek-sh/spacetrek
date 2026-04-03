@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/kumori-sh/spacetrk/pkg/exception"
 	httputil "github.com/kumori-sh/spacetrk/pkg/http"
+	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
 	"github.com/kumori-sh/spacetrk/src/core/domain/agent"
 )
 
@@ -45,36 +46,46 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 
 // Create handles POST /api/v1/agents
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
 	var req createAgentRequest
 	if err := httputil.BindJSON(r, &req); err != nil {
+		logger.WarnContext(ctx, "agent creation failed", "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
 
-	a, err := h.svc.Create(r.Context(), agent.CreateParams{
+	a, err := h.svc.Create(ctx, agent.CreateParams{
 		Name:         req.Name,
 		Description:  req.Description,
 		Model:        req.Model,
 		SystemPrompt: req.SystemPrompt,
 	})
 	if err != nil {
+		logger.WarnContext(ctx, "agent creation failed", "name", req.Name, "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
 
+	logger.InfoContext(ctx, "agent created", "agent_id", a.ID, "name", a.Name)
 	httputil.Created(w, "agent created", toResponse(a))
 }
 
 // Get handles GET /api/v1/agents/{id}
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		httputil.WriteError(w, exception.BadRequest("missing agent id"))
 		return
 	}
 
-	a, err := h.svc.Get(r.Context(), id)
+	a, err := h.svc.Get(ctx, id)
 	if err != nil {
+		logger.WarnContext(ctx, "agent retrieval failed", "agent_id", id, "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
@@ -84,10 +95,14 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 
 // List handles GET /api/v1/agents?offset=0&limit=20
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
 	offset, limit := parsePagination(r)
 
-	agents, total, err := h.svc.List(r.Context(), offset, limit)
+	agents, total, err := h.svc.List(ctx, offset, limit)
 	if err != nil {
+		logger.WarnContext(ctx, "agent list failed", "offset", offset, "limit", limit, "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
@@ -107,6 +122,9 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 // Update handles PUT /api/v1/agents/{id}
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		httputil.WriteError(w, exception.BadRequest("missing agent id"))
@@ -115,37 +133,45 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 	var req updateAgentRequest
 	if err := httputil.BindJSON(r, &req); err != nil {
+		logger.WarnContext(ctx, "agent update failed", "agent_id", id, "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
 
-	a, err := h.svc.Update(r.Context(), id, agent.UpdateParams{
+	a, err := h.svc.Update(ctx, id, agent.UpdateParams{
 		Name:         req.Name,
 		Description:  req.Description,
 		Model:        req.Model,
 		SystemPrompt: req.SystemPrompt,
 	})
 	if err != nil {
+		logger.WarnContext(ctx, "agent update failed", "agent_id", id, "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
 
+	logger.InfoContext(ctx, "agent updated", "agent_id", id)
 	httputil.WriteJSON(w, http.StatusOK, "agent updated", toResponse(a))
 }
 
 // Delete handles DELETE /api/v1/agents/{id}
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		httputil.WriteError(w, exception.BadRequest("missing agent id"))
 		return
 	}
 
-	if err := h.svc.Delete(r.Context(), id); err != nil {
+	if err := h.svc.Delete(ctx, id); err != nil {
+		logger.WarnContext(ctx, "agent deletion failed", "agent_id", id, "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
 
+	logger.InfoContext(ctx, "agent deleted", "agent_id", id)
 	httputil.NoContent(w)
 }
 

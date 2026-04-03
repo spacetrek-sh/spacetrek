@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/kumori-sh/spacetrk/pkg/exception"
+	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
 	"github.com/kumori-sh/spacetrk/src/core/domain/environment"
 )
 
@@ -31,8 +32,11 @@ func NewEnvironmentRepository(db *DB) environment.Repository {
 }
 
 func (r *environmentRepository) Create(ctx context.Context, env *environment.Environment) error {
+	logger := pkglog.FromContext(ctx)
+
 	resourceLimitsJSON, err := json.Marshal(env.ResourceLimits)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: marshal resource limits failed", "environment_id", env.ID, "error", err)
 		return exception.Internal(fmt.Errorf("marshal resource limits: %w", err))
 	}
 
@@ -52,6 +56,7 @@ func (r *environmentRepository) Create(ctx context.Context, env *environment.Env
 		env.CreatedAt,
 		env.UpdatedAt,
 	); err != nil {
+		logger.ErrorContext(ctx, "postgres: create environment failed", "environment_id", env.ID, "error", err)
 		return exception.Internal(fmt.Errorf("create environment: %w", err))
 	}
 
@@ -59,6 +64,8 @@ func (r *environmentRepository) Create(ctx context.Context, env *environment.Env
 }
 
 func (r *environmentRepository) GetByID(ctx context.Context, id string) (*environment.Environment, error) {
+	logger := pkglog.FromContext(ctx)
+
 	query := `
 		SELECT id, type, image_path, resource_limits, metadata, created_at, updated_at
 		FROM environments
@@ -70,6 +77,7 @@ func (r *environmentRepository) GetByID(ctx context.Context, id string) (*enviro
 		if err == sql.ErrNoRows {
 			return nil, exception.NotFound("environment", id)
 		}
+		logger.ErrorContext(ctx, "postgres: get environment by id failed", "environment_id", id, "error", err)
 		return nil, exception.Internal(fmt.Errorf("get environment by id: %w", err))
 	}
 
@@ -77,6 +85,8 @@ func (r *environmentRepository) GetByID(ctx context.Context, id string) (*enviro
 }
 
 func (r *environmentRepository) List(ctx context.Context) ([]*environment.Environment, error) {
+	logger := pkglog.FromContext(ctx)
+
 	query := `
 		SELECT id, type, image_path, resource_limits, metadata, created_at, updated_at
 		FROM environments
@@ -85,6 +95,7 @@ func (r *environmentRepository) List(ctx context.Context) ([]*environment.Enviro
 
 	rows := make([]environmentRow, 0)
 	if err := r.db.SelectContext(ctx, &rows, query); err != nil {
+		logger.ErrorContext(ctx, "postgres: list environments failed", "error", err)
 		return nil, exception.Internal(fmt.Errorf("list environments: %w", err))
 	}
 
@@ -101,8 +112,11 @@ func (r *environmentRepository) List(ctx context.Context) ([]*environment.Enviro
 }
 
 func (r *environmentRepository) Update(ctx context.Context, env *environment.Environment) error {
+	logger := pkglog.FromContext(ctx)
+
 	resourceLimitsJSON, err := json.Marshal(env.ResourceLimits)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: marshal resource limits failed", "environment_id", env.ID, "error", err)
 		return exception.Internal(fmt.Errorf("marshal resource limits: %w", err))
 	}
 
@@ -127,11 +141,13 @@ func (r *environmentRepository) Update(ctx context.Context, env *environment.Env
 		env.UpdatedAt,
 	)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: update environment failed", "environment_id", env.ID, "error", err)
 		return exception.Internal(fmt.Errorf("update environment: %w", err))
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: update environment rows affected failed", "environment_id", env.ID, "error", err)
 		return exception.Internal(fmt.Errorf("update environment rows affected: %w", err))
 	}
 
@@ -143,15 +159,19 @@ func (r *environmentRepository) Update(ctx context.Context, env *environment.Env
 }
 
 func (r *environmentRepository) Delete(ctx context.Context, id string) error {
+	logger := pkglog.FromContext(ctx)
+
 	query := `DELETE FROM environments WHERE id = $1`
 
 	result, err := r.db.ExecContext(ctx, query, id)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: delete environment failed", "environment_id", id, "error", err)
 		return exception.Internal(fmt.Errorf("delete environment: %w", err))
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: delete environment rows affected failed", "environment_id", id, "error", err)
 		return exception.Internal(fmt.Errorf("delete environment rows affected: %w", err))
 	}
 

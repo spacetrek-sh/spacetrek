@@ -19,12 +19,16 @@ import (
 	sessionhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/session"
 	vmhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/vm"
 	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
+	"github.com/kumori-sh/spacetrk/src/core/ports"
+	geminiadapter "github.com/kumori-sh/spacetrk/src/infrastructure/llm/gemini"
 	"github.com/kumori-sh/spacetrk/src/infrastructure/vm/firecracker"
 	"github.com/kumori-sh/spacetrk/src/repository/memory"
 	postgresrepo "github.com/kumori-sh/spacetrk/src/repository/postgres"
 	agentsvc "github.com/kumori-sh/spacetrk/src/service/agent"
 	authservice "github.com/kumori-sh/spacetrk/src/service/auth"
+	orchestratorsvc "github.com/kumori-sh/spacetrk/src/service/orchestrator"
 	sessionsvc "github.com/kumori-sh/spacetrk/src/service/session"
+	toolsvc "github.com/kumori-sh/spacetrk/src/service/tool"
 	usersvc "github.com/kumori-sh/spacetrk/src/service/user"
 	vmsvc "github.com/kumori-sh/spacetrk/src/service/vm"
 )
@@ -63,7 +67,6 @@ func main() {
 
 	// ── Services ────────────────────────────────────────────────────────────
 	agentService := agentsvc.New(agentRepo)
-	sessionService := sessionsvc.New(sessionRepo, agentRepo)
 	userService := usersvc.NewService(userRepo)
 	authService := authservice.NewService(jwtManager, authRepo, userRepo)
 
@@ -96,6 +99,44 @@ func main() {
 	}
 
 	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, cfg.VM.IdleTimeout)
+	orchTools := orchestratorsvc.NewInMemoryToolRegistry(nil)
+	orchTools.Register(toolsvc.NewVMCommandTool(vmService))
+
+	var planner ports.ToolPlanner
+	if cfg.LLM.DefaultProvider == "gemini" && cfg.LLM.Gemini.APIKey != "" {
+		geminiCfg := geminiadapter.Config{
+			APIKey:          cfg.LLM.Gemini.APIKey,
+			Model:           cfg.LLM.Gemini.Model,
+			MaxOutputTokens: int32(cfg.LLM.Gemini.MaxOutputTokens),
+			SystemPrompt:    cfg.LLM.Gemini.SystemPrompt,
+			Timeout:         cfg.LLM.Timeout,
+		}
+		if geminiCfg.Model == "" {
+			geminiCfg.Model = geminiadapter.DefaultConfig().Model
+		}
+		if geminiCfg.MaxOutputTokens == 0 {
+			geminiCfg.MaxOutputTokens = geminiadapter.DefaultConfig().MaxOutputTokens
+		}
+		gp, err := geminiadapter.NewPlanner(context.Background(), geminiCfg, orchTools)
+		if err != nil {
+			logger.Warn("gemini planner unavailable, falling back to rule planner", slog.Any("error", err))
+			planner = orchestratorsvc.NewRulePlanner()
+		} else {
+			planner = gp
+			logger.Info("using gemini planner", slog.String("model", geminiCfg.Model))
+		}
+	} else {
+		planner = orchestratorsvc.NewRulePlanner()
+		logger.Info("using rule-based planner (no gemini config)")
+	}
+
+	orchService := orchestratorsvc.NewWithConfig(
+		planner,
+		orchTools,
+		orchestratorsvc.NewMemoryStateStore(),
+		orchestratorsvc.NewConfig([]string{"vm.execute_command"}, cfg.Security.MaxTaskDuration),
+	)
+	sessionService := sessionsvc.New(sessionRepo, agentRepo, orchService)
 
 	// ── Handlers ────────────────────────────────────────────────────────────
 	agentHandler := agenthttp.NewHandler(agentService)

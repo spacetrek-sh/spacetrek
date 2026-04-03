@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kumori-sh/spacetrk/pkg/exception"
+	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
 	"github.com/kumori-sh/spacetrk/src/core/domain/user"
 )
 
@@ -22,6 +23,8 @@ func NewUserRepository(db *DB) user.Repository {
 
 // Create creates a new user in the database.
 func (r *userRepository) Create(ctx context.Context, p user.CreateParams) (*user.User, error) {
+	logger := pkglog.FromContext(ctx)
+
 	now := time.Now()
 	role := p.Role
 	if role == "" {
@@ -47,16 +50,19 @@ func (r *userRepository) Create(ctx context.Context, p user.CreateParams) (*user
 
 	rows, err := r.db.NamedQueryContext(ctx, query, args)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: create user failed", "username", p.Username, "email", p.Email, "error", err)
 		return nil, exception.Internal(fmt.Errorf("create user: %w", err))
 	}
 	defer rows.Close()
 
 	if !rows.Next() {
+		logger.ErrorContext(ctx, "postgres: create user failed", "username", p.Username, "email", p.Email, "error", "no row returned")
 		return nil, exception.Internal(fmt.Errorf("create user: no row returned"))
 	}
 
 	var u user.User
 	if err := rows.StructScan(&u); err != nil {
+		logger.ErrorContext(ctx, "postgres: create user scan failed", "username", p.Username, "email", p.Email, "error", err)
 		return nil, exception.Internal(fmt.Errorf("create user: scan: %w", err))
 	}
 
@@ -65,6 +71,8 @@ func (r *userRepository) Create(ctx context.Context, p user.CreateParams) (*user
 
 // GetByID retrieves a user by ID.
 func (r *userRepository) GetByID(ctx context.Context, id string) (*user.User, error) {
+	logger := pkglog.FromContext(ctx)
+
 	query := `
 		SELECT id, username, email, password_hash, role, is_verified, verified_at, last_login_at, created_at, updated_at, deleted_at
 		FROM users
@@ -77,6 +85,7 @@ func (r *userRepository) GetByID(ctx context.Context, id string) (*user.User, er
 		if err == sql.ErrNoRows {
 			return nil, exception.NotFound("user", id)
 		}
+		logger.ErrorContext(ctx, "postgres: get user by id failed", "id", id, "error", err)
 		return nil, exception.Internal(fmt.Errorf("get user by id: %w", err))
 	}
 
@@ -85,6 +94,8 @@ func (r *userRepository) GetByID(ctx context.Context, id string) (*user.User, er
 
 // GetByEmail retrieves a user by email.
 func (r *userRepository) GetByEmail(ctx context.Context, email string) (*user.User, error) {
+	logger := pkglog.FromContext(ctx)
+
 	query := `
 		SELECT id, username, email, password_hash, role, is_verified, verified_at, last_login_at, created_at, updated_at, deleted_at
 		FROM users
@@ -97,6 +108,7 @@ func (r *userRepository) GetByEmail(ctx context.Context, email string) (*user.Us
 		if err == sql.ErrNoRows {
 			return nil, exception.NotFound("user", email)
 		}
+		logger.ErrorContext(ctx, "postgres: get user by email failed", "email", email, "error", err)
 		return nil, exception.Internal(fmt.Errorf("get user by email: %w", err))
 	}
 
@@ -105,6 +117,8 @@ func (r *userRepository) GetByEmail(ctx context.Context, email string) (*user.Us
 
 // GetByUsername retrieves a user by username.
 func (r *userRepository) GetByUsername(ctx context.Context, username string) (*user.User, error) {
+	logger := pkglog.FromContext(ctx)
+
 	query := `
 		SELECT id, username, email, password_hash, role, is_verified, verified_at, last_login_at, created_at, updated_at, deleted_at
 		FROM users
@@ -117,6 +131,7 @@ func (r *userRepository) GetByUsername(ctx context.Context, username string) (*u
 		if err == sql.ErrNoRows {
 			return nil, exception.NotFound("user", username)
 		}
+		logger.ErrorContext(ctx, "postgres: get user by username failed", "username", username, "error", err)
 		return nil, exception.Internal(fmt.Errorf("get user by username: %w", err))
 	}
 
@@ -125,6 +140,8 @@ func (r *userRepository) GetByUsername(ctx context.Context, username string) (*u
 
 // Update updates a user with the given parameters.
 func (r *userRepository) Update(ctx context.Context, id string, p user.UpdateParams) (*user.User, error) {
+	logger := pkglog.FromContext(ctx)
+
 	// Build dynamic update query based on non-nil fields
 	sets := []string{"updated_at = :updated_at"}
 	args := map[string]interface{}{
@@ -158,6 +175,7 @@ func (r *userRepository) Update(ctx context.Context, id string, p user.UpdatePar
 
 	rows, err := r.db.NamedQueryContext(ctx, query, args)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: update user failed", "id", id, "error", err)
 		return nil, exception.Internal(fmt.Errorf("update user: %w", err))
 	}
 	defer rows.Close()
@@ -168,6 +186,7 @@ func (r *userRepository) Update(ctx context.Context, id string, p user.UpdatePar
 
 	var u user.User
 	if err := rows.StructScan(&u); err != nil {
+		logger.ErrorContext(ctx, "postgres: update user scan failed", "id", id, "error", err)
 		return nil, exception.Internal(fmt.Errorf("update user: scan: %w", err))
 	}
 
@@ -176,6 +195,8 @@ func (r *userRepository) Update(ctx context.Context, id string, p user.UpdatePar
 
 // Delete soft-deletes a user by setting deleted_at.
 func (r *userRepository) Delete(ctx context.Context, id string) error {
+	logger := pkglog.FromContext(ctx)
+
 	query := `
 		UPDATE users
 		SET deleted_at = NOW(), updated_at = NOW()
@@ -184,11 +205,13 @@ func (r *userRepository) Delete(ctx context.Context, id string) error {
 
 	result, err := r.db.ExecContext(ctx, query, id)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: delete user failed", "id", id, "error", err)
 		return exception.Internal(fmt.Errorf("delete user: %w", err))
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: delete user rows affected failed", "id", id, "error", err)
 		return exception.Internal(fmt.Errorf("delete user: rows affected: %w", err))
 	}
 
@@ -201,6 +224,8 @@ func (r *userRepository) Delete(ctx context.Context, id string) error {
 
 // UpdateLastLogin updates the last_login_at timestamp for a user.
 func (r *userRepository) UpdateLastLogin(ctx context.Context, id string) error {
+	logger := pkglog.FromContext(ctx)
+
 	query := `
 		UPDATE users
 		SET last_login_at = NOW(), updated_at = NOW()
@@ -209,11 +234,13 @@ func (r *userRepository) UpdateLastLogin(ctx context.Context, id string) error {
 
 	result, err := r.db.ExecContext(ctx, query, id)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: update last login failed", "id", id, "error", err)
 		return exception.Internal(fmt.Errorf("update last login: %w", err))
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: update last login rows affected failed", "id", id, "error", err)
 		return exception.Internal(fmt.Errorf("update last login: rows affected: %w", err))
 	}
 

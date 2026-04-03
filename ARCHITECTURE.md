@@ -329,6 +329,35 @@ orchestrator/
 
 ## Core Workflows
 
+### Agent Runtime Orchestrator Pattern (New)
+
+This architecture now standardizes an explicit agent runtime orchestrator pattern translated from the Python reference design.
+
+Execution modes:
+- **Single-Pass**: LLM decides all tool calls upfront, tools execute in parallel, then a final synthesis response is generated.
+- **ReAct Loop**: LLM iteratively decides one action at a time (`thought -> action -> observation`) until completion or step limit.
+
+Core orchestrator responsibilities:
+- Build message context from session history and runtime metadata
+- Ask LLM for tool call decisions
+- Execute tools with timeouts, output limits, and permission checks
+- Feed tool results back to LLM
+- Persist state transitions and conversation artifacts
+- Stream runtime events to clients in real time
+
+Dual-consumer output model:
+- **LLM consumer** receives buffered tool results as `tool_result`
+- **User consumer** receives real-time streaming events (`tool_start`, `tool_stdout`, `tool_stderr`, `tool_end`, `llm_token`)
+
+Primary implementation direction in this repo:
+- Service layer entrypoint: `src/service/orchestrator`
+- Ports to add: `src/core/ports/llm.go`, `src/core/ports/tool_registry.go`, `src/core/ports/state_store.go`
+- Domain contracts to add: `src/core/domain/tool` and `src/core/domain/orchestrator`
+- API integration preference: extend session route family first, then evolve into dedicated runtime route group if needed
+
+Reference detail:
+- `docs/ai-agent-architecture-translation.md`
+
 ### Agent Session Flow
 
 ```
@@ -336,14 +365,16 @@ orchestrator/
 2. Orchestrator requests VM from pool
 3. If pool empty, provision new VM
 4. Session binds to VM
-5. Agent loaded into VM with tools
-6. User sends message → WebSocket /api/v1/sessions/{id}/stream
-7. Message sent to LLM via gateway
-8. LLM response may include tool calls
-9. Tools executed in VM sandbox
-10. Results sent back to LLM
-11. Final response streamed to user
-12. Session state persisted
+5. Agent runtime resolves execution mode (single-pass or react-loop)
+6. Agent loaded into VM with tool allowlist and policy
+7. User sends message → session message endpoint + stream channel
+8. Message sent to LLM gateway with conversation context
+9. LLM emits tool calls (upfront or iterative)
+10. Tools executed in VM sandbox and/or service adapters
+11. Tool output is split: streamed to user and buffered for LLM
+12. LLM generates final response with tool observations
+13. Final response streamed to user
+14. Session and orchestrator state persisted
 ```
 
 ### VM Lifecycle

@@ -46,8 +46,11 @@ type Session struct {
 
 // CreateParams holds the input required to open a new Session.
 type CreateParams struct {
-	AgentID string
-	UserID  string
+	AgentID      string
+	UserID       string
+	AgentName    string
+	Model        string
+	SystemPrompt string
 }
 
 // New constructs a Session from CreateParams with a generated ID and timestamps.

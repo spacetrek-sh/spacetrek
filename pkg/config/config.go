@@ -72,9 +72,17 @@ type VMFirecrackerConfig struct {
 }
 
 type LLMConfig struct {
-	DefaultProvider string        `yaml:"default_provider"`
+	DefaultProvider string       `yaml:"default_provider"`
 	Timeout         time.Duration `yaml:"timeout"`
-	MaxRetries      int           `yaml:"max_retries"`
+	MaxRetries      int          `yaml:"max_retries"`
+	Gemini          GeminiConfig `yaml:"gemini"`
+}
+
+type GeminiConfig struct {
+	APIKey          string `yaml:"api_key"`
+	Model           string `yaml:"model"`
+	MaxOutputTokens int    `yaml:"max_output_tokens"`
+	SystemPrompt    string `yaml:"system_prompt"`
 }
 
 type SecurityConfig struct {

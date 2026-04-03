@@ -88,9 +88,30 @@ orchestrator/
 2. **VM Lifecycle**: Pool pre-provisions VMs → Ready state → Assigned (Running) → Idle → Suspended/Terminated → Pool replenishes
 3. **Security Model**: Auth → Permission validation → Resource limits → VM isolation → Sandbox → Syscall filtering → Timeout enforcement → Audit logging
 
+### Agent Runtime Orchestrator Pattern (Translated)
+- Add a dedicated orchestrator service that handles message lifecycle, LLM interaction, and tool execution coordination.
+- Support two execution modes:
+	- **single-pass**: LLM plans tools once, execute in parallel, then synthesize response.
+	- **react-loop**: LLM iteratively selects actions until final answer or step limit.
+- Adopt dual-consumer streaming:
+	- **LLM path** gets buffered full tool results as tool_result.
+	- **Client path** gets real-time chunks/events (`llm_token`, `tool_start`, `tool_stdout`, `tool_stderr`, `tool_end`).
+- First-class tool backend is VM command execution, with policy guardrails (allowlist, timeout, output limits).
+
+Recommended implementation targets:
+- `src/service/orchestrator` (new orchestration runtime service)
+- `src/core/ports/llm.go`, `src/core/ports/tool_registry.go`, `src/core/ports/state_store.go`
+- `src/core/domain/tool` and `src/core/domain/orchestrator` contracts
+- Extend session API first for runtime messaging and streaming, then split to dedicated runtime routes if needed
+
+Reference:
+- `docs/ai-agent-architecture-translation.md`
+
 ### Development Guidelines
 - Core domain (`src/core/domain/`) must remain infrastructure-agnostic
 - Define interfaces in `src/core/ports/`, implement in `src/infrastructure/`
 - Use repository pattern for all data access
 - Implement all services in `src/service/` layer
 - Keep `pkg/` for reusable utilities with no internal dependencies
+- Keep runtime orchestration logic in service layer; handlers should stay thin and delegate orchestration.
+- Treat tool contracts as domain/port boundaries, not infrastructure-specific types.

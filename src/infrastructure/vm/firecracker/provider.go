@@ -217,22 +217,27 @@ func (p *Provider) Create(ctx context.Context, spec vmdomain.CreateSpec) (string
 
 // Start resumes a paused VM. Firecracker cannot restart a fully stopped VM.
 func (p *Provider) Start(ctx context.Context, id string) error {
+	logger := pkglog.FromContext(ctx)
+
 	p.mu.RLock()
 	vm, exists := p.vms[id]
 	p.mu.RUnlock()
 
 	if !exists {
+		logger.Warn("Start: VM not found", "vm_id", id)
 		return fmt.Errorf("VM not found: %s", id)
 	}
 
 	info, err := vm.Machine.DescribeInstanceInfo(ctx)
 	if err != nil {
+		logger.Warn("Start: failed to inspect VM state", "vm_id", id, "error", err)
 		return fmt.Errorf("failed to inspect VM state: %w", err)
 	}
 
 	state := stringValue(info.State)
 	switch state {
 	case models.InstanceInfoStatePaused:
+		logger.Debug("Start: resuming paused VM", "vm_id", id)
 		return vm.Machine.ResumeVM(ctx)
 	case models.InstanceInfoStateRunning:
 		return nil
@@ -283,11 +288,14 @@ func (p *Provider) Stop(ctx context.Context, id string) error {
 
 // Destroy forcefully terminates and removes a VM.
 func (p *Provider) Destroy(ctx context.Context, id string) error {
+	logger := pkglog.FromContext(ctx)
+
 	p.mu.RLock()
 	vm, exists := p.vms[id]
 	p.mu.RUnlock()
 
 	if !exists {
+		logger.Warn("Destroy: VM not found", "vm_id", id)
 		return fmt.Errorf("VM not found: %s", id)
 	}
 
@@ -297,6 +305,8 @@ func (p *Provider) Destroy(ctx context.Context, id string) error {
 
 // Status returns the current runtime status of the VM.
 func (p *Provider) Status(ctx context.Context, id string) (vmdomain.RuntimeStatus, error) {
+	logger := pkglog.FromContext(ctx)
+
 	p.mu.RLock()
 	vmInstance, exists := p.vms[id]
 	p.mu.RUnlock()
@@ -316,7 +326,7 @@ func (p *Provider) Status(ctx context.Context, id string) (vmdomain.RuntimeStatu
 	}
 
 	if !p.isProcessRunning(pid) {
-		return vmdomain.RuntimeStatus{
+		status := vmdomain.RuntimeStatus{
 			ID:        id,
 			State:     "stopped",
 			PID:       0,
@@ -325,15 +335,18 @@ func (p *Provider) Status(ctx context.Context, id string) (vmdomain.RuntimeStatu
 			VCPU:      vmInstance.Config.Resources.VCPU,
 			MemoryMB:  vmInstance.Config.Resources.MemoryMB,
 			UptimeSec: uptime,
-		}, nil
+		}
+		logger.Debug("Status: process not running", "vm_id", id, "state", status.State)
+		return status, nil
 	}
 
 	instanceInfo, err := vmInstance.Machine.DescribeInstanceInfo(ctx)
 	if err != nil {
+		logger.Error("Status: failed to read VM status", "vm_id", id, "error", err)
 		return vmdomain.RuntimeStatus{}, fmt.Errorf("failed to read VM status: %w", err)
 	}
 
-	return vmdomain.RuntimeStatus{
+	status := vmdomain.RuntimeStatus{
 		ID:        id,
 		State:     p.mapState(stringValue(instanceInfo.State)),
 		PID:       pid,
@@ -342,44 +355,54 @@ func (p *Provider) Status(ctx context.Context, id string) (vmdomain.RuntimeStatu
 		VCPU:      vmInstance.Config.Resources.VCPU,
 		MemoryMB:  vmInstance.Config.Resources.MemoryMB,
 		UptimeSec: uptime,
-	}, nil
+	}
+	logger.Debug("Status: retrieved VM status", "vm_id", id, "state", status.State, "pid", pid, "uptime_sec", uptime)
+	return status, nil
 }
 
 // Execute runs a command inside the VM via vsock.
 func (p *Provider) Execute(ctx context.Context, id string, cmd []string) (string, string, int, error) {
+	logger := pkglog.FromContext(ctx)
+
 	p.mu.RLock()
 	vm, exists := p.vms[id]
 	p.mu.RUnlock()
 
 	if !exists {
+		logger.Warn("Execute: VM not found", "vm_id", id)
 		return "", "", -1, fmt.Errorf("VM not found: %s", id)
 	}
 	if len(cmd) == 0 {
 		return "", "", -1, fmt.Errorf("command is required")
 	}
 	if !p.config.ExecEnabled {
+		logger.Warn("Execute: command execution is disabled", "vm_id", id)
 		return "", "", -1, fmt.Errorf("command execution is disabled")
 	}
 	if vm.GuestCID == 0 || vm.GuestPort == 0 || vm.VsockPath == "" {
 		return "", "", -1, fmt.Errorf("vsock command channel is not configured for VM %s", id)
 	}
 
+	logger.Debug("Execute: running command via vsock", "vm_id", id, "cmd", strings.Join(cmd, " "))
 	return p.executeViaVsock(ctx, vm, cmd)
 }
 
 // GetMetrics returns resource usage metrics for the VM.
 func (p *Provider) GetMetrics(ctx context.Context, id string) (vmdomain.Metrics, error) {
-	_ = ctx
+	logger := pkglog.FromContext(ctx)
+
 	p.mu.RLock()
 	vmInstance, exists := p.vms[id]
 	p.mu.RUnlock()
 
 	if !exists {
+		logger.Warn("GetMetrics: VM not found", "vm_id", id)
 		return vmdomain.Metrics{}, fmt.Errorf("VM not found: %s", id)
 	}
 
 	pid, err := vmInstance.Machine.PID()
 	if err != nil || pid <= 0 {
+		logger.Error("GetMetrics: failed to resolve VM PID", "vm_id", id, "error", err)
 		return vmdomain.Metrics{}, fmt.Errorf("failed to resolve VM PID: %w", err)
 	}
 

@@ -70,6 +70,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 // ListLeases handles GET /api/v1/vm/leases?chat_id=... and returns active leases for a chat.
 func (h *Handler) ListLeases(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
 	chatID := r.URL.Query().Get("chat_id")
 	if chatID == "" {
 		httputil.WriteError(w, exception.BadRequest("missing chat_id"))
@@ -78,6 +80,7 @@ func (h *Handler) ListLeases(w http.ResponseWriter, r *http.Request) {
 
 	leases, err := h.vmservice.ListActiveLeasesByChat(ctx, chatID)
 	if err != nil {
+		logger.WarnContext(ctx, "list VM leases failed", "chat_id", chatID, "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
@@ -147,6 +150,8 @@ func (h *Handler) Unassign(w http.ResponseWriter, r *http.Request) {
 // GetMetricsHistory handles GET /api/v1/vm/{id}/metrics/history.
 func (h *Handler) GetMetricsHistory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		httputil.WriteError(w, exception.BadRequest("missing VM ID"))
@@ -177,6 +182,7 @@ func (h *Handler) GetMetricsHistory(w http.ResponseWriter, r *http.Request) {
 
 	points, err := h.vmservice.GetMetricsHistory(ctx, id, from, to, limit)
 	if err != nil {
+		logger.WarnContext(ctx, "VM metrics history failed", "vm_id", id, "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
@@ -207,8 +213,11 @@ func (h *Handler) GetMetricsHistory(w http.ResponseWriter, r *http.Request) {
 // Returns all currently running runtimes with refreshed provider state.
 func (h *Handler) ListRuntimes(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
 	runtimes, err := h.vmservice.ListRunningRuntimes(ctx)
 	if err != nil {
+		logger.WarnContext(ctx, "list running runtimes failed", "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
@@ -225,12 +234,15 @@ func (h *Handler) ListRuntimes(w http.ResponseWriter, r *http.Request) {
 // StreamRuntime handles GET /api/v1/vm/{id}/stream with Server-Sent Events.
 func (h *Handler) StreamRuntime(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		httputil.WriteError(w, exception.BadRequest("missing VM ID"))
 		return
 	}
 
+	logger.DebugContext(ctx, "VM runtime stream opened", "vm_id", id)
 	prepareSSE(w)
 	rc := http.NewResponseController(w)
 	ticker := time.NewTicker(2 * time.Second)
@@ -257,6 +269,9 @@ func (h *Handler) StreamRuntime(w http.ResponseWriter, r *http.Request) {
 // StreamRuntimes handles GET /api/v1/vm/runtimes/stream with Server-Sent Events.
 func (h *Handler) StreamRuntimes(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
+	logger.DebugContext(ctx, "VM runtimes stream opened")
 	prepareSSE(w)
 	rc := http.NewResponseController(w)
 	ticker := time.NewTicker(2 * time.Second)
@@ -289,6 +304,8 @@ func (h *Handler) StreamRuntimes(w http.ResponseWriter, r *http.Request) {
 // GetMetrics handles GET /api/v1/vm/{id}/metrics.
 func (h *Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		httputil.WriteError(w, exception.BadRequest("missing VM ID"))
@@ -297,6 +314,7 @@ func (h *Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 
 	metrics, err := h.vmservice.GetMetrics(ctx, id)
 	if err != nil {
+		logger.WarnContext(ctx, "VM metrics retrieval failed", "vm_id", id, "error", err)
 		httputil.WriteError(w, err)
 		return
 	}

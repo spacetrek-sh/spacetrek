@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kumori-sh/spacetrk/pkg/exception"
+	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
 	"github.com/kumori-sh/spacetrk/src/core/domain/auth"
 )
 
@@ -23,6 +24,8 @@ func NewAuthRepository(db *DB) auth.Repository {
 
 // StoreRefreshToken stores a new refresh token for the given user.
 func (r *authRepository) StoreRefreshToken(ctx context.Context, userID, tokenHash string, expiresAt time.Time) (*auth.RefreshToken, error) {
+	logger := pkglog.FromContext(ctx)
+
 	id := uuid.New().String()
 	now := time.Now()
 
@@ -42,16 +45,19 @@ func (r *authRepository) StoreRefreshToken(ctx context.Context, userID, tokenHas
 
 	rows, err := r.db.NamedQueryContext(ctx, query, args)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: store refresh token failed", "user_id", userID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("store refresh token: %w", err))
 	}
 	defer rows.Close()
 
 	if !rows.Next() {
+		logger.ErrorContext(ctx, "postgres: store refresh token failed", "user_id", userID, "error", "no row returned")
 		return nil, exception.Internal(fmt.Errorf("store refresh token: no row returned"))
 	}
 
 	var rt auth.RefreshToken
 	if err := rows.StructScan(&rt); err != nil {
+		logger.ErrorContext(ctx, "postgres: store refresh token scan failed", "user_id", userID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("store refresh token: scan: %w", err))
 	}
 
@@ -60,6 +66,8 @@ func (r *authRepository) StoreRefreshToken(ctx context.Context, userID, tokenHas
 
 // GetRefreshToken retrieves a refresh token by its hash.
 func (r *authRepository) GetRefreshToken(ctx context.Context, tokenHash string) (*auth.RefreshToken, error) {
+	logger := pkglog.FromContext(ctx)
+
 	query := `
 		SELECT id, user_id, token_hash, expires_at, revoked_at, created_at
 		FROM refresh_tokens
@@ -72,6 +80,7 @@ func (r *authRepository) GetRefreshToken(ctx context.Context, tokenHash string) 
 		if err == sql.ErrNoRows {
 			return nil, exception.NotFound("refresh token", tokenHash[:8]+"...")
 		}
+		logger.ErrorContext(ctx, "postgres: get refresh token failed", "error", err)
 		return nil, exception.Internal(fmt.Errorf("get refresh token: %w", err))
 	}
 
@@ -80,6 +89,8 @@ func (r *authRepository) GetRefreshToken(ctx context.Context, tokenHash string) 
 
 // RevokeRefreshToken revokes a refresh token by setting revoked_at.
 func (r *authRepository) RevokeRefreshToken(ctx context.Context, tokenHash string) error {
+	logger := pkglog.FromContext(ctx)
+
 	query := `
 		UPDATE refresh_tokens
 		SET revoked_at = NOW()
@@ -88,11 +99,13 @@ func (r *authRepository) RevokeRefreshToken(ctx context.Context, tokenHash strin
 
 	result, err := r.db.ExecContext(ctx, query, tokenHash)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: revoke refresh token failed", "error", err)
 		return exception.Internal(fmt.Errorf("revoke refresh token: %w", err))
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: revoke refresh token rows affected failed", "error", err)
 		return exception.Internal(fmt.Errorf("revoke refresh token: rows affected: %w", err))
 	}
 
@@ -105,6 +118,8 @@ func (r *authRepository) RevokeRefreshToken(ctx context.Context, tokenHash strin
 
 // RevokeAllUserTokens revokes all refresh tokens for a user.
 func (r *authRepository) RevokeAllUserTokens(ctx context.Context, userID string) error {
+	logger := pkglog.FromContext(ctx)
+
 	query := `
 		UPDATE refresh_tokens
 		SET revoked_at = NOW()
@@ -113,6 +128,7 @@ func (r *authRepository) RevokeAllUserTokens(ctx context.Context, userID string)
 
 	_, err := r.db.ExecContext(ctx, query, userID)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: revoke all user tokens failed", "user_id", userID, "error", err)
 		return exception.Internal(fmt.Errorf("revoke all user tokens: %w", err))
 	}
 
@@ -121,6 +137,8 @@ func (r *authRepository) RevokeAllUserTokens(ctx context.Context, userID string)
 
 // CleanupExpiredTokens deletes expired and revoked tokens from the database.
 func (r *authRepository) CleanupExpiredTokens(ctx context.Context) error {
+	logger := pkglog.FromContext(ctx)
+
 	query := `
 		DELETE FROM refresh_tokens
 		WHERE revoked_at IS NOT NULL OR expires_at < NOW()
@@ -128,6 +146,7 @@ func (r *authRepository) CleanupExpiredTokens(ctx context.Context) error {
 
 	_, err := r.db.ExecContext(ctx, query)
 	if err != nil {
+		logger.ErrorContext(ctx, "postgres: cleanup expired tokens failed", "error", err)
 		return exception.Internal(fmt.Errorf("cleanup expired tokens: %w", err))
 	}
 
