@@ -2,9 +2,9 @@ package orchestrator
 
 import "time"
 
-// State is persisted per session to track orchestrator progress.
+// State is persisted per chat to track orchestrator progress.
 type State struct {
-	SessionID string
+	ChatID string
 	StepCount int
 	UpdatedAt time.Time
 }

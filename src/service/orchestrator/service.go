@@ -8,19 +8,19 @@ import (
 
 	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
 	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
-	"github.com/kumori-sh/spacetrk/src/core/domain/session"
+	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
 	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
 	"github.com/kumori-sh/spacetrk/src/core/ports"
 )
 
 // ProcessInput is one runtime turn passed to the orchestrator.
 type ProcessInput struct {
-	SessionID string
+	ChatID    string
 	AgentID   string
 	UserID    string
 	Message   string
 	VMID      string
-	History   []session.Message
+	History   []chat.Message
 	EmitEvent func(event orchdomain.RuntimeEvent)
 }
 
@@ -96,16 +96,17 @@ func NewWithConfig(planner ports.ToolPlanner, tools ports.ToolRegistry, states p
 // Process runs a ReAct loop for one user turn and returns the assistant message.
 func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessResult, error) {
 	logger := pkglog.FromContext(ctx)
+	logger.DebugContext(ctx, "orchestrator: process started", "chat_id", input.ChatID, "message", input.Message)
 
-	current, err := s.states.Load(ctx, input.SessionID)
+	current, err := s.states.Load(ctx, input.ChatID)
 	if err != nil {
-		logger.WarnContext(ctx, "failed to load conversation state", "session_id", input.SessionID, "error", err)
+		logger.WarnContext(ctx, "failed to load conversation state", "chat_id", input.ChatID, "error", err)
 		return ProcessResult{}, err
 	}
-	current.SessionID = input.SessionID
+	current.ChatID = input.ChatID
 	current.UpdatedAt = time.Now().UTC()
 	if err := s.states.Save(ctx, current); err != nil {
-		logger.ErrorContext(ctx, "failed to save conversation state", "session_id", input.SessionID, "error", err)
+		logger.ErrorContext(ctx, "failed to save conversation state", "chat_id", input.ChatID, "error", err)
 		return ProcessResult{}, err
 	}
 
@@ -114,14 +115,17 @@ func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessResul
 
 func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (ProcessResult, error) {
 	logger := pkglog.FromContext(ctx)
+	logger.DebugContext(ctx, "orchestrator: react loop started", "chat_id", input.ChatID, "max_steps", s.config.MaxReactSteps)
 
 	currentMessage := input.Message
 	executedSteps := make([]ports.ToolPlanStep, 0)
 	toolResults := make([]tool.Result, 0)
 
 	for step := 1; step <= s.config.MaxReactSteps; step++ {
+		logger.DebugContext(ctx, "orchestrator: calling planner", "chat_id", input.ChatID, "step", step)
+
 		plan, err := s.planner.PlanTools(ctx, ports.PlanRequest{
-			SessionID: input.SessionID,
+			ChatID:   input.ChatID,
 			AgentID:   input.AgentID,
 			UserID:    input.UserID,
 			Message:   currentMessage,
@@ -129,11 +133,12 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 			History:   input.History,
 		})
 		if err != nil {
-			logger.ErrorContext(ctx, "planner failed", "session_id", input.SessionID, "step", step, "error", err)
+			logger.ErrorContext(ctx, "planner failed", "chat_id", input.ChatID, "step", step, "error", err)
 			return ProcessResult{}, err
 		}
 
 		if len(plan.Steps) == 0 {
+			logger.DebugContext(ctx, "orchestrator: planner returned no tool steps, exiting loop", "chat_id", input.ChatID, "step", step)
 			break
 		}
 
@@ -143,7 +148,7 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 
 		emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
 			Type:      orchdomain.EventToolStart,
-			SessionID: input.SessionID,
+			ChatID: input.ChatID,
 			ToolName:  next.Name,
 			Data:      fmt.Sprintf("react_step=%d", step),
 			At:        time.Now().UTC(),
@@ -152,7 +157,7 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		result := s.executeStep(ctx, next)
 		toolResults = append(toolResults, result)
 
-		logger.DebugContext(ctx, "react step executed", "session_id", input.SessionID, "step", step, "tool", next.Name, "ok", result.OK)
+		logger.DebugContext(ctx, "react step executed", "chat_id", input.ChatID, "step", step, "tool", next.Name, "ok", result.OK)
 
 		observation := ""
 		if payload, ok := result.Payload.(map[string]any); ok {
@@ -167,7 +172,7 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		if observation != "" {
 			emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
 				Type:      orchdomain.EventToolStdout,
-				SessionID: input.SessionID,
+				ChatID: input.ChatID,
 				ToolName:  next.Name,
 				Data:      observation,
 				At:        time.Now().UTC(),
@@ -176,7 +181,7 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 
 		emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
 			Type:      orchdomain.EventToolEnd,
-			SessionID: input.SessionID,
+			ChatID: input.ChatID,
 			ToolName:  next.Name,
 			Success:   result.OK,
 			Error:     result.Error,
@@ -195,28 +200,30 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		History:     input.History,
 	})
 	if err != nil {
-		logger.ErrorContext(ctx, "final response generation failed", "session_id", input.SessionID, "steps", len(executedSteps), "error", err)
+		logger.ErrorContext(ctx, "final response generation failed", "chat_id", input.ChatID, "steps", len(executedSteps), "error", err)
 		return ProcessResult{}, err
 	}
 
+	logger.DebugContext(ctx, "orchestrator: final response generated", "chat_id", input.ChatID, "steps", len(executedSteps), "response_len", len(assistant))
+
 	emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
 		Type:      orchdomain.EventLLMToken,
-		SessionID: input.SessionID,
+		ChatID: input.ChatID,
 		Data:      assistant,
 		At:        time.Now().UTC(),
 	})
 
 	state := orchdomain.State{
-		SessionID: input.SessionID,
+		ChatID: input.ChatID,
 		StepCount: len(executedSteps),
 		UpdatedAt: time.Now().UTC(),
 	}
 	if err := s.states.Save(ctx, state); err != nil {
-		logger.ErrorContext(ctx, "failed to save conversation state after react loop", "session_id", input.SessionID, "error", err)
+		logger.ErrorContext(ctx, "failed to save conversation state after react loop", "chat_id", input.ChatID, "error", err)
 		return ProcessResult{}, err
 	}
 
-	logger.InfoContext(ctx, "react loop completed", "session_id", input.SessionID, "steps", len(executedSteps))
+	logger.InfoContext(ctx, "react loop completed", "chat_id", input.ChatID, "steps", len(executedSteps))
 
 	return ProcessResult{
 		ToolResults:      toolResults,

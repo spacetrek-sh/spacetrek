@@ -10,7 +10,7 @@ import (
 	httputil "github.com/kumori-sh/spacetrk/pkg/http"
 	agenthttp "github.com/kumori-sh/spacetrk/src/api/http/v1/agent"
 	authhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/auth"
-	sessionhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/session"
+	chathttp "github.com/kumori-sh/spacetrk/src/api/http/v1/chat"
 	vmhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/vm"
 	"github.com/kumori-sh/spacetrk/src/middleware"
 )
@@ -23,7 +23,7 @@ type Config struct {
 	WriteTimeout   time.Duration
 	IdleTimeout    time.Duration
 	AgentHandler   *agenthttp.Handler
-	SessionHandler *sessionhttp.Handler
+	ChatHandler *chathttp.Handler
 	AuthHandler    *authhttp.Handler
 	VMHandler      *vmhttp.Handler
 }
@@ -64,7 +64,7 @@ func registerRoutes(r chi.Router, cfg Config) {
 	r.Route("/api/v1", func(r chi.Router) {
 		cfg.AuthHandler.RegisterRoutes(r)
 		cfg.AgentHandler.RegisterRoutes(r)
-		cfg.SessionHandler.RegisterRoutes(r)
+		cfg.ChatHandler.RegisterRoutes(r)
 		if cfg.VMHandler != nil {
 			cfg.VMHandler.RegisterRoutes(r)
 		}

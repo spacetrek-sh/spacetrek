@@ -58,7 +58,7 @@ func (s Status) IsActive() bool {
 	return s == StatusRunning || s == StatusReady
 }
 
-// IsIdle checks if the VM is idle and can be assigned to a session.
+// IsIdle checks if the VM is idle and can be assigned to a chat.
 func (s Status) IsIdle() bool {
 	return s == StatusIdle || s == StatusReady
 }

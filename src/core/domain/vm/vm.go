@@ -53,7 +53,7 @@ type VM struct {
 	IPAddress *string `db:"ip_address"` // Assigned IP (nullable)
 
 	// Session binding (mapped from chat_id in DB)
-	ChatID     *string    `db:"chat_id"`     // Bound chat/session (nullable)
+	ChatID     *string    `db:"chat_id"`     // Bound chat (nullable)
 	AssignedAt *time.Time `db:"assigned_at"` // When VM was assigned
 
 	// Lifecycle
@@ -127,7 +127,7 @@ func (v *VM) IsAvailable() bool {
 	return v.Status == StatusReady && v.ChatID == nil
 }
 
-// AssignTo assigns the VM to a chat/session.
+// AssignTo assigns the VM to a chat.
 func (v *VM) AssignTo(chatID string) {
 	now := time.Now().UTC()
 	v.ChatID = &chatID
@@ -135,7 +135,7 @@ func (v *VM) AssignTo(chatID string) {
 	v.Status = StatusRunning
 }
 
-// Unassign releases the VM from the current chat/session.
+// Unassign releases the VM from the current chat.
 func (v *VM) Unassign() {
 	v.ChatID = nil
 	v.AssignedAt = nil

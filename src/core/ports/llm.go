@@ -3,18 +3,18 @@ package ports
 import (
 	"context"
 
-	"github.com/kumori-sh/spacetrk/src/core/domain/session"
+	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
 	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
 )
 
 // PlanRequest is passed to planner implementations to choose tools.
 type PlanRequest struct {
-	SessionID string
-	AgentID   string
-	UserID    string
-	Message   string
-	VMID      string
-	History   []session.Message
+	ChatID   string
+	AgentID  string
+	UserID   string
+	Message  string
+	VMID     string
+	History  []chat.Message
 }
 
 // ToolPlanStep is one planned tool call.
@@ -33,7 +33,7 @@ type FinalResponseRequest struct {
 	Message     string
 	Plan        ToolPlan
 	ToolResults []tool.Result
-	History     []session.Message
+	History     []chat.Message
 }
 
 // ToolPlanner abstracts LLM-driven planning and final synthesis.

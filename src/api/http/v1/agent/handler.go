@@ -6,10 +6,12 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/kumori-sh/spacetrk/pkg/auth/jwt"
 	"github.com/kumori-sh/spacetrk/pkg/exception"
 	httputil "github.com/kumori-sh/spacetrk/pkg/http"
 	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
 	"github.com/kumori-sh/spacetrk/src/core/domain/agent"
+	"github.com/kumori-sh/spacetrk/src/middleware"
 )
 
 // agentService is the local dependency interface for the handler.
@@ -24,11 +26,12 @@ type agentService interface {
 
 // Handler groups all agent-related HTTP handlers.
 type Handler struct {
-	svc agentService
+	svc        agentService
+	jwtManager *jwt.Manager
 }
 
-func NewHandler(svc agentService) *Handler {
-	return &Handler{svc: svc}
+func NewHandler(svc agentService, jwtManager *jwt.Manager) *Handler {
+	return &Handler{svc: svc, jwtManager: jwtManager}
 }
 
 // RegisterRoutes registers all agent routes under the given chi.Router.
@@ -36,11 +39,15 @@ func NewHandler(svc agentService) *Handler {
 // registered under /agents/{id}, etc.
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Route("/agents", func(r chi.Router) {
-		r.Post("/", h.Create)
-		r.Get("/", h.List)
-		r.Get("/{id}", h.Get)
-		r.Put("/{id}", h.Update)
-		r.Delete("/{id}", h.Delete)
+		// Authenticated routes — admin and user roles
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.Authenticate(h.jwtManager))
+			r.Post("/", h.Create)
+			r.Get("/", h.List)
+			r.Get("/{id}", h.Get)
+			r.Put("/{id}", h.Update)
+			r.Delete("/{id}", h.Delete)
+		})
 	})
 }
 
@@ -56,7 +63,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := middleware.GetUserID(ctx)
+
 	a, err := h.svc.Create(ctx, agent.CreateParams{
+		UserID:       userID,
 		Name:         req.Name,
 		Description:  req.Description,
 		Model:        req.Model,

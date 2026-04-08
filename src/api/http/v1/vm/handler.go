@@ -78,12 +78,16 @@ func (h *Handler) ListLeases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger.DebugContext(ctx, "list VM leases requested", "chat_id", chatID)
+
 	leases, err := h.vmservice.ListActiveLeasesByChat(ctx, chatID)
 	if err != nil {
 		logger.WarnContext(ctx, "list VM leases failed", "chat_id", chatID, "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
+
+	logger.DebugContext(ctx, "list VM leases result", "chat_id", chatID, "count", len(leases))
 
 	out := make([]vmLeaseResponse, 0, len(leases))
 	for _, lease := range leases {
@@ -116,6 +120,8 @@ func (h *Handler) Assign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger.DebugContext(ctx, "VM assign requested", "vm_id", id, "chat_id", req.ChatID)
+
 	vm, err := h.vmservice.AssignToChat(ctx, id, req.ChatID)
 	if err != nil {
 		logger.WarnContext(ctx, "VM assign failed", "vm_id", id, "chat_id", req.ChatID, "error", err)
@@ -136,6 +142,8 @@ func (h *Handler) Unassign(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, exception.BadRequest("missing VM ID"))
 		return
 	}
+
+	logger.DebugContext(ctx, "VM unassign requested", "vm_id", id)
 
 	vm, err := h.vmservice.Unassign(ctx, id)
 	if err != nil {
@@ -215,12 +223,16 @@ func (h *Handler) ListRuntimes(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := pkglog.FromContext(ctx)
 
+	logger.DebugContext(ctx, "list running runtimes requested")
+
 	runtimes, err := h.vmservice.ListRunningRuntimes(ctx)
 	if err != nil {
 		logger.WarnContext(ctx, "list running runtimes failed", "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
+
+	logger.DebugContext(ctx, "list running runtimes result", "count", len(runtimes))
 
 	out := make([]runtimeSnapshotResponse, 0, len(runtimes))
 	for _, vm := range runtimes {
@@ -312,12 +324,16 @@ func (h *Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger.DebugContext(ctx, "VM metrics requested", "vm_id", id)
+
 	metrics, err := h.vmservice.GetMetrics(ctx, id)
 	if err != nil {
 		logger.WarnContext(ctx, "VM metrics retrieval failed", "vm_id", id, "error", err)
 		httputil.WriteError(w, err)
 		return
 	}
+
+	logger.DebugContext(ctx, "VM metrics result", "vm_id", id, "cpu_percent", metrics.CPUUsagePercent, "mem_percent", metrics.MemoryPercent)
 
 	httputil.WriteJSON(w, http.StatusOK, "VM metrics", vmMetricsResponse{
 		VMID:                 id,
@@ -345,6 +361,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, err)
 		return
 	}
+
+	logger.DebugContext(ctx, "VM create requested", "env_id", req.EnvironmentID, "provider", req.Provider, "vcpu", req.VCPU, "memory_mb", req.MemoryMB, "disk_mb", req.DiskMB)
 
 	// Parse provider
 	var provider vmdomain.Provider
@@ -383,6 +401,8 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger.DebugContext(ctx, "VM get requested", "vm_id", id)
+
 	vm, err := h.vmservice.Get(ctx, id)
 	if err != nil {
 		logger.WarnContext(ctx, "VM retrieval failed", "vm_id", id, "error", err)
@@ -403,6 +423,8 @@ func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, exception.BadRequest("missing VM ID"))
 		return
 	}
+
+	logger.DebugContext(ctx, "VM stop requested", "vm_id", id)
 
 	vm, err := h.vmservice.Stop(ctx, id)
 	if err != nil {
@@ -425,6 +447,8 @@ func (h *Handler) Destroy(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, exception.BadRequest("missing VM ID"))
 		return
 	}
+
+	logger.DebugContext(ctx, "VM destroy requested", "vm_id", id)
 
 	if err := h.vmservice.Destroy(ctx, id); err != nil {
 		logger.WarnContext(ctx, "VM destruction failed", "vm_id", id, "error", err)

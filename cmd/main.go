@@ -16,18 +16,17 @@ import (
 	apihttp "github.com/kumori-sh/spacetrk/src/api/http"
 	agenthttp "github.com/kumori-sh/spacetrk/src/api/http/v1/agent"
 	authhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/auth"
-	sessionhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/session"
+	chathttp "github.com/kumori-sh/spacetrk/src/api/http/v1/chat"
 	vmhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/vm"
 	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
 	"github.com/kumori-sh/spacetrk/src/core/ports"
 	geminiadapter "github.com/kumori-sh/spacetrk/src/infrastructure/llm/gemini"
 	"github.com/kumori-sh/spacetrk/src/infrastructure/vm/firecracker"
-	"github.com/kumori-sh/spacetrk/src/repository/memory"
 	postgresrepo "github.com/kumori-sh/spacetrk/src/repository/postgres"
 	agentsvc "github.com/kumori-sh/spacetrk/src/service/agent"
 	authservice "github.com/kumori-sh/spacetrk/src/service/auth"
 	orchestratorsvc "github.com/kumori-sh/spacetrk/src/service/orchestrator"
-	sessionsvc "github.com/kumori-sh/spacetrk/src/service/session"
+	chatsvc "github.com/kumori-sh/spacetrk/src/service/chat"
 	toolsvc "github.com/kumori-sh/spacetrk/src/service/tool"
 	usersvc "github.com/kumori-sh/spacetrk/src/service/user"
 	vmsvc "github.com/kumori-sh/spacetrk/src/service/vm"
@@ -42,7 +41,9 @@ func main() {
 	}
 
 	// ── Logger ────────────────────────────────────────────────────────────
-	logger := pkglog.New(pkglog.DefaultConfig())
+	logCfg := pkglog.DefaultConfig()
+	logCfg.Level = cfg.Log.Level
+	logger := pkglog.New(logCfg)
 	pkglog.SetAsDefault(logger)
 
 	// ── Database ──────────────────────────────────────────────────────────
@@ -54,8 +55,8 @@ func main() {
 	defer db.Close()
 
 	// ── Repositories ───────────────────────────────────────────────────────
-	agentRepo := memory.NewAgentRepository()
-	sessionRepo := memory.NewSessionRepository()
+	agentRepo := postgresrepo.NewAgentRepository(db)
+	chatRepo := postgresrepo.NewChatRepository(db)
 	environmentRepo := postgresrepo.NewEnvironmentRepository(db)
 	vmRepo := postgresrepo.NewVMRepository(db)
 	vmMetricsHistoryRepo := postgresrepo.NewVMMetricsHistoryRepository(db)
@@ -136,11 +137,11 @@ func main() {
 		orchestratorsvc.NewMemoryStateStore(),
 		orchestratorsvc.NewConfig([]string{"vm.execute_command"}, cfg.Security.MaxTaskDuration),
 	)
-	sessionService := sessionsvc.New(sessionRepo, agentRepo, orchService)
+	chatService := chatsvc.New(chatRepo, agentRepo, orchService)
 
 	// ── Handlers ────────────────────────────────────────────────────────────
-	agentHandler := agenthttp.NewHandler(agentService)
-	sessionHandler := sessionhttp.NewHandler(sessionService)
+	agentHandler := agenthttp.NewHandler(agentService, jwtManager)
+	chatHandler := chathttp.NewHandler(chatService, jwtManager)
 	authHandler := authhttp.NewHandler(userService, authService, jwtManager)
 	vmHandler := vmhttp.NewHandler(vmService, jwtManager, environmentRepo)
 
@@ -152,7 +153,7 @@ func main() {
 		WriteTimeout:   cfg.Server.WriteTimeout,
 		IdleTimeout:    cfg.Server.IdleTimeout,
 		AgentHandler:   agentHandler,
-		SessionHandler: sessionHandler,
+		ChatHandler:   chatHandler,
 		AuthHandler:    authHandler,
 		VMHandler:      vmHandler,
 	})

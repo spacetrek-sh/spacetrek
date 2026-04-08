@@ -16,7 +16,7 @@ const (
 // RuntimeEvent is the transport-neutral runtime streaming payload.
 type RuntimeEvent struct {
 	Type      RuntimeEventType `json:"type"`
-	SessionID string           `json:"session_id,omitempty"`
+	ChatID    string           `json:"chat_id,omitempty"`
 	ToolName  string           `json:"tool_name,omitempty"`
 	Data      string           `json:"data,omitempty"`
 	Success   bool             `json:"success,omitempty"`

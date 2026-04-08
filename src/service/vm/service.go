@@ -147,19 +147,18 @@ func (s *Service) reconcileRuntimeStates(ctx context.Context) {
 		if statusErr != nil {
 			if strings.Contains(strings.ToLower(statusErr.Error()), "not found") {
 				state := "stopped"
-				vm.RuntimeState = &state
+			vm.RuntimeState = &state
 				vm.PID = nil
 				vm.LastHeartbeatAt = &now
 				vm.IdleDeadlineAt = nil
-				if vm.Status != vmdomain.StatusTerminated {
-					vm.Unassign()
-				}
+				vm.Terminate()
 				if repoErr := s.repo.ReleaseActiveLeaseByVM(ctx, vm.ID); repoErr != nil {
 					logger.WarnContext(ctx, "VM runtime reconciler failed to release lease for not-found VM", "vm_id", vm.ID, "error", repoErr)
 				}
 				if err := s.repo.Update(ctx, vm); err != nil {
 					logger.WarnContext(ctx, "VM runtime reconciler failed to persist not-found state", "vm_id", vm.ID, "error", err)
 				}
+				logger.InfoContext(ctx, "VM runtime reconciler: terminated not-found VM", "vm_id", vm.ID)
 			}
 			continue
 		}
@@ -167,9 +166,7 @@ func (s *Service) reconcileRuntimeStates(ctx context.Context) {
 		vm.SetRuntimeMetadata(runtimeID, "", runtimeStatus.PID, runtimeStatus.State)
 		if runtimeStatus.State == "stopped" || runtimeStatus.State == "terminated" {
 			vm.PID = nil
-			if vm.Status != vmdomain.StatusTerminated {
-				vm.Unassign()
-			}
+			vm.Terminate()
 		}
 
 		if err := s.repo.Update(ctx, vm); err != nil {
@@ -289,6 +286,8 @@ func (s *Service) collectAndPersistMetrics(ctx context.Context) {
 func (s *Service) Create(ctx context.Context, envID string, provider vmdomain.Provider, vcpu, memoryMB, diskMB *int) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 
+	logger.DebugContext(ctx, "VM create: starting", "env_id", envID, "provider", provider)
+
 	// Validate environment exists
 	env, err := s.envRepo.GetByID(ctx, envID)
 	if err != nil {
@@ -315,6 +314,8 @@ func (s *Service) Create(ctx context.Context, envID string, provider vmdomain.Pr
 		logger.ErrorContext(ctx, "failed to persist VM", "env_id", envID, "error", err)
 		return nil, err
 	}
+
+	logger.DebugContext(ctx, "VM create: persisted to database", "vm_id", vm.ID)
 
 	// Compute effective resources (use override if set, otherwise environment default)
 	effectiveVCPU := vm.GetVCPU(env.GetVCPU())
@@ -343,6 +344,8 @@ func (s *Service) Create(ctx context.Context, envID string, provider vmdomain.Pr
 		return nil, exception.Internal(err)
 	}
 
+	logger.DebugContext(ctx, "VM create: backend provisioned", "vm_id", vm.ID, "backend_id", backendID, "vcpu", effectiveVCPU, "memory_mb", effectiveMemory, "disk_mb", effectiveDisk)
+
 	// Persist runtime metadata for reconciliation.
 	vm.SetRuntimeMetadata(backendID, "", 0, "created")
 	if runtimeStatus, statusErr := s.backend.Status(ctx, backendID); statusErr == nil {
@@ -363,6 +366,8 @@ func (s *Service) Create(ctx context.Context, envID string, provider vmdomain.Pr
 
 // Get retrieves details of the specified VM.
 func (s *Service) Get(ctx context.Context, id string) (*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
+	logger.DebugContext(ctx, "VM get: fetching from repo", "vm_id", id)
 	return s.repo.GetByID(ctx, id)
 }
 
@@ -414,6 +419,8 @@ func (s *Service) GetRuntimeSnapshot(ctx context.Context, id string) (*vmdomain.
 
 // ListRunningRuntimes returns active VMs that are currently running per provider status.
 func (s *Service) ListRunningRuntimes(ctx context.Context) ([]*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
+
 	vms, err := s.repo.GetActiveVMs(ctx)
 	if err != nil {
 		return nil, err
@@ -423,6 +430,7 @@ func (s *Service) ListRunningRuntimes(ctx context.Context) ([]*vmdomain.VM, erro
 	for _, vm := range vms {
 		refreshed, refreshErr := s.GetRuntimeSnapshot(ctx, vm.ID)
 		if refreshErr != nil {
+			logger.WarnContext(ctx, "ListRunningRuntimes: failed to snapshot VM", "vm_id", vm.ID, "error", refreshErr)
 			continue
 		}
 		if refreshed.RuntimeState == nil || strings.ToLower(*refreshed.RuntimeState) != "running" {
@@ -451,9 +459,11 @@ func (s *Service) GetAvailable(ctx context.Context, provider vmdomain.Provider) 
 	return vms[0], nil
 }
 
-// AssignToChat assigns a VM to a chat/session.
+// AssignToChat assigns a VM to a chat.
 func (s *Service) AssignToChat(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
+
+	logger.DebugContext(ctx, "VM assign: starting", "vm_id", vmID, "chat_id", chatID)
 
 	deadline := time.Now().UTC().Add(s.idleTimeout)
 	vm, err := s.repo.AssignToChatIfAvailable(ctx, vmID, chatID, &deadline)
@@ -466,7 +476,7 @@ func (s *Service) AssignToChat(ctx context.Context, vmID, chatID string) (*vmdom
 	return vm, nil
 }
 
-// ListActiveLeasesByChat returns all active VM leases for a chat/session.
+// ListActiveLeasesByChat returns all active VM leases for a chat.
 func (s *Service) ListActiveLeasesByChat(ctx context.Context, chatID string) ([]vmdomain.Lease, error) {
 	return s.repo.ListActiveLeasesByChat(ctx, chatID)
 }
@@ -474,6 +484,8 @@ func (s *Service) ListActiveLeasesByChat(ctx context.Context, chatID string) ([]
 // Unassign releases a VM from its current chat.
 func (s *Service) Unassign(ctx context.Context, vmID string) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
+
+	logger.DebugContext(ctx, "VM unassign: starting", "vm_id", vmID)
 
 	vm, err := s.repo.GetByID(ctx, vmID)
 	if err != nil {
@@ -500,6 +512,8 @@ func (s *Service) Unassign(ctx context.Context, vmID string) (*vmdomain.VM, erro
 func (s *Service) Stop(ctx context.Context, id string) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 
+	logger.DebugContext(ctx, "VM stop: starting", "vm_id", id)
+
 	vm, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		logger.WarnContext(ctx, "VM not found", "vm_id", id, "error", err)
@@ -511,6 +525,8 @@ func (s *Service) Stop(ctx context.Context, id string) (*vmdomain.VM, error) {
 		logger.ErrorContext(ctx, "backend stop failed", "vm_id", id, "error", err)
 		return nil, exception.Internal(err)
 	}
+
+	logger.DebugContext(ctx, "VM stop: backend stopped", "vm_id", id)
 
 	// Release from chat and update status
 	vm.Unassign()
@@ -532,6 +548,8 @@ func (s *Service) Stop(ctx context.Context, id string) (*vmdomain.VM, error) {
 func (s *Service) Destroy(ctx context.Context, id string) error {
 	logger := pkglog.FromContext(ctx)
 
+	logger.DebugContext(ctx, "VM destroy: starting", "vm_id", id)
+
 	vm, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		logger.WarnContext(ctx, "VM not found", "vm_id", id, "error", err)
@@ -543,6 +561,8 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 		logger.ErrorContext(ctx, "backend destroy failed", "vm_id", id, "error", err)
 		return exception.Internal(err)
 	}
+
+	logger.DebugContext(ctx, "VM destroy: backend destroyed", "vm_id", id)
 
 	// Mark VM as terminated
 	vm.Terminate()
@@ -718,6 +738,8 @@ func logPreview(text string, limit int) string {
 func (s *Service) GetMetrics(ctx context.Context, id string) (vmdomain.Metrics, error) {
 	logger := pkglog.FromContext(ctx)
 
+	logger.DebugContext(ctx, "VM metrics: fetching", "vm_id", id)
+
 	vm, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		logger.WarnContext(ctx, "VM not found", "vm_id", id, "error", err)
@@ -737,6 +759,8 @@ func (s *Service) GetMetrics(ctx context.Context, id string) (vmdomain.Metrics, 
 func (s *Service) GetMetricsHistory(ctx context.Context, id string, from, to *time.Time, limit int) ([]vmdomain.MetricsPoint, error) {
 	logger := pkglog.FromContext(ctx)
 
+	logger.DebugContext(ctx, "VM metrics history: fetching", "vm_id", id, "limit", limit)
+
 	if s.metricsRepo == nil {
 		return nil, exception.Internal(fmt.Errorf("metrics history repository not configured"))
 	}
@@ -753,4 +777,46 @@ func (s *Service) GetMetricsHistory(ctx context.Context, id string, from, to *ti
 	}
 
 	return points, nil
+}
+
+// Shutdown stops all active VMs and reconciles stale records before exit.
+func (s *Service) Shutdown(ctx context.Context) {
+	logger := pkglog.FromContext(ctx)
+
+	vms, err := s.repo.GetActiveVMs(ctx)
+	if err != nil {
+		logger.ErrorContext(ctx, "shutdown: failed to list active VMs", "error", err)
+		return
+	}
+
+	if len(vms) == 0 {
+		logger.InfoContext(ctx, "shutdown: no active VMs to stop")
+		return
+	}
+
+	logger.InfoContext(ctx, "shutdown: stopping active VMs", "count", len(vms))
+
+	stopped, failed := 0, 0
+	for _, vm := range vms {
+		runtimeID := vm.ID
+		if vm.RuntimeID != nil && *vm.RuntimeID != "" {
+			runtimeID = *vm.RuntimeID
+		}
+
+		if err := s.backend.Stop(ctx, runtimeID); err != nil {
+			logger.WarnContext(ctx, "shutdown: backend stop failed", "vm_id", vm.ID, "error", err)
+			failed++
+		} else {
+			stopped++
+		}
+
+		vm.Unassign()
+		vm.IdleDeadlineAt = nil
+		_ = s.repo.ReleaseActiveLeaseByVM(ctx, vm.ID)
+		if err := s.repo.Update(ctx, vm); err != nil {
+			logger.WarnContext(ctx, "shutdown: failed to update VM status", "vm_id", vm.ID, "error", err)
+		}
+	}
+
+	logger.InfoContext(ctx, "shutdown: VM cleanup complete", "stopped", stopped, "failed", failed, "total", len(vms))
 }

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kumori-sh/spacetrk/src/core/domain/session"
+	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
 	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
 	"github.com/kumori-sh/spacetrk/src/core/ports"
 )
@@ -80,12 +80,12 @@ func TestProcess_ReactLoopExecutesIterativeSteps(t *testing.T) {
 	})
 
 	result, err := svc.Process(context.Background(), ProcessInput{
-		SessionID: "s-1",
-		AgentID:   "a-1",
-		UserID:    "u-1",
-		Message:   "hello",
-		VMID:      "vm-1",
-		History:   []session.Message{},
+		ChatID:  "s-1",
+		AgentID: "a-1",
+		UserID:  "u-1",
+		Message: "hello",
+		VMID:    "vm-1",
+		History: []chat.Message{},
 	})
 	if err != nil {
 		t.Fatalf("process react loop: %v", err)

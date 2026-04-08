@@ -3,7 +3,7 @@ package gemini
 import (
 	"strings"
 
-	"github.com/kumori-sh/spacetrk/src/core/domain/session"
+	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
 	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
 	"github.com/kumori-sh/spacetrk/src/core/ports"
 	"google.golang.org/genai"
@@ -13,12 +13,12 @@ import (
 // System messages are extracted separately into a system instruction string.
 // Consecutive messages of the same role are merged into one Content with
 // multiple Parts, since Gemini requires alternating user/model turns.
-func convertHistory(messages []session.Message) ([]*genai.Content, string) {
+func convertHistory(messages []chat.Message) ([]*genai.Content, string) {
 	var systemParts []string
 	var contents []*genai.Content
 
 	for _, msg := range messages {
-		if msg.Role == session.RoleSystem {
+		if msg.Role == chat.RoleSystem {
 			systemParts = append(systemParts, msg.Content)
 			continue
 		}
@@ -48,11 +48,11 @@ func convertHistory(messages []session.Message) ([]*genai.Content, string) {
 	return contents, strings.Join(systemParts, "\n\n")
 }
 
-func domainRoleToGenai(r session.Role) string {
+func domainRoleToGenai(r chat.Role) string {
 	switch r {
-	case session.RoleUser:
+	case chat.RoleUser:
 		return genai.RoleUser
-	case session.RoleAssistant:
+	case chat.RoleAssistant:
 		return genai.RoleModel
 	default:
 		return ""

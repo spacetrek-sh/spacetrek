@@ -20,6 +20,7 @@ const (
 // Agent is the core domain entity for an LLM-powered agent.
 type Agent struct {
 	ID           string
+	UserID       string
 	Name         string
 	Description  string
 	Model        string // LLM model identifier (e.g. "gemini-pro", "gpt-4o")
@@ -31,6 +32,7 @@ type Agent struct {
 
 // CreateParams holds the input required to create a new Agent.
 type CreateParams struct {
+	UserID       string
 	Name         string
 	Description  string
 	Model        string
@@ -51,6 +53,7 @@ func New(p CreateParams) *Agent {
 	now := time.Now().UTC()
 	return &Agent{
 		ID:           uuid.NewString(),
+		UserID:       p.UserID,
 		Name:         p.Name,
 		Description:  p.Description,
 		Model:        p.Model,

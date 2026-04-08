@@ -100,6 +100,8 @@ func (p *Planner) PlanTools(ctx context.Context, req ports.PlanRequest) (ports.T
 		genConfig.Tools = buildTools(p.tools)
 	}
 
+	logger.DebugContext(ctx, "PlanTools: sending to Gemini", "model", p.config.Model, "content_turns", len(contents), "has_tools", genConfig.Tools != nil)
+
 	resp, err := p.client.Models.GenerateContent(ctx, p.config.Model, contents, genConfig)
 	if err != nil {
 		logger.Error("PlanTools: Gemini API call failed", "model", p.config.Model, "error", err)
@@ -109,6 +111,7 @@ func (p *Planner) PlanTools(ctx context.Context, req ports.PlanRequest) (ports.T
 	// Extract function calls from the response.
 	fcs := resp.FunctionCalls()
 	if len(fcs) == 0 {
+		logger.DebugContext(ctx, "PlanTools: no function calls in response (text-only)", "model", p.config.Model, "response_text", resp.Text())
 		return ports.ToolPlan{}, nil
 	}
 
@@ -182,6 +185,8 @@ func (p *Planner) FinalResponse(ctx context.Context, req ports.FinalResponseRequ
 	}
 
 	// No tool declarations — we want a text response.
+	logger.DebugContext(ctx, "FinalResponse: sending to Gemini", "model", p.config.Model, "content_turns", len(contents), "tool_results", len(req.ToolResults))
+
 	resp, err := p.client.Models.GenerateContent(ctx, p.config.Model, contents, genConfig)
 	if err != nil {
 		logger.Error("FinalResponse: Gemini API call failed", "model", p.config.Model, "error", err)
@@ -190,8 +195,10 @@ func (p *Planner) FinalResponse(ctx context.Context, req ports.FinalResponseRequ
 
 	text := resp.Text()
 	if text == "" {
+		logger.DebugContext(ctx, "FinalResponse: empty response from model", "model", p.config.Model)
 		return "[no response]", nil
 	}
+	logger.DebugContext(ctx, "FinalResponse: response generated", "model", p.config.Model, "response_len", len(text))
 	return text, nil
 }
 

@@ -2,7 +2,7 @@ package vm
 
 import "time"
 
-// Lease represents a VM assignment lease to a chat/session.
+// Lease represents a VM assignment lease to a chat.
 type Lease struct {
 	ID         string     `json:"id"`
 	ChatID     string     `json:"chat_id"`
