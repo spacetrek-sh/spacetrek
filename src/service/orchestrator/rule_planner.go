@@ -15,12 +15,17 @@ func NewRulePlanner() *RulePlanner {
 	return &RulePlanner{}
 }
 
-func (p *RulePlanner) PlanTools(_ context.Context, req ports.PlanRequest) (ports.ToolPlan, error) {
+func (p *RulePlanner) PlanTools(ctx context.Context, req ports.PlanRequest) (ports.ToolPlan, error) {
+	plan, _, err := p.PlanToolsWithMetadata(ctx, req)
+	return plan, err
+}
+
+func (p *RulePlanner) PlanToolsWithMetadata(_ context.Context, req ports.PlanRequest) (ports.ToolPlan, ports.PlanMetadata, error) {
 	trimmed := strings.TrimSpace(req.Message)
 	if strings.HasPrefix(trimmed, "/exec ") {
 		command := strings.TrimSpace(strings.TrimPrefix(trimmed, "/exec "))
 		if command == "" || strings.TrimSpace(req.VMID) == "" {
-			return ports.ToolPlan{}, nil
+			return ports.ToolPlan{}, ports.PlanMetadata{}, nil
 		}
 		return ports.ToolPlan{
 			Steps: []ports.ToolPlanStep{
@@ -32,19 +37,24 @@ func (p *RulePlanner) PlanTools(_ context.Context, req ports.PlanRequest) (ports
 					},
 				},
 			},
-		}, nil
+		}, ports.PlanMetadata{Reasoning: "Matched /exec rule and generated vm.execute_command call."}, nil
 	}
 
-	return ports.ToolPlan{}, nil
+	return ports.ToolPlan{}, ports.PlanMetadata{}, nil
 }
 
-func (p *RulePlanner) FinalResponse(_ context.Context, req ports.FinalResponseRequest) (string, error) {
+func (p *RulePlanner) FinalResponse(ctx context.Context, req ports.FinalResponseRequest) (string, error) {
+	text, _, err := p.FinalResponseWithMetadata(ctx, req)
+	return text, err
+}
+
+func (p *RulePlanner) FinalResponseWithMetadata(_ context.Context, req ports.FinalResponseRequest) (string, ports.FinalResponseMetadata, error) {
 	trimmed := strings.TrimSpace(req.Message)
 	if len(req.ToolResults) == 0 {
 		if strings.HasPrefix(trimmed, "/exec ") {
-			return "No command was executed. Provide vm_id and a non-empty /exec command.", nil
+			return "No command was executed. Provide vm_id and a non-empty /exec command.", ports.FinalResponseMetadata{}, nil
 		}
-		return "I received your message. No tool call was required for this turn.", nil
+		return "I received your message. No tool call was required for this turn.", ports.FinalResponseMetadata{}, nil
 	}
 
 	lines := make([]string, 0, len(req.ToolResults)+1)
@@ -66,7 +76,7 @@ func (p *RulePlanner) FinalResponse(_ context.Context, req ports.FinalResponseRe
 		}
 	}
 
-	return strings.Join(lines, "\n"), nil
+	return strings.Join(lines, "\n"), ports.FinalResponseMetadata{}, nil
 }
 
 func payloadToString(payload any) string {

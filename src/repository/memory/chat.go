@@ -22,8 +22,7 @@ func (r *ChatRepository) Create(_ context.Context, c *chat.Chat) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cp := *c
-	cp.Messages = make([]chat.Message, len(c.Messages))
-	copy(cp.Messages, c.Messages)
+	cp.Messages = cloneMessages(c.Messages)
 	r.chats[c.ID] = &cp
 	return nil
 }
@@ -36,8 +35,7 @@ func (r *ChatRepository) GetByID(_ context.Context, id string) (*chat.Chat, erro
 		return nil, exception.NotFound("chat", id)
 	}
 	cp := *c
-	cp.Messages = make([]chat.Message, len(c.Messages))
-	copy(cp.Messages, c.Messages)
+	cp.Messages = cloneMessages(c.Messages)
 	return &cp, nil
 }
 
@@ -48,8 +46,7 @@ func (r *ChatRepository) Update(_ context.Context, c *chat.Chat) error {
 		return exception.NotFound("chat", c.ID)
 	}
 	cp := *c
-	cp.Messages = make([]chat.Message, len(c.Messages))
-	copy(cp.Messages, c.Messages)
+	cp.Messages = cloneMessages(c.Messages)
 	r.chats[c.ID] = &cp
 	return nil
 }
@@ -62,4 +59,21 @@ func (r *ChatRepository) Delete(_ context.Context, id string) error {
 	}
 	delete(r.chats, id)
 	return nil
+}
+
+func cloneMessages(messages []chat.Message) []chat.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	cloned := make([]chat.Message, len(messages))
+	for i, msg := range messages {
+		cloned[i] = msg
+		if len(msg.Metadata) > 0 {
+			cloned[i].Metadata = make(map[string]any, len(msg.Metadata))
+			for k, v := range msg.Metadata {
+				cloned[i].Metadata[k] = v
+			}
+		}
+	}
+	return cloned
 }

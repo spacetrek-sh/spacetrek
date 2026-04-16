@@ -13,9 +13,10 @@ type sendMessageRequest struct {
 
 // messageResponse is the JSON representation of a single conversation turn.
 type messageResponse struct {
-	Role    string    `json:"role"`
-	Content string    `json:"content"`
-	At      time.Time `json:"at"`
+	Role     string         `json:"role"`
+	Content  string         `json:"content"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+	At       time.Time      `json:"at"`
 }
 
 // chatResponse is the JSON representation of a chat.

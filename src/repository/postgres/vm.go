@@ -458,6 +458,34 @@ func (r *vmRepository) ListActiveLeasesByChat(ctx context.Context, chatID string
 	return out, nil
 }
 
+func (r *vmRepository) FindPreviousLeaseForChat(ctx context.Context, chatID string) (*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
+	query := `
+		SELECT vm.id, vm.environment_id, vm.provider, vm.status,
+		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source, vm.last_heartbeat_at, vm.idle_deadline_at,
+		       vm.vcpu, vm.memory_mb, vm.disk_mb,
+		       vm.ip_address, vm.chat_id, vm.assigned_at, vm.terminated_at, vm.created_at
+		FROM vm_instances vm
+		JOIN vm_leases l ON l.vm_id = vm.id
+		WHERE l.chat_id = $1
+		  AND vm.status IN ('idle', 'ready')
+		  AND vm.chat_id IS NULL
+		ORDER BY l.leased_at DESC
+		LIMIT 1
+	`
+
+	var row vmRow
+	if err := r.db.GetContext(ctx, &row, query, chatID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, exception.NotFound("previous vm for chat", chatID)
+		}
+		logger.ErrorContext(ctx, "postgres: find previous lease for chat failed", "chat_id", chatID, "error", err)
+		return nil, exception.Internal(fmt.Errorf("find previous lease for chat: %w", err))
+	}
+
+	return mapVMRow(row)
+}
+
 func mapVMRow(row vmRow) (*vmdomain.VM, error) {
 	v := &vmdomain.VM{
 		ID:            row.ID,

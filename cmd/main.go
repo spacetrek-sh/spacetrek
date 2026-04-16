@@ -102,6 +102,10 @@ func main() {
 	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, cfg.VM.IdleTimeout)
 	orchTools := orchestratorsvc.NewInMemoryToolRegistry(nil)
 	orchTools.Register(toolsvc.NewVMCommandTool(vmService))
+	orchTools.Register(toolsvc.NewVMCreateTool(vmService))
+	orchTools.Register(toolsvc.NewVMStartTool(vmService))
+	orchTools.Register(toolsvc.NewVMListTool(vmService))
+	orchTools.Register(toolsvc.NewVMStopTool(vmService))
 
 	var planner ports.ToolPlanner
 	if cfg.LLM.DefaultProvider == "gemini" && cfg.LLM.Gemini.APIKey != "" {
@@ -135,7 +139,7 @@ func main() {
 		planner,
 		orchTools,
 		orchestratorsvc.NewMemoryStateStore(),
-		orchestratorsvc.NewConfig([]string{"vm.execute_command"}, cfg.Security.MaxTaskDuration),
+		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop"}, cfg.Security.MaxTaskDuration),
 	)
 	chatService := chatsvc.New(chatRepo, agentRepo, orchService)
 

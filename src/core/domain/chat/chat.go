@@ -27,9 +27,10 @@ const (
 
 // Message is a single turn in the conversation history.
 type Message struct {
-	Role    Role
-	Content string
-	At      time.Time
+	Role     Role
+	Content  string
+	Metadata map[string]any
+	At       time.Time
 }
 
 // Chat is the stateful interaction context between a user and an agent.
@@ -72,12 +73,30 @@ func New(p CreateParams) *Chat {
 // AddMessage appends a new message to the conversation history and updates the
 // timestamp.
 func (c *Chat) AddMessage(role Role, content string) {
+	c.AddMessageWithMetadata(role, content, nil)
+}
+
+// AddMessageWithMetadata appends a new message with optional metadata and
+// updates the timestamp.
+func (c *Chat) AddMessageWithMetadata(role Role, content string, metadata map[string]any) {
 	c.Messages = append(c.Messages, Message{
-		Role:    role,
-		Content: content,
-		At:      time.Now().UTC(),
+		Role:     role,
+		Content:  content,
+		Metadata: cloneMetadata(metadata),
+		At:       time.Now().UTC(),
 	})
 	c.UpdatedAt = time.Now().UTC()
+}
+
+func cloneMetadata(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	cp := make(map[string]any, len(metadata))
+	for k, v := range metadata {
+		cp[k] = v
+	}
+	return cp
 }
 
 // Repository defines the persistence contract for Chat entities.

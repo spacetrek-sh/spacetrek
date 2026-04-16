@@ -11,8 +11,8 @@ import (
 	"github.com/kumori-sh/spacetrk/pkg/exception"
 	httputil "github.com/kumori-sh/spacetrk/pkg/http"
 	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
 	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
+	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
 	"github.com/kumori-sh/spacetrk/src/middleware"
 )
 
@@ -186,9 +186,10 @@ func toResponse(c *chat.Chat) *chatResponse {
 	msgs := make([]messageResponse, len(c.Messages))
 	for i, m := range c.Messages {
 		msgs[i] = messageResponse{
-			Role:    string(m.Role),
-			Content: m.Content,
-			At:      m.At,
+			Role:     string(m.Role),
+			Content:  m.Content,
+			Metadata: m.Metadata,
+			At:       m.At,
 		}
 	}
 	return &chatResponse{

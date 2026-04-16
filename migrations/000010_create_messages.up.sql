@@ -10,7 +10,7 @@ CREATE TABLE messages (
     created_at      TIMESTAMPTZ          NOT NULL DEFAULT NOW(),
     deleted_at      TIMESTAMPTZ,
 
-    CONSTRAINT messages_sequence_number_unique UNIQUE (sequence_number)
+    CONSTRAINT messages_sequence_number_unique UNIQUE (chat_id, sequence_number)
 );
 
 -- Hot path: message history + LATERAL last-message lookup

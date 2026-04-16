@@ -212,3 +212,39 @@ func (r *VMRepository) ListActiveLeasesByChat(_ context.Context, chatID string) 
 
 	return out, nil
 }
+
+func (r *VMRepository) FindPreviousLeaseForChat(_ context.Context, chatID string) (*vmdomain.VM, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	type leaseEntry struct {
+		lease *vmdomain.Lease
+	}
+	var entries []leaseEntry
+	for _, lease := range r.leases {
+		if lease.ChatID != chatID {
+			continue
+		}
+		entries = append(entries, leaseEntry{lease: lease})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].lease.LeasedAt.After(entries[j].lease.LeasedAt)
+	})
+
+	for _, e := range entries {
+		vm, ok := r.vms[e.lease.VMID]
+		if !ok {
+			continue
+		}
+		if vm.Status != vmdomain.StatusIdle && vm.Status != vmdomain.StatusReady {
+			continue
+		}
+		if vm.ChatID != nil {
+			continue
+		}
+		cp := *vm
+		return &cp, nil
+	}
+
+	return nil, exception.NotFound("previous vm for chat", chatID)
+}

@@ -19,6 +19,22 @@ func (f *fakeOrchestrator) Process(_ context.Context, input orchestratorsvc.Proc
 	f.lastInput = input
 	return orchestratorsvc.ProcessResult{
 		AssistantMessage: "ok",
+		Trace: &orchestrator.ExecutionTrace{
+			TraceID:       "trace-1",
+			ExecutionMode: "react_loop",
+			Reasoning:     "Tool execution required for request.",
+			Steps: []orchestrator.TraceStep{
+				{Step: 1, ToolName: "vm.execute_command", Observation: "hello", ToolSuccess: true},
+			},
+			FinalAnswer: "ok",
+			TokenUsage: orchestrator.TokenUsage{
+				PromptTokens:     7,
+				CompletionTokens: 2,
+				TotalTokens:      9,
+			},
+			StartedAt:   time.Now().UTC(),
+			CompletedAt: time.Now().UTC(),
+		},
 	}, nil
 }
 
@@ -48,6 +64,22 @@ func TestSendMessage_ForwardsToOrchestrator(t *testing.T) {
 
 	if orch.lastInput.VMID != "vm-1" {
 		t.Fatalf("expected vm_id %q, got %q", "vm-1", orch.lastInput.VMID)
+	}
+
+	updated, err := svc.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("get chat: %v", err)
+	}
+	if len(updated.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(updated.Messages))
+	}
+	assistant := updated.Messages[1]
+	execMeta, ok := assistant.Metadata["execution"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected execution metadata map, got %#v", assistant.Metadata)
+	}
+	if traceID, _ := execMeta["trace_id"].(string); traceID != "trace-1" {
+		t.Fatalf("expected trace_id trace-1, got %q", traceID)
 	}
 }
 

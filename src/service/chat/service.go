@@ -11,8 +11,8 @@ import (
 	"github.com/kumori-sh/spacetrk/pkg/exception"
 	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
 	"github.com/kumori-sh/spacetrk/src/core/domain/agent"
-	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
 	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
+	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
 	orchestratorsvc "github.com/kumori-sh/spacetrk/src/service/orchestrator"
 )
 
@@ -23,9 +23,9 @@ type Orchestrator interface {
 
 // Service implements the chat business logic.
 type Service struct {
-	chats   chat.Repository
-	agents  agent.Repository
-	orch    Orchestrator
+	chats  chat.Repository
+	agents agent.Repository
+	orch   Orchestrator
 
 	mu          sync.RWMutex
 	subscribers map[string]map[uint64]chan orchdomain.RuntimeEvent
@@ -185,7 +185,7 @@ func (s *Service) SendMessage(ctx context.Context, id, content, vmID string) (*c
 		if assistant == "" {
 			assistant = "[orchestrator returned empty response]"
 		}
-		c.AddMessage(chat.RoleAssistant, assistant)
+		c.AddMessageWithMetadata(chat.RoleAssistant, assistant, buildAssistantMetadata(result.Trace))
 		logger.DebugContext(ctx, "chat send message: orchestrator completed", "chat_id", id, "tool_results", len(result.ToolResults), "response_len", len(assistant))
 	} else {
 		c.AddMessage(chat.RoleAssistant, "[orchestrator not configured]")
@@ -258,6 +258,29 @@ func (s *Service) unsubscribe(chatID string, id uint64) {
 
 	if len(listeners) == 0 {
 		delete(s.subscribers, chatID)
+	}
+}
+
+func buildAssistantMetadata(trace *orchdomain.ExecutionTrace) map[string]any {
+	if trace == nil {
+		return nil
+	}
+
+	execution := map[string]any{
+		"trace_id":       trace.TraceID,
+		"execution_mode": trace.ExecutionMode,
+		"reasoning":      trace.Reasoning,
+		"steps":          trace.Steps,
+		"final_answer":   trace.FinalAnswer,
+		"started_at":     trace.StartedAt,
+		"completed_at":   trace.CompletedAt,
+	}
+	if !trace.TokenUsage.IsZero() {
+		execution["token_usage"] = trace.TokenUsage
+	}
+
+	return map[string]any{
+		"execution": execution,
 	}
 }
 

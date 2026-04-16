@@ -25,4 +25,5 @@ type Repository interface {
 	AssignToChatIfAvailable(ctx context.Context, vmID, chatID string, idleDeadlineAt *time.Time) (*VM, error)
 	ReleaseActiveLeaseByVM(ctx context.Context, vmID string) error
 	ListActiveLeasesByChat(ctx context.Context, chatID string) ([]Lease, error)
+	FindPreviousLeaseForChat(ctx context.Context, chatID string) (*VM, error)
 }

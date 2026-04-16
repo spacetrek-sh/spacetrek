@@ -33,6 +33,7 @@ type Service struct {
 // EnvironmentRepository defines the interface for fetching environment details.
 type EnvironmentRepository interface {
 	GetByID(ctx context.Context, id string) (*environment.Environment, error)
+	List(ctx context.Context) ([]*environment.Environment, error)
 }
 
 // NewService creates a new VM service.
@@ -48,6 +49,20 @@ func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRep
 		envRepo:     envRepo,
 		idleTimeout: idleTimeout,
 	}
+}
+
+// ResolveEnvironment resolves an environment type name (e.g. "alpine", "ubuntu") to its UUID.
+func (s *Service) ResolveEnvironment(ctx context.Context, envType string) (string, error) {
+	envs, err := s.envRepo.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, env := range envs {
+		if string(env.Type) == envType {
+			return env.ID, nil
+		}
+	}
+	return "", exception.NotFound("environment type", envType)
 }
 
 // StartMetricsCollector periodically captures and persists VM metrics samples.
@@ -479,6 +494,11 @@ func (s *Service) AssignToChat(ctx context.Context, vmID, chatID string) (*vmdom
 // ListActiveLeasesByChat returns all active VM leases for a chat.
 func (s *Service) ListActiveLeasesByChat(ctx context.Context, chatID string) ([]vmdomain.Lease, error) {
 	return s.repo.ListActiveLeasesByChat(ctx, chatID)
+}
+
+// FindPreviousLeaseForChat finds the most recent idle/ready VM previously leased to this chat.
+func (s *Service) FindPreviousLeaseForChat(ctx context.Context, chatID string) (*vmdomain.VM, error) {
+	return s.repo.FindPreviousLeaseForChat(ctx, chatID)
 }
 
 // Unassign releases a VM from its current chat.

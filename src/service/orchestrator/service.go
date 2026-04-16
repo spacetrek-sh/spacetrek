@@ -2,13 +2,15 @@ package orchestratorsvc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
 	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
+	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
 	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
 	"github.com/kumori-sh/spacetrk/src/core/ports"
 )
@@ -28,6 +30,7 @@ type ProcessInput struct {
 type ProcessResult struct {
 	ToolResults      []tool.Result
 	AssistantMessage string
+	Trace            *orchdomain.ExecutionTrace
 }
 
 // Service coordinates planner decisions, tool execution, and state persistence.
@@ -58,7 +61,7 @@ func NewConfig(allowedTools []string, toolTimeout time.Duration) Config {
 	return Config{
 		AllowedTools:  allow,
 		ToolTimeout:   toolTimeout,
-		MaxReactSteps: 6,
+		MaxReactSteps: 10,
 	}
 }
 
@@ -82,7 +85,7 @@ func NewWithConfig(planner ports.ToolPlanner, tools ports.ToolRegistry, states p
 		cfg.ToolTimeout = 30 * time.Second
 	}
 	if cfg.MaxReactSteps <= 0 {
-		cfg.MaxReactSteps = 6
+		cfg.MaxReactSteps = 10
 	}
 
 	return &Service{
@@ -114,28 +117,48 @@ func (s *Service) Process(ctx context.Context, input ProcessInput) (ProcessResul
 }
 
 func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (ProcessResult, error) {
+	ctx = tool.WithChatID(ctx, input.ChatID)
 	logger := pkglog.FromContext(ctx)
 	logger.DebugContext(ctx, "orchestrator: react loop started", "chat_id", input.ChatID, "max_steps", s.config.MaxReactSteps)
+
+	trace := orchdomain.ExecutionTrace{
+		TraceID:       uuid.NewString(),
+		ExecutionMode: "react_loop",
+		StartedAt:     time.Now().UTC(),
+	}
 
 	currentMessage := input.Message
 	executedSteps := make([]ports.ToolPlanStep, 0)
 	toolResults := make([]tool.Result, 0)
+	metaPlanner, hasMetadataPlanner := s.planner.(ports.ToolPlannerWithMetadata)
 
 	for step := 1; step <= s.config.MaxReactSteps; step++ {
 		logger.DebugContext(ctx, "orchestrator: calling planner", "chat_id", input.ChatID, "step", step)
 
-		plan, err := s.planner.PlanTools(ctx, ports.PlanRequest{
-			ChatID:   input.ChatID,
-			AgentID:   input.AgentID,
-			UserID:    input.UserID,
-			Message:   currentMessage,
-			VMID:      input.VMID,
-			History:   input.History,
-		})
+		planReq := ports.PlanRequest{
+			ChatID:  input.ChatID,
+			AgentID: input.AgentID,
+			UserID:  input.UserID,
+			Message: currentMessage,
+			VMID:    input.VMID,
+			History: input.History,
+		}
+
+		var (
+			plan     ports.ToolPlan
+			planMeta ports.PlanMetadata
+			err      error
+		)
+		if hasMetadataPlanner {
+			plan, planMeta, err = metaPlanner.PlanToolsWithMetadata(ctx, planReq)
+		} else {
+			plan, err = s.planner.PlanTools(ctx, planReq)
+		}
 		if err != nil {
 			logger.ErrorContext(ctx, "planner failed", "chat_id", input.ChatID, "step", step, "error", err)
 			return ProcessResult{}, err
 		}
+		trace.TokenUsage.Add(planMeta.TokenUsage)
 
 		if len(plan.Steps) == 0 {
 			logger.DebugContext(ctx, "orchestrator: planner returned no tool steps, exiting loop", "chat_id", input.ChatID, "step", step)
@@ -147,11 +170,16 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		executedSteps = append(executedSteps, next)
 
 		emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-			Type:      orchdomain.EventToolStart,
-			ChatID: input.ChatID,
-			ToolName:  next.Name,
-			Data:      fmt.Sprintf("react_step=%d", step),
-			At:        time.Now().UTC(),
+			Type:          orchdomain.EventToolStart,
+			ChatID:        input.ChatID,
+			TraceID:       trace.TraceID,
+			ExecutionMode: trace.ExecutionMode,
+			Step:          step,
+			Reasoning:     planMeta.Reasoning,
+			ToolName:      next.Name,
+			ToolArguments: next.Arguments,
+			Data:          fmt.Sprintf("react_step=%d", step),
+			At:            time.Now().UTC(),
 		})
 
 		result := s.executeStep(ctx, next)
@@ -163,6 +191,8 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		if payload, ok := result.Payload.(map[string]any); ok {
 			if out, ok := payload["output"].(string); ok {
 				observation = out
+			} else if raw, err := json.Marshal(payload); err == nil {
+				observation = string(raw)
 			}
 		}
 		if observation == "" && result.Error != "" {
@@ -171,50 +201,108 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 
 		if observation != "" {
 			emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-				Type:      orchdomain.EventToolStdout,
-				ChatID: input.ChatID,
-				ToolName:  next.Name,
-				Data:      observation,
-				At:        time.Now().UTC(),
+				Type:          orchdomain.EventToolStdout,
+				ChatID:        input.ChatID,
+				TraceID:       trace.TraceID,
+				ExecutionMode: trace.ExecutionMode,
+				Step:          step,
+				ToolName:      next.Name,
+				Data:          observation,
+				At:            time.Now().UTC(),
 			})
 		}
 
 		emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-			Type:      orchdomain.EventToolEnd,
-			ChatID: input.ChatID,
-			ToolName:  next.Name,
-			Success:   result.OK,
-			Error:     result.Error,
-			At:        time.Now().UTC(),
+			Type:          orchdomain.EventToolEnd,
+			ChatID:        input.ChatID,
+			TraceID:       trace.TraceID,
+			ExecutionMode: trace.ExecutionMode,
+			Step:          step,
+			ToolName:      next.Name,
+			Success:       result.OK,
+			Error:         result.Error,
+			At:            time.Now().UTC(),
 		})
+
+		trace.Steps = append(trace.Steps, orchdomain.TraceStep{
+			Step:          step,
+			Reasoning:     planMeta.Reasoning,
+			ToolName:      next.Name,
+			ToolArguments: next.Arguments,
+			Observation:   observation,
+			ToolSuccess:   result.OK,
+			ToolError:     result.Error,
+		})
+		if planMeta.Reasoning != "" {
+			trace.Reasoning = planMeta.Reasoning
+		}
 
 		currentMessage = buildReactObservationMessage(input.Message, step, next, result)
 	}
 
-	assistant, err := s.planner.FinalResponse(ctx, ports.FinalResponseRequest{
+	finalReq := ports.FinalResponseRequest{
 		Message: input.Message,
 		Plan: ports.ToolPlan{
 			Steps: executedSteps,
 		},
 		ToolResults: toolResults,
 		History:     input.History,
-	})
+	}
+
+	var (
+		assistant string
+		finalMeta ports.FinalResponseMetadata
+		err       error
+	)
+	if hasMetadataPlanner {
+		assistant, finalMeta, err = metaPlanner.FinalResponseWithMetadata(ctx, finalReq)
+	} else {
+		assistant, err = s.planner.FinalResponse(ctx, finalReq)
+	}
 	if err != nil {
 		logger.ErrorContext(ctx, "final response generation failed", "chat_id", input.ChatID, "steps", len(executedSteps), "error", err)
 		return ProcessResult{}, err
 	}
+	trace.TokenUsage.Add(finalMeta.TokenUsage)
+	if finalMeta.Reasoning != "" {
+		trace.Reasoning = finalMeta.Reasoning
+	}
+	trace.FinalAnswer = assistant
+	trace.CompletedAt = time.Now().UTC()
 
 	logger.DebugContext(ctx, "orchestrator: final response generated", "chat_id", input.ChatID, "steps", len(executedSteps), "response_len", len(assistant))
 
+	var tokenUsage *orchdomain.TokenUsage
+	if !trace.TokenUsage.IsZero() {
+		copyUsage := trace.TokenUsage
+		tokenUsage = &copyUsage
+	}
+
 	emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-		Type:      orchdomain.EventLLMToken,
-		ChatID: input.ChatID,
-		Data:      assistant,
-		At:        time.Now().UTC(),
+		Type:          orchdomain.EventExecutionSummary,
+		ChatID:        input.ChatID,
+		TraceID:       trace.TraceID,
+		ExecutionMode: trace.ExecutionMode,
+		Step:          len(trace.Steps),
+		Data:          fmt.Sprintf("steps=%d", len(trace.Steps)),
+		FinalStatus:   "success",
+		TokenUsage:    tokenUsage,
+		At:            time.Now().UTC(),
+	})
+
+	emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
+		Type:          orchdomain.EventLLMToken,
+		ChatID:        input.ChatID,
+		TraceID:       trace.TraceID,
+		ExecutionMode: trace.ExecutionMode,
+		Reasoning:     trace.Reasoning,
+		Data:          assistant,
+		TokenUsage:    tokenUsage,
+		At:            time.Now().UTC(),
 	})
 
 	state := orchdomain.State{
-		ChatID: input.ChatID,
+		ChatID:    input.ChatID,
 		StepCount: len(executedSteps),
 		UpdatedAt: time.Now().UTC(),
 	}
@@ -228,6 +316,7 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 	return ProcessResult{
 		ToolResults:      toolResults,
 		AssistantMessage: assistant,
+		Trace:            &trace,
 	}, nil
 }
 
@@ -293,6 +382,8 @@ func buildReactObservationMessage(original string, step int, executed ports.Tool
 	if payload, ok := result.Payload.(map[string]any); ok {
 		if out, ok := payload["output"].(string); ok {
 			observation = out
+		} else if raw, err := json.Marshal(payload); err == nil {
+			observation = string(raw)
 		}
 	}
 	if observation == "" && result.Error != "" {

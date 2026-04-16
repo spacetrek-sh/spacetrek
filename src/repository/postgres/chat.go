@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -12,27 +13,28 @@ import (
 )
 
 type chatRepository struct {
-	db *DB 
+	db *DB
 }
 
 type chatRow struct {
-	ID        string       `db:"id"`
-	UserID    string       `db:"user_id"`
-	AgentID   string       `db:"agent_id"`
+	ID        string         `db:"id"`
+	UserID    string         `db:"user_id"`
+	AgentID   string         `db:"agent_id"`
 	VMID      sql.NullString `db:"vm_id"`
-	Title     string       `db:"title"`
-	Status    string       `db:"status"`
-	CreatedAt sql.NullTime `db:"created_at"`
-	UpdatedAt sql.NullTime `db:"updated_at"`
+	Title     string         `db:"title"`
+	Status    string         `db:"status"`
+	CreatedAt sql.NullTime   `db:"created_at"`
+	UpdatedAt sql.NullTime   `db:"updated_at"`
 }
 
 type messageRow struct {
-	ID             string         `db:"id"`
-	ChatID         string         `db:"chat_id"`
-	Role           string         `db:"role"`
-	ContentBody    string         `db:"content_body"`
-	SequenceNumber int64          `db:"sequence_number"`
-	CreatedAt      sql.NullTime   `db:"created_at"`
+	ID             string       `db:"id"`
+	ChatID         string       `db:"chat_id"`
+	Role           string       `db:"role"`
+	ContentBody    string       `db:"content_body"`
+	Metadata       []byte       `db:"metadata"`
+	SequenceNumber int64        `db:"sequence_number"`
+	CreatedAt      sql.NullTime `db:"created_at"`
 }
 
 func NewChatRepository(db *DB) chat.Repository {
@@ -167,16 +169,25 @@ func (r *chatRepository) insertMessages(ctx context.Context, chatID string, msgs
 	}
 
 	query := `
-		INSERT INTO messages (id, chat_id, role, content_type, content_body, sequence_number, created_at)
-		VALUES ($1, $2, $3, 'text', $4, $5, $6)
+		INSERT INTO messages (id, chat_id, role, content_type, content_body, metadata, sequence_number, created_at)
+		VALUES ($1, $2, $3, 'text', $4, $5, $6, $7)
 	`
 
 	for i, m := range msgs {
 		msgID := uuid.NewString()
 		seq := int64(startSeq + i + 1)
 
+		var metadataJSON []byte
+		if len(m.Metadata) > 0 {
+			encoded, err := json.Marshal(m.Metadata)
+			if err != nil {
+				return exception.Internal(fmt.Errorf("marshal message metadata: %w", err))
+			}
+			metadataJSON = encoded
+		}
+
 		if _, err := r.db.ExecContext(ctx, query,
-			msgID, chatID, string(m.Role), m.Content, seq, m.At,
+			msgID, chatID, string(m.Role), m.Content, metadataJSON, seq, m.At,
 		); err != nil {
 			logger.ErrorContext(ctx, "postgres: insert message failed",
 				"chat_id", chatID, "seq", seq, "error", err)
@@ -191,7 +202,7 @@ func (r *chatRepository) loadMessages(ctx context.Context, chatID string) ([]cha
 	logger := pkglog.FromContext(ctx)
 
 	query := `
-		SELECT id, chat_id, role, content_body, sequence_number, created_at
+		SELECT id, chat_id, role, content_body, metadata, sequence_number, created_at
 		FROM messages
 		WHERE chat_id = $1 AND deleted_at IS NULL
 		ORDER BY sequence_number ASC
@@ -209,6 +220,13 @@ func (r *chatRepository) loadMessages(ctx context.Context, chatID string) ([]cha
 			Role:    chat.Role(row.Role),
 			Content: row.ContentBody,
 		}
+		if len(row.Metadata) > 0 {
+			var metadata map[string]any
+			if err := json.Unmarshal(row.Metadata, &metadata); err != nil {
+				return nil, exception.Internal(fmt.Errorf("unmarshal message metadata: %w", err))
+			}
+			m.Metadata = metadata
+		}
 		if row.CreatedAt.Valid {
 			m.At = row.CreatedAt.Time
 		}
@@ -220,10 +238,10 @@ func (r *chatRepository) loadMessages(ctx context.Context, chatID string) ([]cha
 
 func mapChatRow(row chatRow) *chat.Chat {
 	c := &chat.Chat{
-		ID:     row.ID,
-		UserID: row.UserID,
+		ID:      row.ID,
+		UserID:  row.UserID,
 		AgentID: row.AgentID,
-		Status: chat.Status(row.Status),
+		Status:  chat.Status(row.Status),
 	}
 	if row.VMID.Valid {
 		c.VMID = row.VMID.String

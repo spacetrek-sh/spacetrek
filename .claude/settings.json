@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /home/soic/spacetrk/orchestrator/src/api/http -name \"*.go\" -exec grep -l \"environment\" {} \\\\;)",
+      "Bash(grep -r \"environment\" /home/soic/spacetrk/orchestrator/src/service/tool/*.go)"
+    ]
+  }
+}
