@@ -140,3 +140,17 @@ type vmMetricsHistoryResponse struct {
 	VMID   string                          `json:"vm_id"`
 	Points []vmMetricsHistoryPointResponse `json:"points"`
 }
+
+// vmSnapshotResponse is the JSON response for POST /api/v1/vm/{id}/snapshot.
+type vmSnapshotResponse struct {
+	ID        string `json:"id"`
+	VMID      string `json:"vm_id"`
+	Type      string `json:"type"`
+	SizeBytes int64  `json:"size_bytes"`
+	CreatedAt string `json:"created_at"`
+}
+
+// resumeVMRequest is the JSON body for POST /api/v1/vm/resume.
+type resumeVMRequest struct {
+	ChatID string `json:"chat_id" validate:"required"`
+}

@@ -56,6 +56,9 @@ type VM struct {
 	ChatID     *string    `db:"chat_id"`     // Bound chat (nullable)
 	AssignedAt *time.Time `db:"assigned_at"` // When VM was assigned
 
+	// Resume tracking
+	LastResumedAt *time.Time `db:"last_resumed_at"` // When VM was last resumed from snapshot
+
 	// Lifecycle
 	TerminatedAt *time.Time `db:"terminated_at"` // When VM was terminated
 	CreatedAt    time.Time  `db:"created_at"`
@@ -192,4 +195,18 @@ func (v *VM) SetRuntimeVsockMetadata(vsockPath string, guestCID uint32) {
 func (v *VM) ClearRuntimeVsockMetadata() {
 	v.VsockPath = nil
 	v.GuestCID = nil
+}
+
+// MarkResumed records that this VM was resumed from a snapshot.
+func (v *VM) MarkResumed() {
+	now := time.Now().UTC()
+	v.LastResumedAt = &now
+}
+
+// IsRecentlyResumed returns true if the VM was resumed within the given grace period.
+func (v *VM) IsRecentlyResumed(gracePeriod time.Duration) bool {
+	if v.LastResumedAt == nil {
+		return false
+	}
+	return time.Since(*v.LastResumedAt) < gracePeriod
 }

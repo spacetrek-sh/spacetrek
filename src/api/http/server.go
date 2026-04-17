@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 	httputil "github.com/kumori-sh/spacetrk/pkg/http"
 	agenthttp "github.com/kumori-sh/spacetrk/src/api/http/v1/agent"
 	authhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/auth"
@@ -33,6 +34,15 @@ type Config struct {
 // ListenAndServe / Shutdown.
 func New(cfg Config) *http.Server {
 	r := chi.NewRouter()
+
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"http://localhost:5173"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
+
 	registerRoutes(r, cfg)
 
 	// Middleware chain (outermost = first to execute):

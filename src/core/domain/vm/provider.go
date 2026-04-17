@@ -41,6 +41,17 @@ type Backend interface {
 
 	// GetMetrics returns resource usage metrics for the VM.
 	GetMetrics(ctx context.Context, id string) (Metrics, error)
+
+	// CreateSnapshot pauses the VM, creates a full snapshot, and resumes the VM.
+	// Returns the snapshot directory path and combined file size.
+	CreateSnapshot(ctx context.Context, id string) (snapshotDir string, sizeBytes int64, err error)
+
+	// RestoreFromSnapshot creates a new VM process from previously taken snapshot files.
+	// The rootfs must already exist at the path from the original CreateSpec.
+	RestoreFromSnapshot(ctx context.Context, spec CreateSpec, snapshotDir string) (id string, err error)
+
+	// StopPreserving stops the VM process but preserves rootfs and snapshot files on disk.
+	StopPreserving(ctx context.Context, id string) error
 }
 
 // RuntimeStatus represents the actual runtime status of a VM from the provider.

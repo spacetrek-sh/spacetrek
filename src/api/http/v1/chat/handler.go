@@ -2,8 +2,10 @@ package chathttp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -21,6 +23,8 @@ import (
 type chatService interface {
 	SendOrCreate(ctx context.Context, id, content string, p chat.CreateParams) (*chat.Chat, error)
 	Get(ctx context.Context, id string) (*chat.Chat, error)
+	ListConversations(ctx context.Context, params chat.ListParams) (*chat.ListResult, error)
+	ListMessages(ctx context.Context, params chat.ListMessagesParams) (*chat.ListMessagesResult, error)
 	SubscribeRuntimeEvents(ctx context.Context, chatID string) (<-chan orchdomain.RuntimeEvent, error)
 	Close(ctx context.Context, id string) error
 }
@@ -42,7 +46,9 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Authenticate(h.jwtManager))
 			r.Post("/", h.SendMessage)
+			r.Get("/", h.List)
 			r.Get("/{id}", h.Get)
+			r.Get("/{id}/messages", h.ListMessages)
 			r.Get("/{id}/stream", h.Stream)
 			r.Delete("/{id}", h.Close)
 		})
@@ -114,6 +120,208 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 
 	logger.DebugContext(ctx, "chat retrieved", "chat_id", id, "status", c.Status, "message_count", len(c.Messages))
 	httputil.WriteJSON(w, http.StatusOK, "chat retrieved", toResponse(c))
+}
+
+// List handles GET /api/v1/chat and returns conversations for the authenticated user.
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
+	userID := middleware.GetUserID(ctx)
+	if userID == "" {
+		httputil.WriteError(w, exception.Unauthorized("user not authenticated"))
+		return
+	}
+
+	params := chat.ListParams{
+		UserID: userID,
+		Limit:  parseListLimit(r),
+		Cursor: parseCursor(r),
+	}
+
+	result, err := h.svc.ListConversations(ctx, params)
+	if err != nil {
+		logger.WarnContext(ctx, "list conversations failed", "user_id", userID, "error", err)
+		httputil.WriteError(w, err)
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, "conversations retrieved", toListResponse(result))
+}
+
+// ListMessages handles GET /api/v1/chat/{id}/messages and returns paginated messages.
+func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
+	chatID := chi.URLParam(r, "id")
+	if chatID == "" {
+		httputil.WriteError(w, exception.BadRequest("missing chat id"))
+		return
+	}
+
+	params := chat.ListMessagesParams{
+		ChatID: chatID,
+		Limit:  parseMessagesLimit(r),
+		Cursor: parseMessageCursor(r),
+	}
+
+	result, err := h.svc.ListMessages(ctx, params)
+	if err != nil {
+		logger.WarnContext(ctx, "list messages failed", "chat_id", chatID, "error", err)
+		httputil.WriteError(w, err)
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, "messages retrieved", toListMessagesResponse(result))
+}
+
+func parseListLimit(r *http.Request) int {
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	return limit
+}
+
+func parseCursor(r *http.Request) *chat.ListCursor {
+	encoded := r.URL.Query().Get("cursor")
+	if encoded == "" {
+		return nil
+	}
+
+	decoded, err := base64.URLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil
+	}
+
+	var raw struct {
+		CreatedAt string `json:"c"`
+		ID        string `json:"i"`
+	}
+	if err := json.Unmarshal(decoded, &raw); err != nil {
+		return nil
+	}
+
+	ts, err := time.Parse(time.RFC3339Nano, raw.CreatedAt)
+	if err != nil {
+		return nil
+	}
+
+	return &chat.ListCursor{
+		CreatedAt: ts,
+		ID:        raw.ID,
+	}
+}
+
+func encodeCursor(c *chat.ListCursor) string {
+	if c == nil {
+		return ""
+	}
+	raw := struct {
+		CreatedAt string `json:"c"`
+		ID        string `json:"i"`
+	}{
+		CreatedAt: c.CreatedAt.Format(time.RFC3339Nano),
+		ID:        c.ID,
+	}
+	b, _ := json.Marshal(raw)
+	return base64.URLEncoding.EncodeToString(b)
+}
+
+func toListResponse(result *chat.ListResult) *listConversationsResponse {
+	items := make([]conversationSummaryResponse, len(result.Items))
+	for i, s := range result.Items {
+		items[i] = conversationSummaryResponse{
+			ID:            s.ID,
+			AgentID:       s.AgentID,
+			UserID:        s.UserID,
+			Title:         s.Title,
+			VMID:          s.VMID,
+			Status:        string(s.Status),
+			LastMessage:   s.LastMessage,
+			LastMessageAt: s.LastMessageAt,
+			CreatedAt:     s.CreatedAt,
+			UpdatedAt:     s.UpdatedAt,
+		}
+	}
+	resp := &listConversationsResponse{
+		Conversations: items,
+		HasMore:       result.NextCursor != nil,
+	}
+	if result.NextCursor != nil {
+		resp.NextCursor = encodeCursor(result.NextCursor)
+	}
+	return resp
+}
+
+func parseMessagesLimit(r *http.Request) int {
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	return limit
+}
+
+func parseMessageCursor(r *http.Request) *chat.MessageCursor {
+	encoded := r.URL.Query().Get("cursor")
+	if encoded == "" {
+		return nil
+	}
+
+	decoded, err := base64.URLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil
+	}
+
+	var raw struct {
+		Seq int64 `json:"s"`
+	}
+	if err := json.Unmarshal(decoded, &raw); err != nil {
+		return nil
+	}
+	if raw.Seq <= 0 {
+		return nil
+	}
+
+	return &chat.MessageCursor{SequenceNumber: raw.Seq}
+}
+
+func encodeMessageCursor(c *chat.MessageCursor) string {
+	if c == nil {
+		return ""
+	}
+	raw := struct {
+		Seq int64 `json:"s"`
+	}{Seq: c.SequenceNumber}
+	b, _ := json.Marshal(raw)
+	return base64.URLEncoding.EncodeToString(b)
+}
+
+func toListMessagesResponse(result *chat.ListMessagesResult) *listMessagesResponse {
+	items := make([]messageSummaryResponse, len(result.Items))
+	for i, m := range result.Items {
+		items[i] = messageSummaryResponse{
+			ID:             m.ID,
+			SequenceNumber: m.SequenceNumber,
+			Role:           string(m.Role),
+			Content:        m.Content,
+			Metadata:       m.Metadata,
+			At:             m.At,
+		}
+	}
+	resp := &listMessagesResponse{
+		Messages: items,
+		HasMore:  result.NextCursor != nil,
+	}
+	if result.NextCursor != nil {
+		resp.NextCursor = encodeMessageCursor(result.NextCursor)
+	}
+	return resp
 }
 
 // Stream handles GET /api/v1/chat/{id}/stream using server-sent events.

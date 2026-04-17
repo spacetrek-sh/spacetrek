@@ -34,6 +34,7 @@ type vmRow struct {
 	IPAddress          *string    `db:"ip_address"`
 	ChatID             *string    `db:"chat_id"`
 	AssignedAt         *time.Time `db:"assigned_at"`
+	LastResumedAt      *time.Time `db:"last_resumed_at"`
 	TerminatedAt       *time.Time `db:"terminated_at"`
 	CreatedAt          time.Time  `db:"created_at"`
 }
@@ -58,13 +59,13 @@ func (r *vmRepository) Create(ctx context.Context, vm *vmdomain.VM) error {
 			id, environment_id, provider, status,
 			runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 			vcpu, memory_mb, disk_mb,
-			ip_address, chat_id, assigned_at, terminated_at, created_at
+			ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at
 		)
 		VALUES (
 			$1, $2, $3, $4,
 			$5, $6, $7, $8, $9, $10, $11, $12,
 			$13, $14, $15,
-			$16, $17, $18, $19, $20
+			$16, $17, $18, $19, $20, $21
 		)
 	`
 
@@ -74,7 +75,7 @@ func (r *vmRepository) Create(ctx context.Context, vm *vmdomain.VM) error {
 		vm.ID, vm.EnvironmentID, string(vm.Provider), string(vm.Status),
 		vm.RuntimeID, vm.SocketPath, vm.VsockPath, guestCID, vm.PID, vm.RuntimeState, vm.LastHeartbeatAt, vm.IdleDeadlineAt,
 		vm.VCPU, vm.MemoryMB, vm.DiskMB,
-		vm.IPAddress, vm.ChatID, vm.AssignedAt, vm.TerminatedAt, vm.CreatedAt,
+		vm.IPAddress, vm.ChatID, vm.AssignedAt, vm.LastResumedAt, vm.TerminatedAt, vm.CreatedAt,
 	); err != nil {
 		logger.ErrorContext(ctx, "postgres: create vm failed", "vm_id", vm.ID, "error", err)
 		return exception.Internal(fmt.Errorf("create vm: %w", err))
@@ -89,7 +90,7 @@ func (r *vmRepository) GetByID(ctx context.Context, id string) (*vmdomain.VM, er
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, terminated_at, created_at
+		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at
 		FROM vm_instances
 		WHERE id = $1
 	`
@@ -127,7 +128,8 @@ func (r *vmRepository) Update(ctx context.Context, vm *vmdomain.VM) error {
 		    ip_address = $16,
 		    chat_id = $17,
 		    assigned_at = $18,
-		    terminated_at = $19
+			    last_resumed_at = $19,
+		    terminated_at = $20
 		WHERE id = $1
 	`
 
@@ -137,7 +139,7 @@ func (r *vmRepository) Update(ctx context.Context, vm *vmdomain.VM) error {
 		vm.ID, vm.EnvironmentID, string(vm.Provider), string(vm.Status),
 		vm.RuntimeID, vm.SocketPath, vm.VsockPath, guestCID, vm.PID, vm.RuntimeState, vm.LastHeartbeatAt, vm.IdleDeadlineAt,
 		vm.VCPU, vm.MemoryMB, vm.DiskMB,
-		vm.IPAddress, vm.ChatID, vm.AssignedAt, vm.TerminatedAt,
+		vm.IPAddress, vm.ChatID, vm.AssignedAt, vm.LastResumedAt, vm.TerminatedAt,
 	)
 	if err != nil {
 		logger.ErrorContext(ctx, "postgres: update vm failed", "vm_id", vm.ID, "error", err)
@@ -182,7 +184,7 @@ func (r *vmRepository) List(ctx context.Context) ([]*vmdomain.VM, error) {
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, terminated_at, created_at
+		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at
 		FROM vm_instances
 		ORDER BY created_at DESC
 	`
@@ -211,7 +213,7 @@ func (r *vmRepository) GetAvailablePool(ctx context.Context, provider vmdomain.P
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, terminated_at, created_at
+		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at
 		FROM vm_instances
 		WHERE provider = $1
 		  AND status IN ('ready', 'idle')
@@ -244,7 +246,7 @@ func (r *vmRepository) GetByEnvironmentID(ctx context.Context, envID string) ([]
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, terminated_at, created_at
+		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at
 		FROM vm_instances
 		WHERE environment_id = $1
 		ORDER BY created_at DESC
@@ -274,7 +276,7 @@ func (r *vmRepository) GetByChatID(ctx context.Context, chatID string) (*vmdomai
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, terminated_at, created_at
+		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at
 		FROM vm_instances
 		WHERE chat_id = $1
 		ORDER BY created_at DESC
@@ -299,7 +301,7 @@ func (r *vmRepository) GetActiveVMs(ctx context.Context) ([]*vmdomain.VM, error)
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, terminated_at, created_at
+		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at
 		FROM vm_instances
 		WHERE status IN ('ready', 'running', 'idle')
 		ORDER BY created_at DESC
@@ -341,7 +343,7 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, terminated_at, created_at
+		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at
 		FROM vm_instances
 		WHERE id = $1
 		FOR UPDATE
@@ -392,7 +394,7 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 		SELECT id, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, terminated_at, created_at
+		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at
 		FROM vm_instances
 		WHERE id = $1
 	`
@@ -486,6 +488,39 @@ func (r *vmRepository) FindPreviousLeaseForChat(ctx context.Context, chatID stri
 	return mapVMRow(row)
 }
 
+func (r *vmRepository) ListPreviousLeasesForChat(ctx context.Context, chatID string) ([]*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
+	query := `
+		SELECT vm.id, vm.environment_id, vm.provider, vm.status,
+		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source, vm.last_heartbeat_at, vm.idle_deadline_at,
+		       vm.vcpu, vm.memory_mb, vm.disk_mb,
+		       vm.ip_address, vm.chat_id, vm.assigned_at, vm.terminated_at, vm.created_at
+		FROM vm_instances vm
+		JOIN vm_leases l ON l.vm_id = vm.id
+		WHERE l.chat_id = $1
+		  AND vm.status IN ('idle', 'ready')
+		  AND vm.chat_id IS NULL
+		ORDER BY l.leased_at DESC
+	`
+
+	var rows []vmRow
+	if err := r.db.SelectContext(ctx, &rows, query, chatID); err != nil {
+		logger.ErrorContext(ctx, "postgres: list previous leases for chat failed", "chat_id", chatID, "error", err)
+		return nil, exception.Internal(fmt.Errorf("list previous leases for chat: %w", err))
+	}
+
+	vms := make([]*vmdomain.VM, 0, len(rows))
+	for _, row := range rows {
+		vm, err := mapVMRow(row)
+		if err != nil {
+			continue
+		}
+		vms = append(vms, vm)
+	}
+
+	return vms, nil
+}
+
 func mapVMRow(row vmRow) (*vmdomain.VM, error) {
 	v := &vmdomain.VM{
 		ID:            row.ID,
@@ -507,6 +542,7 @@ func mapVMRow(row vmRow) (*vmdomain.VM, error) {
 
 	v.AssignedAt = row.AssignedAt
 	v.TerminatedAt = row.TerminatedAt
+		v.LastResumedAt = row.LastResumedAt
 	v.LastHeartbeatAt = row.LastHeartbeatAt
 	v.IdleDeadlineAt = row.IdleDeadlineAt
 

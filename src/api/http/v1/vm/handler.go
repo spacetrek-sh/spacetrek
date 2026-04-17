@@ -63,6 +63,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Delete("/{id}", h.Stop)
 			r.Delete("/{id}/destroy", h.Destroy)
 			r.Post("/{id}/execute", h.ExecuteCommand)
+			r.Post("/{id}/snapshot", h.CreateSnapshot)
+			r.Post("/resume", h.ResumeVM)
 		})
 	})
 }
@@ -490,6 +492,68 @@ func (h *Handler) ExecuteCommand(w http.ResponseWriter, r *http.Request) {
 	logger.DebugContext(ctx, "execute command result", "vm_id", id, "output_len", len(output), "output_preview", logPreview(output, 256))
 	logger.InfoContext(ctx, "command executed", "vm_id", id, "command", req.Command)
 	httputil.WriteJSON(w, http.StatusOK, "command executed", executeCommandResponse{Output: output})
+}
+
+// CreateSnapshot handles POST /api/v1/vm/{id}/snapshot. Creates a snapshot of the VM.
+func (h *Handler) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		httputil.WriteError(w, exception.BadRequest("missing VM ID"))
+		return
+	}
+
+	logger.DebugContext(ctx, "VM snapshot requested", "vm_id", id)
+
+	snap, err := h.vmservice.CreateSnapshot(ctx, id)
+	if err != nil {
+		logger.WarnContext(ctx, "VM snapshot failed", "vm_id", id, "error", err)
+		httputil.WriteError(w, err)
+		return
+	}
+
+	logger.InfoContext(ctx, "VM snapshot created", "vm_id", id, "snapshot_id", snap.ID)
+	httputil.Created(w, "snapshot created", vmSnapshotResponse{
+		ID:        snap.ID,
+		VMID:      snap.VMID,
+		Type:      string(snap.Type),
+		SizeBytes: snap.SizeBytes,
+		CreatedAt: snap.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	})
+}
+
+// ResumeVM handles POST /api/v1/vm/resume. Resumes a VM from snapshot for a chat.
+func (h *Handler) ResumeVM(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
+	var req resumeVMRequest
+	if err := httputil.BindJSON(r, &req); err != nil {
+		logger.WarnContext(ctx, "VM resume failed", "error", err)
+		httputil.WriteError(w, err)
+		return
+	}
+
+	logger.DebugContext(ctx, "VM resume requested", "chat_id", req.ChatID)
+
+	vm, err := h.vmservice.FindPreviousLeaseForChat(ctx, req.ChatID)
+	if err != nil {
+		logger.WarnContext(ctx, "VM resume: no previous VM found", "chat_id", req.ChatID, "error", err)
+		httputil.WriteError(w, exception.NotFound("previous vm for chat", req.ChatID))
+		return
+	}
+
+	resumed, err := h.vmservice.ResumeVM(ctx, vm.ID, req.ChatID)
+	if err != nil {
+		logger.WarnContext(ctx, "VM resume failed", "vm_id", vm.ID, "chat_id", req.ChatID, "error", err)
+		httputil.WriteError(w, err)
+		return
+	}
+
+	logger.InfoContext(ctx, "VM resumed", "vm_id", resumed.ID, "chat_id", req.ChatID)
+	httputil.WriteJSON(w, http.StatusOK, "VM resumed", toGetVMResponse(resumed))
 }
 
 // toCreateVMResponse converts a domain VM to createVMResponse.

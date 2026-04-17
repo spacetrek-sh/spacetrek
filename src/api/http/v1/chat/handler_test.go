@@ -16,9 +16,29 @@ import (
 )
 
 type stubChatService struct {
-	lastID      string
-	lastContent string
-	lastParams  chat.CreateParams
+	lastID              string
+	lastContent         string
+	lastParams          chat.CreateParams
+	lastListParams      chat.ListParams
+	listResult          *chat.ListResult
+	lastListMsgParams   chat.ListMessagesParams
+	listMessagesResult  *chat.ListMessagesResult
+}
+
+func (s *stubChatService) ListConversations(_ context.Context, params chat.ListParams) (*chat.ListResult, error) {
+	s.lastListParams = params
+	if s.listResult != nil {
+		return s.listResult, nil
+	}
+	return &chat.ListResult{Items: []*chat.ConversationSummary{}}, nil
+}
+
+func (s *stubChatService) ListMessages(_ context.Context, params chat.ListMessagesParams) (*chat.ListMessagesResult, error) {
+	s.lastListMsgParams = params
+	if s.listMessagesResult != nil {
+		return s.listMessagesResult, nil
+	}
+	return &chat.ListMessagesResult{Items: []*chat.MessageSummary{}}, nil
 }
 
 func (s *stubChatService) SendOrCreate(_ context.Context, id, content string, p chat.CreateParams) (*chat.Chat, error) {
@@ -169,5 +189,226 @@ func TestSendMessage_PassesAgentConfig(t *testing.T) {
 	}
 	if svc.lastParams.SystemPrompt != "You are helpful" {
 		t.Fatalf("expected system_prompt %q, got %q", "You are helpful", svc.lastParams.SystemPrompt)
+	}
+}
+
+func TestList_Unauthenticated(t *testing.T) {
+	svc := &stubChatService{}
+	jwtMgr := testJWTManager()
+	h := NewHandler(svc, jwtMgr)
+
+	r := chi.NewRouter()
+	h.RegisterRoutes(r)
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestList_DefaultPagination(t *testing.T) {
+	svc := &stubChatService{}
+	jwtMgr := testJWTManager()
+	h := NewHandler(svc, jwtMgr)
+
+	r := chi.NewRouter()
+	h.RegisterRoutes(r)
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken(jwtMgr, "user-1", "user"))
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if svc.lastListParams.UserID != "user-1" {
+		t.Fatalf("expected user_id %q, got %q", "user-1", svc.lastListParams.UserID)
+	}
+	if svc.lastListParams.Limit != 20 {
+		t.Fatalf("expected default limit 20, got %d", svc.lastListParams.Limit)
+	}
+	if svc.lastListParams.Cursor != nil {
+		t.Fatalf("expected nil cursor for first page, got %+v", svc.lastListParams.Cursor)
+	}
+}
+
+func TestList_WithCursor(t *testing.T) {
+	svc := &stubChatService{}
+	jwtMgr := testJWTManager()
+	h := NewHandler(svc, jwtMgr)
+
+	r := chi.NewRouter()
+	h.RegisterRoutes(r)
+
+	cursor := encodeCursor(&chat.ListCursor{
+		CreatedAt: time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC),
+		ID:        "550e8400-e29b-41d4-a716-446655440000",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/?cursor="+cursor+"&limit=5", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken(jwtMgr, "user-1", "user"))
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if svc.lastListParams.Limit != 5 {
+		t.Fatalf("expected limit 5, got %d", svc.lastListParams.Limit)
+	}
+	if svc.lastListParams.Cursor == nil {
+		t.Fatal("expected cursor to be decoded, got nil")
+	}
+	if svc.lastListParams.Cursor.ID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("expected cursor ID %q, got %q", "550e8400-e29b-41d4-a716-446655440000", svc.lastListParams.Cursor.ID)
+	}
+}
+
+func TestList_InvalidCursor(t *testing.T) {
+	svc := &stubChatService{}
+	jwtMgr := testJWTManager()
+	h := NewHandler(svc, jwtMgr)
+
+	r := chi.NewRouter()
+	h.RegisterRoutes(r)
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/?cursor=not-valid-base64!!!&limit=10", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken(jwtMgr, "user-1", "user"))
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if svc.lastListParams.Cursor != nil {
+		t.Fatalf("expected nil cursor for invalid input, got %+v", svc.lastListParams.Cursor)
+	}
+}
+
+func TestList_LimitClamped(t *testing.T) {
+	svc := &stubChatService{}
+	jwtMgr := testJWTManager()
+	h := NewHandler(svc, jwtMgr)
+
+	r := chi.NewRouter()
+	h.RegisterRoutes(r)
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/?limit=999", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken(jwtMgr, "user-1", "user"))
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if svc.lastListParams.Limit != 20 {
+		t.Fatalf("expected limit falling back to default 20 for out-of-range value, got %d", svc.lastListParams.Limit)
+	}
+}
+
+func TestListMessages_Unauthenticated(t *testing.T) {
+	svc := &stubChatService{}
+	jwtMgr := testJWTManager()
+	h := NewHandler(svc, jwtMgr)
+
+	r := chi.NewRouter()
+	h.RegisterRoutes(r)
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/chat-1/messages", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListMessages_DefaultPagination(t *testing.T) {
+	svc := &stubChatService{}
+	jwtMgr := testJWTManager()
+	h := NewHandler(svc, jwtMgr)
+
+	r := chi.NewRouter()
+	h.RegisterRoutes(r)
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/chat-1/messages", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken(jwtMgr, "user-1", "user"))
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if svc.lastListMsgParams.ChatID != "chat-1" {
+		t.Fatalf("expected chat_id %q, got %q", "chat-1", svc.lastListMsgParams.ChatID)
+	}
+	if svc.lastListMsgParams.Limit != 50 {
+		t.Fatalf("expected default limit 50, got %d", svc.lastListMsgParams.Limit)
+	}
+	if svc.lastListMsgParams.Cursor != nil {
+		t.Fatalf("expected nil cursor, got %+v", svc.lastListMsgParams.Cursor)
+	}
+}
+
+func TestListMessages_WithCursor(t *testing.T) {
+	svc := &stubChatService{}
+	jwtMgr := testJWTManager()
+	h := NewHandler(svc, jwtMgr)
+
+	r := chi.NewRouter()
+	h.RegisterRoutes(r)
+
+	cursor := encodeMessageCursor(&chat.MessageCursor{SequenceNumber: 42})
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/chat-1/messages?cursor="+cursor+"&limit=10", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken(jwtMgr, "user-1", "user"))
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if svc.lastListMsgParams.Limit != 10 {
+		t.Fatalf("expected limit 10, got %d", svc.lastListMsgParams.Limit)
+	}
+	if svc.lastListMsgParams.Cursor == nil {
+		t.Fatal("expected cursor to be decoded, got nil")
+	}
+	if svc.lastListMsgParams.Cursor.SequenceNumber != 42 {
+		t.Fatalf("expected cursor seq 42, got %d", svc.lastListMsgParams.Cursor.SequenceNumber)
+	}
+}
+
+func TestListMessages_InvalidCursor(t *testing.T) {
+	svc := &stubChatService{}
+	jwtMgr := testJWTManager()
+	h := NewHandler(svc, jwtMgr)
+
+	r := chi.NewRouter()
+	h.RegisterRoutes(r)
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/chat-1/messages?cursor=garbage!!!", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken(jwtMgr, "user-1", "user"))
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if svc.lastListMsgParams.Cursor != nil {
+		t.Fatalf("expected nil cursor for invalid input, got %+v", svc.lastListMsgParams.Cursor)
 	}
 }

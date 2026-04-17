@@ -309,3 +309,29 @@ func (s *Service) Close(ctx context.Context, id string) error {
 	logger.InfoContext(ctx, "chat closed", "chat_id", id)
 	return nil
 }
+
+func (s *Service) ListConversations(ctx context.Context, params chat.ListParams) (*chat.ListResult, error) {
+	logger := pkglog.FromContext(ctx)
+	if params.Limit <= 0 || params.Limit > 100 {
+		params.Limit = 20
+	}
+	result, err := s.chats.ListByUserID(ctx, params)
+	if err != nil {
+		logger.ErrorContext(ctx, "list conversations failed", "user_id", params.UserID, "error", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *Service) ListMessages(ctx context.Context, params chat.ListMessagesParams) (*chat.ListMessagesResult, error) {
+	logger := pkglog.FromContext(ctx)
+	if params.Limit <= 0 || params.Limit > 100 {
+		params.Limit = 50
+	}
+	result, err := s.chats.ListMessages(ctx, params)
+	if err != nil {
+		logger.ErrorContext(ctx, "list messages failed", "chat_id", params.ChatID, "error", err)
+		return nil, err
+	}
+	return result, nil
+}

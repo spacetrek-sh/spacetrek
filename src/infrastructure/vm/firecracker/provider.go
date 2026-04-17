@@ -262,14 +262,14 @@ func (p *Provider) Stop(ctx context.Context, id string) error {
 	if err := vm.Machine.Shutdown(ctx); err != nil {
 		logger.Warn("Failed to send shutdown signal", "vm_id", id, "error", err)
 		// Force cleanup if graceful shutdown fails
-		return p.cleanup(ctx, id, true)
+		return p.cleanup(ctx, id, false)
 	}
 
 	waitCtx, cancel := context.WithTimeout(context.Background(), time.Duration(p.config.ShutdownTimeout)*time.Second)
 	defer cancel()
 	if err := vm.Machine.Wait(waitCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		logger.Warn("VM did not stop cleanly", "vm_id", id, "error", err)
-		return p.cleanup(ctx, id, true)
+		return p.cleanup(ctx, id, false)
 	}
 
 	// Remove from tracking
@@ -283,6 +283,232 @@ func (p *Provider) Stop(ctx context.Context, id string) error {
 	_ = p.releaseGuestCID(id)
 
 	logger.Info("Firecracker VM stopped", "vm_id", id)
+	return nil
+}
+
+// CreateSnapshot pauses the VM, creates a full snapshot, and resumes the VM.
+// Returns the snapshot directory path and combined file size.
+func (p *Provider) CreateSnapshot(ctx context.Context, id string) (string, int64, error) {
+	logger := pkglog.FromContext(ctx)
+
+	p.mu.RLock()
+	vmInst, exists := p.vms[id]
+	p.mu.RUnlock()
+
+	if !exists {
+		return "", 0, fmt.Errorf("VM not found: %s", id)
+	}
+
+	// Create snapshot directory.
+	snapDir := filepath.Join(p.config.VMDir(id), "snapshots", time.Now().UTC().Format("2006-01-02T15-04-05"))
+	if err := os.MkdirAll(snapDir, 0755); err != nil {
+		return "", 0, fmt.Errorf("failed to create snapshot directory: %w", err)
+	}
+
+	memFile := filepath.Join(snapDir, "memory")
+	stateFile := filepath.Join(snapDir, "state")
+
+	// Pause the VM — required by Firecracker before creating a snapshot.
+	if err := vmInst.Machine.PauseVM(ctx); err != nil {
+		_ = os.RemoveAll(snapDir)
+		return "", 0, fmt.Errorf("failed to pause VM for snapshot: %w", err)
+	}
+
+	// Create the snapshot.
+	if err := vmInst.Machine.CreateSnapshot(ctx, memFile, stateFile); err != nil {
+		// Attempt to resume the VM even if snapshot failed.
+		if resumeErr := vmInst.Machine.ResumeVM(ctx); resumeErr != nil {
+			logger.Warn("failed to resume VM after snapshot failure", "vm_id", id, "snapshot_error", err, "resume_error", resumeErr)
+		}
+		_ = os.RemoveAll(snapDir)
+		return "", 0, fmt.Errorf("failed to create snapshot: %w", err)
+	}
+
+	// Resume the VM.
+	if err := vmInst.Machine.ResumeVM(ctx); err != nil {
+		logger.Warn("snapshot created but failed to resume VM", "vm_id", id, "error", err)
+		// Snapshot is still valid, continue.
+	}
+
+	// Compute total size.
+	var totalSize int64
+	if fi, err := os.Stat(memFile); err == nil {
+		totalSize += fi.Size()
+	}
+	if fi, err := os.Stat(stateFile); err == nil {
+		totalSize += fi.Size()
+	}
+
+	logger.Info("VM snapshot created", "vm_id", id, "snapshot_dir", snapDir, "size_bytes", totalSize)
+	return snapDir, totalSize, nil
+}
+
+// RestoreFromSnapshot creates a new VM process from previously taken snapshot files.
+// The rootfs must already exist at the path from the original CreateSpec.
+func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.CreateSpec, snapshotDir string) (string, error) {
+	logger := pkglog.FromContext(ctx)
+
+	vmID := spec.InstanceID
+	if vmID == "" {
+		return "", fmt.Errorf("instance ID is required")
+	}
+
+	vmDir := p.config.VMDir(vmID)
+	socketPath := p.config.SocketPath(vmID)
+	vsockPath := p.config.VsockPath(vmID)
+	rootfsPath := filepath.Join(vmDir, "rootfs.ext4")
+
+	// Verify rootfs exists.
+	if _, err := os.Stat(rootfsPath); err != nil {
+		return "", fmt.Errorf("rootfs not found at %s, cannot restore snapshot: %w", rootfsPath, err)
+	}
+
+	// Verify snapshot files exist.
+	memFile := filepath.Join(snapshotDir, "memory")
+	stateFile := filepath.Join(snapshotDir, "state")
+	if _, err := os.Stat(memFile); err != nil {
+		return "", fmt.Errorf("snapshot memory file not found: %w", err)
+	}
+	if _, err := os.Stat(stateFile); err != nil {
+		return "", fmt.Errorf("snapshot state file not found: %w", err)
+	}
+
+	// Clean stale socket/vsock files.
+	_ = os.Remove(socketPath)
+	_ = os.Remove(vsockPath)
+
+	// Resolve guest CID — reuse the same CID from the snapshot metadata.
+	effectiveVsock := spec.Runtime.Vsock
+	if effectiveVsock.GuestPort == 0 {
+		effectiveVsock.GuestPort = p.config.GuestAgentPort
+	}
+	if effectiveVsock.HostUDSPath == "" {
+		effectiveVsock.HostUDSPath = vsockPath
+	}
+
+	guestCID, err := p.resolveGuestCID(vmID, effectiveVsock.GuestCID)
+	if err != nil {
+		return "", fmt.Errorf("resolve guest cid: %w", err)
+	}
+	effectiveVsock.GuestCID = guestCID
+
+	if err := p.persistGuestCID(vmID, guestCID); err != nil {
+		return "", fmt.Errorf("persist guest cid: %w", err)
+	}
+
+	fcCfg := fcsdk.Config{
+		SocketPath:      socketPath,
+		KernelImagePath: p.config.KernelPath,
+		KernelArgs:      p.config.KernelArgs,
+		Drives:          fcsdk.NewDrivesBuilder(rootfsPath).Build(),
+		MachineCfg: models.MachineConfiguration{
+			VcpuCount:  fcsdk.Int64(int64(spec.Resources.VCPU)),
+			MemSizeMib: fcsdk.Int64(int64(spec.Resources.MemoryMB)),
+			Smt:        fcsdk.Bool(p.config.SMT),
+		},
+		VMID: vmID,
+	}
+
+	if spec.Runtime.Network.Enabled && spec.Runtime.Network.Interface != "" {
+		fcCfg.NetworkInterfaces = []fcsdk.NetworkInterface{
+			{
+				StaticConfiguration: &fcsdk.StaticNetworkConfiguration{
+					MacAddress:  p.config.MacAddress,
+					HostDevName: spec.Runtime.Network.Interface,
+				},
+				AllowMMDS: p.config.EnableMmds,
+			},
+		}
+	}
+
+	fcCfg.VsockDevices = []fcsdk.VsockDevice{
+		{
+			ID:   "agent",
+			Path: effectiveVsock.HostUDSPath,
+			CID:  effectiveVsock.GuestCID,
+		},
+	}
+
+	cmd := fcsdk.VMCommandBuilder{}.
+		WithBin(p.config.BinaryPath).
+		WithSocketPath(socketPath).
+		Build(context.Background())
+
+	initCtx, initCancel := context.WithTimeout(context.Background(), time.Duration(p.config.SocketTimeout)*time.Second)
+	defer initCancel()
+
+	machine, err := fcsdk.NewMachine(initCtx, fcCfg,
+		fcsdk.WithProcessRunner(cmd),
+		fcsdk.WithSnapshot(memFile, stateFile),
+	)
+	if err != nil {
+		_ = p.releaseGuestCID(vmID)
+		return "", fmt.Errorf("failed to create machine from snapshot: %w", err)
+	}
+
+	machineCtx, cancel := context.WithCancel(context.Background())
+	if err := machine.Start(machineCtx); err != nil {
+		cancel()
+		_ = p.releaseGuestCID(vmID)
+		return "", fmt.Errorf("failed to start machine from snapshot: %w", err)
+	}
+
+	// Track the VM.
+	p.mu.Lock()
+	p.vms[vmID] = &VMInstance{
+		ID:         vmID,
+		SocketPath: socketPath,
+		VsockPath:  effectiveVsock.HostUDSPath,
+		GuestCID:   effectiveVsock.GuestCID,
+		GuestPort:  effectiveVsock.GuestPort,
+		Machine:    machine,
+		Cancel:     cancel,
+		Config:     spec,
+		StartedAt:  time.Now(),
+	}
+	p.mu.Unlock()
+
+	pid, _ := machine.PID()
+	logger.Info("Firecracker VM restored from snapshot", "vm_id", vmID, "pid", pid, "snapshot_dir", snapshotDir, "guest_cid", effectiveVsock.GuestCID)
+	return vmID, nil
+}
+
+// StopPreserving stops the VM process but preserves rootfs and snapshot files on disk.
+func (p *Provider) StopPreserving(ctx context.Context, id string) error {
+	logger := pkglog.FromContext(ctx)
+
+	p.mu.RLock()
+	vm, exists := p.vms[id]
+	p.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("VM not found: %s", id)
+	}
+
+	// Send Ctrl+Alt+Del to shutdown gracefully.
+	if err := vm.Machine.Shutdown(ctx); err != nil {
+		logger.Warn("Failed to send shutdown signal", "vm_id", id, "error", err)
+		return p.cleanup(ctx, id, false)
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Duration(p.config.ShutdownTimeout)*time.Second)
+	defer cancel()
+	if err := vm.Machine.Wait(waitCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		logger.Warn("VM did not stop cleanly", "vm_id", id, "error", err)
+		return p.cleanup(ctx, id, false)
+	}
+
+	// Remove from tracking.
+	p.mu.Lock()
+	delete(p.vms, id)
+	p.mu.Unlock()
+	vm.Cancel()
+	if vm.VsockPath != "" {
+		_ = os.Remove(vm.VsockPath)
+	}
+	_ = p.releaseGuestCID(id)
+
+	logger.Info("Firecracker VM stopped (preserving disk)", "vm_id", id)
 	return nil
 }
 

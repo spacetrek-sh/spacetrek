@@ -9,5 +9,6 @@ type Repository interface {
 	GetByID(ctx context.Context, id string) (*Snapshot, error)
 	GetByVMID(ctx context.Context, vmID string) ([]*Snapshot, error)
 	GetLatestFull(ctx context.Context, vmID string) (*Snapshot, error)
+	GetLatestByVMID(ctx context.Context, vmID string) (*Snapshot, error)
 	Delete(ctx context.Context, id string) error
 }

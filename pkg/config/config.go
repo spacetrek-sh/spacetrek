@@ -17,6 +17,7 @@ type Config struct {
 	Log           LogConfig           `yaml:"log"`
 	VM            VMConfig            `yaml:"vm"`
 	LLM           LLMConfig           `yaml:"llm"`
+	Storage       StorageConfig       `yaml:"storage"`
 	Security      SecurityConfig      `yaml:"security"`
 	Observability ObservabilityConfig `yaml:"observability"`
 }
@@ -47,6 +48,8 @@ type VMConfig struct {
 	NetworkEnabled bool          `yaml:"network_enabled"`
 	IdleTimeout    time.Duration `yaml:"idle_timeout"`
 	MaxLifetime    time.Duration `yaml:"max_lifetime"`
+	AutoSnapshot   bool          `yaml:"auto_snapshot"`
+	ResumeGrace    time.Duration `yaml:"resume_grace"`
 
 	Firecracker VMFirecrackerConfig `yaml:"firecracker"`
 }
@@ -83,6 +86,15 @@ type GeminiConfig struct {
 	Model           string `yaml:"model"`
 	MaxOutputTokens int    `yaml:"max_output_tokens"`
 	SystemPrompt    string `yaml:"system_prompt"`
+}
+
+type StorageConfig struct {
+	Endpoint     string `yaml:"endpoint"`
+	Region       string `yaml:"region"`
+	AccessKey    string `yaml:"access_key"`
+	SecretKey    string `yaml:"secret_key"`
+	Bucket       string `yaml:"bucket"`
+	UsePathStyle bool   `yaml:"use_path_style"`
 }
 
 type SecurityConfig struct {

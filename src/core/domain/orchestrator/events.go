@@ -7,6 +7,8 @@ type RuntimeEventType string
 
 const (
 	EventLLMToken         RuntimeEventType = "llm_token"
+	EventLLMThinking      RuntimeEventType = "llm_thinking"
+	EventLLMAnswer        RuntimeEventType = "llm_answer"
 	EventToolStart        RuntimeEventType = "tool_start"
 	EventToolStdout       RuntimeEventType = "tool_stdout"
 	EventToolEnd          RuntimeEventType = "tool_end"

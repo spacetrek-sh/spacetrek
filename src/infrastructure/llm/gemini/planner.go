@@ -127,12 +127,14 @@ func (p *Planner) PlanToolsWithMetadata(ctx context.Context, req ports.PlanReque
 	var steps []ports.ToolPlanStep
 	if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
 		for _, part := range resp.Candidates[0].Content.Parts {
-			// Log model thinking.
+			// Capture and log model thinking.
 			if part.Thought && part.Text != "" {
+				metadata.Thinking = part.Text
 				logger.DebugContext(ctx, "LLM thinking", "model", p.config.Model, "thought", part.Text)
 			}
-			// Log text answer (non-thought text parts).
+			// Capture and log text answer (non-thought text parts).
 			if !part.Thought && part.Text != "" && part.FunctionCall == nil {
+				metadata.Answer = part.Text
 				logger.DebugContext(ctx, "LLM answer", "model", p.config.Model, "text", part.Text)
 			}
 			// Extract function calls.
@@ -249,6 +251,7 @@ func (p *Planner) FinalResponseWithMetadata(ctx context.Context, req ports.Final
 	if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
 		for _, part := range resp.Candidates[0].Content.Parts {
 			if part.Thought && part.Text != "" {
+				metadata.Thinking = part.Text
 				logger.DebugContext(ctx, "LLM thinking (final)", "model", p.config.Model, "thought", part.Text)
 			}
 		}

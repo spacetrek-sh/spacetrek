@@ -3,13 +3,18 @@ package vm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/kumori-sh/spacetrk/pkg/exception"
 	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
 	"github.com/kumori-sh/spacetrk/src/core/domain/environment"
+	"github.com/kumori-sh/spacetrk/src/core/domain/snapshot"
+	"github.com/kumori-sh/spacetrk/src/core/ports"
 	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
 )
 
@@ -23,11 +28,15 @@ const (
 
 // Service handles VM business logic.
 type Service struct {
-	repo        vmdomain.Repository
-	metricsRepo vmdomain.MetricsHistoryRepository
-	backend     vmdomain.Backend // VM provider (Firecracker, etc.)
-	envRepo     EnvironmentRepository
-	idleTimeout time.Duration
+	repo          vmdomain.Repository
+	metricsRepo   vmdomain.MetricsHistoryRepository
+	snapRepo      snapshot.Repository
+	backend       vmdomain.Backend // VM provider (Firecracker, etc.)
+	envRepo       EnvironmentRepository
+	snapshotStore ports.SnapshotStore // nil = local-only mode
+	idleTimeout   time.Duration
+	autoSnapshot  bool
+	resumeGrace   time.Duration
 }
 
 // EnvironmentRepository defines the interface for fetching environment details.
@@ -37,17 +46,24 @@ type EnvironmentRepository interface {
 }
 
 // NewService creates a new VM service.
-func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRepository, backend vmdomain.Backend, envRepo EnvironmentRepository, idleTimeout time.Duration) *Service {
+func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRepository, backend vmdomain.Backend, envRepo EnvironmentRepository, snapRepo snapshot.Repository, snapshotStore ports.SnapshotStore, idleTimeout time.Duration, autoSnapshot bool, resumeGrace time.Duration) *Service {
 	if idleTimeout <= 0 {
 		idleTimeout = 5 * time.Minute
 	}
+	if resumeGrace <= 0 {
+		resumeGrace = 2 * time.Minute
+	}
 
 	return &Service{
-		repo:        repo,
-		metricsRepo: metricsRepo,
-		backend:     backend,
-		envRepo:     envRepo,
-		idleTimeout: idleTimeout,
+		repo:          repo,
+		metricsRepo:   metricsRepo,
+		snapRepo:      snapRepo,
+		backend:       backend,
+		envRepo:       envRepo,
+		snapshotStore: snapshotStore,
+		idleTimeout:   idleTimeout,
+		autoSnapshot:  autoSnapshot,
+		resumeGrace:   resumeGrace,
 	}
 }
 
@@ -205,7 +221,19 @@ func (s *Service) reapIdleVMs(ctx context.Context) {
 			continue
 		}
 
-		if err := s.backend.Stop(ctx, vm.ID); err != nil {
+		// Skip recently-resumed VMs to give them a grace period.
+		if vm.IsRecentlyResumed(s.resumeGrace) {
+			continue
+		}
+
+		// Auto-snapshot before stopping if enabled.
+		if s.autoSnapshot && s.snapRepo != nil {
+			if _, snapErr := s.CreateSnapshot(ctx, vm.ID); snapErr != nil {
+				logger.WarnContext(ctx, "VM idle reaper auto-snapshot failed, proceeding with stop", "vm_id", vm.ID, "error", snapErr)
+			}
+		}
+
+		if err := s.backend.StopPreserving(ctx, vm.ID); err != nil {
 			// If VM is not found in backend, it was already stopped/cleaned up.
 			// Reconcile the database state to reflect reality instead of failing.
 			if strings.Contains(strings.ToLower(err.Error()), "not found") {
@@ -501,6 +529,10 @@ func (s *Service) FindPreviousLeaseForChat(ctx context.Context, chatID string) (
 	return s.repo.FindPreviousLeaseForChat(ctx, chatID)
 }
 
+func (s *Service) ListPreviousLeasesForChat(ctx context.Context, chatID string) ([]*vmdomain.VM, error) {
+	return s.repo.ListPreviousLeasesForChat(ctx, chatID)
+}
+
 // Unassign releases a VM from its current chat.
 func (s *Service) Unassign(ctx context.Context, vmID string) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
@@ -529,6 +561,7 @@ func (s *Service) Unassign(ctx context.Context, vmID string) (*vmdomain.VM, erro
 }
 
 // Stop gracefully stops the specified VM.
+// If auto-snapshot is enabled and the VM is running, a snapshot is created before stopping.
 func (s *Service) Stop(ctx context.Context, id string) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 
@@ -540,8 +573,15 @@ func (s *Service) Stop(ctx context.Context, id string) (*vmdomain.VM, error) {
 		return nil, err
 	}
 
-	// Stop via backend
-	if err := s.backend.Stop(ctx, id); err != nil {
+	// Auto-snapshot before stopping if enabled and VM is running.
+	if s.autoSnapshot && vm.Status.IsActive() && s.snapRepo != nil {
+		if _, snapErr := s.CreateSnapshot(ctx, id); snapErr != nil {
+			logger.WarnContext(ctx, "auto-snapshot failed before stop, proceeding with stop", "vm_id", id, "error", snapErr)
+		}
+	}
+
+	// Stop via backend (preserves rootfs for potential resume).
+	if err := s.backend.StopPreserving(ctx, id); err != nil {
 		logger.ErrorContext(ctx, "backend stop failed", "vm_id", id, "error", err)
 		return nil, exception.Internal(err)
 	}
@@ -754,6 +794,186 @@ func logPreview(text string, limit int) string {
 	return normalized[:limit] + "...(truncated)"
 }
 
+// CreateSnapshot creates a full snapshot of the running VM.
+// The VM remains running after the snapshot is taken.
+func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Snapshot, error) {
+	logger := pkglog.FromContext(ctx)
+
+	vm, err := s.repo.GetByID(ctx, vmID)
+	if err != nil {
+		return nil, err
+	}
+
+	if !vm.Status.IsActive() {
+		return nil, exception.BadRequest("VM is not active, cannot create snapshot")
+	}
+
+	env, err := s.envRepo.GetByID(ctx, vm.EnvironmentID)
+	if err != nil {
+		return nil, exception.NotFound("environment", vm.EnvironmentID)
+	}
+
+	// Build metadata capturing the VM spec at snapshot time.
+	guestCID := uint32(0)
+	if vm.GuestCID != nil {
+		guestCID = *vm.GuestCID
+	}
+	guestPort := uint32(10789) // default guest agent port
+	meta := snapshot.SnapshotMetadata{
+		EnvironmentID: vm.EnvironmentID,
+		ImagePath:     env.ImagePath,
+		VCPU:          vm.GetVCPU(env.GetVCPU()),
+		MemoryMB:      vm.GetMemoryMB(env.GetMemoryMB()),
+		DiskMB:        vm.GetDiskMB(env.GetDiskMB()),
+		GuestCID:      guestCID,
+		GuestPort:     guestPort,
+		RootfsPath:    filepath.Join("/var/lib/firecracker/vms", vm.ID, "rootfs.ext4"),
+	}
+	metaJSON, _ := json.Marshal(meta)
+
+	// Call backend to create the snapshot.
+	snapDir, sizeBytes, err := s.backend.CreateSnapshot(ctx, vmID)
+	if err != nil {
+		logger.ErrorContext(ctx, "backend snapshot failed", "vm_id", vmID, "error", err)
+		return nil, exception.Internal(err)
+	}
+
+	snap := snapshot.New(snapshot.CreateParams{
+		VMID:         vmID,
+		Type:         snapshot.TypeFull,
+		SnapshotPath: snapDir,
+		SizeBytes:    sizeBytes,
+		Metadata:     metaJSON,
+	})
+
+	// Upload snapshot files to object storage if configured.
+	if s.snapshotStore != nil {
+		s3Prefix := fmt.Sprintf("snapshots/%s/%s", vmID, snap.ID)
+		files := []ports.SnapshotFile{
+			{Key: s3Prefix + "/memory", LocalPath: snapDir + "/memory"},
+			{Key: s3Prefix + "/state", LocalPath: snapDir + "/state"},
+		}
+		if uploaded, uploadErr := s.snapshotStore.UploadFiles(ctx, files); uploadErr != nil {
+			logger.WarnContext(ctx, "failed to upload snapshot to storage, keeping local files", "snapshot_id", snap.ID, "error", uploadErr)
+		} else {
+			_ = os.RemoveAll(snapDir)
+			snap.SnapshotPath = s3Prefix
+			snap.SizeBytes = uploaded
+			logger.InfoContext(ctx, "snapshot uploaded to storage", "snapshot_id", snap.ID, "s3_prefix", s3Prefix, "bytes", uploaded)
+		}
+	}
+
+	if err := s.snapRepo.Create(ctx, snap); err != nil {
+		logger.ErrorContext(ctx, "failed to persist snapshot record", "snapshot_id", snap.ID, "vm_id", vmID, "error", err)
+		return nil, err
+	}
+
+	logger.InfoContext(ctx, "VM snapshot created", "vm_id", vmID, "snapshot_id", snap.ID, "size_bytes", sizeBytes)
+	return snap, nil
+}
+
+// ResumeVM restores a VM from its latest snapshot and assigns it to a chat.
+// If no snapshot exists, falls back to simple chat assignment.
+func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
+
+	vm, err := s.repo.GetByID(ctx, vmID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Try to find a snapshot for this VM.
+	snap, snapErr := s.snapRepo.GetLatestByVMID(ctx, vmID)
+	if snapErr != nil {
+		// No snapshot — fall back to simple assignment if VM is available.
+		logger.InfoContext(ctx, "no snapshot found, falling back to simple assignment", "vm_id", vmID, "error", snapErr)
+		return s.AssignToChat(ctx, vmID, chatID)
+	}
+
+	meta, err := snap.ParseMetadata()
+	if err != nil {
+		return nil, exception.Internal(fmt.Errorf("failed to parse snapshot metadata: %w", err))
+	}
+
+	// Build CreateSpec from snapshot metadata to reconstruct the Firecracker machine.
+	spec := vmdomain.CreateSpec{
+		InstanceID:    vmID,
+		EnvironmentID: meta.EnvironmentID,
+		ImagePath:     meta.ImagePath,
+		Resources: environment.ResourceLimits{
+			VCPU:     meta.VCPU,
+			MemoryMB: meta.MemoryMB,
+			DiskMB:   meta.DiskMB,
+		},
+		Runtime: vmdomain.RuntimeConfig{
+			Vsock: vmdomain.VsockConfig{
+				Enabled:  true,
+				GuestCID: meta.GuestCID,
+				GuestPort: meta.GuestPort,
+			},
+		},
+	}
+
+	// Restore the VM from snapshot.
+	// If object storage is configured, download snapshot files to a local temp dir first.
+	restoreDir := snap.SnapshotPath
+	if s.snapshotStore != nil {
+		tmpDir := filepath.Join("/var/lib/firecracker/vms", vmID, "snapshots", "restore-"+time.Now().UTC().Format("2006-01-02T15-04-05"))
+		files := []ports.SnapshotFile{
+			{Key: snap.MemFilePath(), LocalPath: tmpDir + "/memory"},
+			{Key: snap.StateFilePath(), LocalPath: tmpDir + "/state"},
+		}
+		if err := s.snapshotStore.DownloadFiles(ctx, files); err != nil {
+			return nil, exception.Internal(fmt.Errorf("failed to download snapshot from storage: %w", err))
+		}
+		defer os.RemoveAll(tmpDir)
+		restoreDir = tmpDir
+		logger.InfoContext(ctx, "downloaded snapshot from storage", "snapshot_id", snap.ID, "local_dir", tmpDir)
+	}
+
+	backendID, err := s.backend.RestoreFromSnapshot(ctx, spec, restoreDir)
+	if err != nil {
+		logger.ErrorContext(ctx, "failed to restore VM from snapshot", "vm_id", vmID, "snapshot_id", snap.ID, "error", err)
+		return nil, exception.Internal(err)
+	}
+
+	// Update runtime metadata from the restored VM.
+	vm.SetRuntimeMetadata(backendID, "", 0, "running")
+	if runtimeStatus, statusErr := s.backend.Status(ctx, backendID); statusErr == nil {
+		vm.SetRuntimeMetadata(backendID, "", runtimeStatus.PID, runtimeStatus.State)
+		vm.SetRuntimeVsockMetadata(runtimeStatus.VsockPath, runtimeStatus.GuestCID)
+	}
+
+	vm.Status = vmdomain.StatusRunning
+	vm.MarkResumed()
+	s.refreshIdleDeadline(vm)
+
+	// Assign to chat and create lease (single transactional operation).
+	assignedVM, err := s.repo.AssignToChatIfAvailable(ctx, vmID, chatID, vm.IdleDeadlineAt)
+	if err != nil {
+		logger.ErrorContext(ctx, "failed to assign restored VM to chat", "vm_id", vmID, "chat_id", chatID, "error", err)
+		return nil, err
+	}
+
+	// Persist runtime metadata updates.
+	if err := s.repo.Update(ctx, vm); err != nil {
+		logger.ErrorContext(ctx, "failed to update restored VM", "vm_id", vmID, "error", err)
+		return nil, err
+	}
+
+	logger.InfoContext(ctx, "VM restored from snapshot", "vm_id", vmID, "chat_id", chatID, "snapshot_id", snap.ID)
+	return assignedVM, nil
+}
+
+// HasSnapshot checks if a VM has any snapshots.
+func (s *Service) HasSnapshot(ctx context.Context, vmID string) bool {
+	if s.snapRepo == nil {
+		return false
+	}
+	_, err := s.snapRepo.GetLatestByVMID(ctx, vmID)
+	return err == nil
+}
+
 // GetMetrics returns resource usage metrics for the specified VM.
 func (s *Service) GetMetrics(ctx context.Context, id string) (vmdomain.Metrics, error) {
 	logger := pkglog.FromContext(ctx)
@@ -823,7 +1043,14 @@ func (s *Service) Shutdown(ctx context.Context) {
 			runtimeID = *vm.RuntimeID
 		}
 
-		if err := s.backend.Stop(ctx, runtimeID); err != nil {
+		// Auto-snapshot before shutdown stop if enabled.
+		if s.autoSnapshot && vm.Status.IsActive() && s.snapRepo != nil {
+			if _, snapErr := s.CreateSnapshot(ctx, runtimeID); snapErr != nil {
+				logger.WarnContext(ctx, "shutdown: auto-snapshot failed", "vm_id", vm.ID, "error", snapErr)
+			}
+		}
+
+		if err := s.backend.StopPreserving(ctx, runtimeID); err != nil {
 			logger.WarnContext(ctx, "shutdown: backend stop failed", "vm_id", vm.ID, "error", err)
 			failed++
 		} else {

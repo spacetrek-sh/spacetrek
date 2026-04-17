@@ -16,13 +16,27 @@ const (
 	TypeIncremental Type = "incremental"
 )
 
+// SnapshotMetadata captures the VM specification at snapshot time.
+// This is required to reconstruct the Firecracker machine on restore.
+type SnapshotMetadata struct {
+	EnvironmentID string `json:"environment_id"`
+	ImagePath     string `json:"image_path"`
+	VCPU          int    `json:"vcpu"`
+	MemoryMB      int    `json:"memory_mb"`
+	DiskMB        int    `json:"disk_mb"`
+	GuestCID      uint32 `json:"guest_cid"`
+	GuestPort     uint32 `json:"guest_port"`
+	RootfsPath    string `json:"rootfs_path"`
+}
+
 // Snapshot represents a VM snapshot for backup/restore.
+// SnapshotPath stores the directory containing "memory" and "state" files.
 type Snapshot struct {
 	ID               string          `db:"id"`
 	VMID             string          `db:"vm_id"`
 	ParentSnapshotID *string         `db:"parent_snapshot_id"` // For incremental snapshots
 	Type             Type            `db:"type"`
-	SnapshotPath     string          `db:"snapshot_path"`
+	SnapshotPath     string          `db:"snapshot_path"` // Directory containing memory + state files
 	SizeBytes        int64           `db:"size_bytes"`
 	Metadata         json.RawMessage `db:"metadata"`
 	CreatedAt        time.Time       `db:"created_at"`
@@ -65,4 +79,26 @@ func (s *Snapshot) IsIncremental() bool {
 // HasParent returns true if this snapshot has a parent (is incremental).
 func (s *Snapshot) HasParent() bool {
 	return s.ParentSnapshotID != nil
+}
+
+// MemFilePath returns the key/path to the memory file within the snapshot prefix.
+func (s *Snapshot) MemFilePath() string {
+	return s.SnapshotPath + "/memory"
+}
+
+// StateFilePath returns the key/path to the state file within the snapshot prefix.
+func (s *Snapshot) StateFilePath() string {
+	return s.SnapshotPath + "/state"
+}
+
+// ParseMetadata decodes the JSON metadata into SnapshotMetadata.
+func (s *Snapshot) ParseMetadata() (*SnapshotMetadata, error) {
+	if len(s.Metadata) == 0 {
+		return nil, nil
+	}
+	var meta SnapshotMetadata
+	if err := json.Unmarshal(s.Metadata, &meta); err != nil {
+		return nil, err
+	}
+	return &meta, nil
 }

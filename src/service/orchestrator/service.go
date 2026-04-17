@@ -160,6 +160,30 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		}
 		trace.TokenUsage.Add(planMeta.TokenUsage)
 
+		// Emit LLM thinking and answer events for this planning step.
+		if planMeta.Thinking != "" {
+			emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
+				Type:          orchdomain.EventLLMThinking,
+				ChatID:        input.ChatID,
+				TraceID:       trace.TraceID,
+				ExecutionMode: trace.ExecutionMode,
+				Step:          step,
+				Data:          planMeta.Thinking,
+				At:            time.Now().UTC(),
+			})
+		}
+		if planMeta.Answer != "" {
+			emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
+				Type:          orchdomain.EventLLMAnswer,
+				ChatID:        input.ChatID,
+				TraceID:       trace.TraceID,
+				ExecutionMode: trace.ExecutionMode,
+				Step:          step,
+				Data:          planMeta.Answer,
+				At:            time.Now().UTC(),
+			})
+		}
+
 		if len(plan.Steps) == 0 {
 			logger.DebugContext(ctx, "orchestrator: planner returned no tool steps, exiting loop", "chat_id", input.ChatID, "step", step)
 			break
@@ -267,6 +291,20 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 	if finalMeta.Reasoning != "" {
 		trace.Reasoning = finalMeta.Reasoning
 	}
+
+	// Emit final LLM thinking event.
+	if finalMeta.Thinking != "" {
+		emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
+			Type:          orchdomain.EventLLMThinking,
+			ChatID:        input.ChatID,
+			TraceID:       trace.TraceID,
+			ExecutionMode: trace.ExecutionMode,
+			Step:          len(trace.Steps) + 1,
+			Data:          finalMeta.Thinking,
+			At:            time.Now().UTC(),
+		})
+	}
+
 	trace.FinalAnswer = assistant
 	trace.CompletedAt = time.Now().UTC()
 

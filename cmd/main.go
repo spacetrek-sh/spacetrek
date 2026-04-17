@@ -22,6 +22,7 @@ import (
 	"github.com/kumori-sh/spacetrk/src/core/ports"
 	geminiadapter "github.com/kumori-sh/spacetrk/src/infrastructure/llm/gemini"
 	"github.com/kumori-sh/spacetrk/src/infrastructure/vm/firecracker"
+	s3storage "github.com/kumori-sh/spacetrk/src/infrastructure/storage/s3"
 	postgresrepo "github.com/kumori-sh/spacetrk/src/repository/postgres"
 	agentsvc "github.com/kumori-sh/spacetrk/src/service/agent"
 	authservice "github.com/kumori-sh/spacetrk/src/service/auth"
@@ -60,6 +61,7 @@ func main() {
 	environmentRepo := postgresrepo.NewEnvironmentRepository(db)
 	vmRepo := postgresrepo.NewVMRepository(db)
 	vmMetricsHistoryRepo := postgresrepo.NewVMMetricsHistoryRepository(db)
+	snapRepo := postgresrepo.NewSnapshotRepository(db)
 	userRepo := postgresrepo.NewUserRepository(db)
 	authRepo := postgresrepo.NewAuthRepository(db)
 
@@ -99,13 +101,36 @@ func main() {
 		vmBackend = provider
 	}
 
-	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, cfg.VM.IdleTimeout)
+	// ── Snapshot Storage ─────────────────────────────────────────────────────
+	var snapshotStore ports.SnapshotStore
+	if cfg.Storage.Endpoint != "" {
+		ss, err := s3storage.NewStore(context.Background(), s3storage.Config{
+			Endpoint:     cfg.Storage.Endpoint,
+			Region:       cfg.Storage.Region,
+			AccessKey:    cfg.Storage.AccessKey,
+			SecretKey:    cfg.Storage.SecretKey,
+			Bucket:       cfg.Storage.Bucket,
+			UsePathStyle: cfg.Storage.UsePathStyle,
+		})
+		if err != nil {
+			logger.Warn("S3 snapshot store unavailable, snapshots will be stored locally", slog.Any("error", err))
+		} else {
+			if err := ss.EnsureBucket(context.Background()); err != nil {
+				logger.Warn("Failed to ensure S3 bucket", slog.Any("error", err))
+			}
+			snapshotStore = ss
+			logger.Info("S3 snapshot store configured", slog.String("bucket", cfg.Storage.Bucket))
+		}
+	}
+
+	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, snapRepo, snapshotStore, cfg.VM.IdleTimeout, cfg.VM.AutoSnapshot, cfg.VM.ResumeGrace)
 	orchTools := orchestratorsvc.NewInMemoryToolRegistry(nil)
 	orchTools.Register(toolsvc.NewVMCommandTool(vmService))
 	orchTools.Register(toolsvc.NewVMCreateTool(vmService))
 	orchTools.Register(toolsvc.NewVMStartTool(vmService))
 	orchTools.Register(toolsvc.NewVMListTool(vmService))
 	orchTools.Register(toolsvc.NewVMStopTool(vmService))
+	orchTools.Register(toolsvc.NewVMSnapshotTool(vmService))
 
 	var planner ports.ToolPlanner
 	if cfg.LLM.DefaultProvider == "gemini" && cfg.LLM.Gemini.APIKey != "" {
@@ -139,7 +164,7 @@ func main() {
 		planner,
 		orchTools,
 		orchestratorsvc.NewMemoryStateStore(),
-		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop"}, cfg.Security.MaxTaskDuration),
+		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot"}, cfg.Security.MaxTaskDuration),
 	)
 	chatService := chatsvc.New(chatRepo, agentRepo, orchService)
 
@@ -219,6 +244,18 @@ func (b unavailableBackend) Execute(context.Context, string, []string) (string, 
 
 func (b unavailableBackend) GetMetrics(context.Context, string) (vmdomain.Metrics, error) {
 	return vmdomain.Metrics{}, b.err()
+}
+
+func (b unavailableBackend) CreateSnapshot(context.Context, string) (string, int64, error) {
+	return "", 0, b.err()
+}
+
+func (b unavailableBackend) RestoreFromSnapshot(context.Context, vmdomain.CreateSpec, string) (string, error) {
+	return "", b.err()
+}
+
+func (b unavailableBackend) StopPreserving(context.Context, string) error {
+	return b.err()
 }
 
 func (b unavailableBackend) err() error {

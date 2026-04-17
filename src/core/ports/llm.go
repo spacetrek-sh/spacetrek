@@ -27,8 +27,10 @@ type ToolPlanStep struct {
 
 // PlanMetadata carries optional planner metadata for one PlanTools call.
 type PlanMetadata struct {
-	Reasoning  string               `json:"reasoning,omitempty"`
-	RawText    string               `json:"raw_text,omitempty"`
+	Reasoning  string                `json:"reasoning,omitempty"`
+	RawText    string                `json:"raw_text,omitempty"`
+	Thinking   string                `json:"thinking,omitempty"`
+	Answer     string                `json:"answer,omitempty"`
 	TokenUsage orchdomain.TokenUsage `json:"token_usage,omitempty"`
 }
 
@@ -47,7 +49,8 @@ type FinalResponseRequest struct {
 
 // FinalResponseMetadata carries optional metadata from final response generation.
 type FinalResponseMetadata struct {
-	Reasoning  string               `json:"reasoning,omitempty"`
+	Reasoning  string                `json:"reasoning,omitempty"`
+	Thinking   string                `json:"thinking,omitempty"`
 	TokenUsage orchdomain.TokenUsage `json:"token_usage,omitempty"`
 }
 

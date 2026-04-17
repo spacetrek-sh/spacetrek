@@ -11,10 +11,14 @@ import (
 // VMRestarter is the subset of VM service needed by the start tool.
 type VMRestarter interface {
 	FindPreviousLeaseForChat(ctx context.Context, chatID string) (*vmdomain.VM, error)
+	Get(ctx context.Context, id string) (*vmdomain.VM, error)
 	AssignToChat(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error)
+	HasSnapshot(ctx context.Context, vmID string) bool
+	ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error)
 }
 
 // VMStartTool finds a previously used VM for the chat and reassigns it.
+// If the VM has a snapshot and is not running, it restores from snapshot.
 type VMStartTool struct {
 	restarter VMRestarter
 }
@@ -26,8 +30,14 @@ func NewVMStartTool(restarter VMRestarter) *VMStartTool {
 func (t *VMStartTool) Definition() tool.Definition {
 	return tool.Definition{
 		Name:        "vm.start",
-		Description: "Resume a VM previously used in this conversation. Finds the most recent idle or ready VM from this chat's history and reassigns it. Use vm.list first to check if any VMs are already running.",
-		Parameters:  map[string]tool.Parameter{},
+		Description: "Resume a VM for this conversation. Without vm_id, restores the most recent VM. With vm_id, restores that specific VM. If the VM has a snapshot and is not running, it will be restored from snapshot with its previous filesystem state. Use vm.list to discover available VMs.",
+		Parameters: map[string]tool.Parameter{
+			"vm_id": {
+				Type:        "string",
+				Description: "Optional ID of a specific VM to restore. If omitted, the most recent VM is used.",
+				Required:    false,
+			},
+		},
 	}
 }
 
@@ -42,11 +52,49 @@ func (t *VMStartTool) Execute(ctx context.Context, call tool.Call) (tool.Result,
 		return result, nil
 	}
 
-	vm, err := t.restarter.FindPreviousLeaseForChat(ctx, chatID)
-	if err != nil {
-		result.OK = false
-		result.Error = "No previous VM found for this chat. Use vm.create to create a new one."
-		logger.DebugContext(ctx, "vm start tool: no previous vm found", "chat_id", chatID, "error", err)
+	var vm *vmdomain.VM
+
+	// Check if a specific vm_id was provided.
+	if vmID, found := readStringArg(call.Arguments, "vm_id"); found {
+		var err error
+		vm, err = t.restarter.Get(ctx, vmID)
+		if err != nil {
+			result.OK = false
+			result.Error = "VM not found: " + vmID
+			logger.DebugContext(ctx, "vm start tool: specific vm not found", "vm_id", vmID, "error", err)
+			return result, nil
+		}
+	} else {
+		// Default: find the most recent VM for this chat.
+		var err error
+		vm, err = t.restarter.FindPreviousLeaseForChat(ctx, chatID)
+		if err != nil {
+			result.OK = false
+			result.Error = "No previous VM found for this chat. Use vm.create to create a new one."
+			logger.DebugContext(ctx, "vm start tool: no previous vm found", "chat_id", chatID, "error", err)
+			return result, nil
+		}
+	}
+
+	// If the VM has a snapshot and is not running, restore from snapshot.
+	if t.restarter.HasSnapshot(ctx, vm.ID) && !vm.Status.IsActive() {
+		logger.InfoContext(ctx, "vm start tool: restoring from snapshot", "vm_id", vm.ID, "chat_id", chatID)
+		assigned, err := t.restarter.ResumeVM(ctx, vm.ID, chatID)
+		if err != nil {
+			result.OK = false
+			result.Error = "Failed to restore VM from snapshot: " + err.Error()
+			logger.ErrorContext(ctx, "vm start tool: restore from snapshot failed", "vm_id", vm.ID, "error", err)
+			return result, nil
+		}
+
+		result.OK = true
+		result.Payload = map[string]any{
+			"vm_id":    assigned.ID,
+			"status":   string(assigned.Status),
+			"provider": string(assigned.Provider),
+			"restored": true,
+		}
+		logger.InfoContext(ctx, "vm start tool: restored from snapshot", "vm_id", assigned.ID, "chat_id", chatID)
 		return result, nil
 	}
 

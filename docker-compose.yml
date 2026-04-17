@@ -32,6 +32,25 @@ services:
         condition: service_healthy
     restart: "no"
 
+  rustfs:
+    container_name: spacetrk-rustfs
+    image: rustfs/rustfs:latest
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - spacetrk-rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   api:
     build: .
     restart: unless-stopped
@@ -60,6 +79,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      rustfs:
+        condition: service_started
 
 volumes:
   spacetrk-psql-data:
+  spacetrk-rustfs-data:

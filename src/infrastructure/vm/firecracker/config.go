@@ -164,3 +164,8 @@ func (c Config) VsockPath(vmID string) string {
 	}
 	return filepath.Join(c.VMDir(vmID), name)
 }
+
+// SnapshotDir returns the base snapshots directory for a specific VM.
+func (c Config) SnapshotDir(vmID string) string {
+	return filepath.Join(c.VMDir(vmID), "snapshots")
+}

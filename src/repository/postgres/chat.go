@@ -257,3 +257,181 @@ func mapChatRow(row chatRow) *chat.Chat {
 	}
 	return c
 }
+
+type conversationSummaryRow struct {
+	ID            string         `db:"id"`
+	UserID        string         `db:"user_id"`
+	AgentID       string         `db:"agent_id"`
+	VMID          sql.NullString `db:"vm_id"`
+	Title         string         `db:"title"`
+	Status        string         `db:"status"`
+	LastMessage   sql.NullString `db:"last_message"`
+	LastMessageAt sql.NullTime   `db:"last_message_at"`
+	CreatedAt     sql.NullTime   `db:"created_at"`
+	UpdatedAt     sql.NullTime   `db:"updated_at"`
+}
+
+func (r *chatRepository) ListByUserID(ctx context.Context, params chat.ListParams) (*chat.ListResult, error) {
+	logger := pkglog.FromContext(ctx)
+
+	if params.Limit <= 0 || params.Limit > 100 {
+		params.Limit = 20
+	}
+
+	query := `
+		SELECT c.id, c.user_id, c.agent_id, c.vm_id, c.title, c.status,
+		       c.created_at, c.updated_at,
+		       lm.content_body AS last_message,
+		       lm.created_at   AS last_message_at
+		FROM chats c
+		LEFT JOIN LATERAL (
+		    SELECT content_body, created_at
+		    FROM messages
+		    WHERE chat_id = c.id AND deleted_at IS NULL
+		    ORDER BY sequence_number DESC
+		    LIMIT 1
+		) lm ON true
+		WHERE c.user_id = $1
+		  AND c.deleted_at IS NULL
+		  AND ($2::timestamptz IS NULL
+		       OR c.created_at < $2
+		       OR (c.created_at = $2 AND c.id < $3))
+		ORDER BY c.created_at DESC, c.id DESC
+		LIMIT $4
+	`
+
+	var cursorTS any
+	var cursorID any
+	if params.Cursor != nil {
+		cursorTS = params.Cursor.CreatedAt
+		cursorID = params.Cursor.ID
+	}
+
+	rows := make([]conversationSummaryRow, 0)
+	if err := r.db.SelectContext(ctx, &rows, query, params.UserID, cursorTS, cursorID, params.Limit+1); err != nil {
+		logger.ErrorContext(ctx, "postgres: list conversations failed", "user_id", params.UserID, "error", err)
+		return nil, exception.Internal(fmt.Errorf("list conversations: %w", err))
+	}
+
+	hasMore := len(rows) > params.Limit
+	if hasMore {
+		rows = rows[:params.Limit]
+	}
+
+	items := make([]*chat.ConversationSummary, len(rows))
+	for i, row := range rows {
+		items[i] = mapConversationSummaryRow(row)
+	}
+
+	var nextCursor *chat.ListCursor
+	if hasMore && len(items) > 0 {
+		last := items[len(items)-1]
+		nextCursor = &chat.ListCursor{
+			CreatedAt: last.CreatedAt,
+			ID:        last.ID,
+		}
+	}
+
+	logger.DebugContext(ctx, "postgres: listed conversations",
+		"user_id", params.UserID, "count", len(items), "has_more", hasMore)
+
+	return &chat.ListResult{
+		Items:      items,
+		NextCursor: nextCursor,
+	}, nil
+}
+
+func mapConversationSummaryRow(row conversationSummaryRow) *chat.ConversationSummary {
+	s := &chat.ConversationSummary{
+		ID:      row.ID,
+		UserID:  row.UserID,
+		AgentID: row.AgentID,
+		Title:   row.Title,
+		Status:  chat.Status(row.Status),
+	}
+	if row.VMID.Valid {
+		s.VMID = row.VMID.String
+	}
+	if row.LastMessage.Valid {
+		s.LastMessage = row.LastMessage.String
+	}
+	if row.LastMessageAt.Valid {
+		s.LastMessageAt = row.LastMessageAt.Time
+	}
+	if row.CreatedAt.Valid {
+		s.CreatedAt = row.CreatedAt.Time
+	}
+	if row.UpdatedAt.Valid {
+		s.UpdatedAt = row.UpdatedAt.Time
+	}
+	return s
+}
+
+func (r *chatRepository) ListMessages(ctx context.Context, params chat.ListMessagesParams) (*chat.ListMessagesResult, error) {
+	logger := pkglog.FromContext(ctx)
+
+	if params.Limit <= 0 || params.Limit > 100 {
+		params.Limit = 50
+	}
+
+	query := `
+		SELECT id, chat_id, role, content_body, metadata, sequence_number, created_at
+		FROM messages
+		WHERE chat_id = $1
+		  AND deleted_at IS NULL
+		  AND ($2::bigint IS NULL OR sequence_number < $2)
+		ORDER BY sequence_number DESC
+		LIMIT $3
+	`
+
+	var cursorSeq any
+	if params.Cursor != nil {
+		cursorSeq = params.Cursor.SequenceNumber
+	}
+
+	rows := make([]messageRow, 0)
+	if err := r.db.SelectContext(ctx, &rows, query, params.ChatID, cursorSeq, params.Limit+1); err != nil {
+		logger.ErrorContext(ctx, "postgres: list messages failed", "chat_id", params.ChatID, "error", err)
+		return nil, exception.Internal(fmt.Errorf("list messages: %w", err))
+	}
+
+	hasMore := len(rows) > params.Limit
+	if hasMore {
+		rows = rows[:params.Limit]
+	}
+
+	items := make([]*chat.MessageSummary, len(rows))
+	for i, row := range rows {
+		m := &chat.MessageSummary{
+			ID:             row.ID,
+			SequenceNumber: row.SequenceNumber,
+			Role:           chat.Role(row.Role),
+			Content:        row.ContentBody,
+		}
+		if len(row.Metadata) > 0 {
+			var metadata map[string]any
+			if err := json.Unmarshal(row.Metadata, &metadata); err == nil {
+				m.Metadata = metadata
+			}
+		}
+		if row.CreatedAt.Valid {
+			m.At = row.CreatedAt.Time
+		}
+		items[i] = m
+	}
+
+	var nextCursor *chat.MessageCursor
+	if hasMore && len(items) > 0 {
+		nextCursor = &chat.MessageCursor{
+			SequenceNumber: items[len(items)-1].SequenceNumber,
+		}
+	}
+
+	logger.DebugContext(ctx, "postgres: listed messages",
+		"chat_id", params.ChatID, "count", len(items), "has_more", hasMore)
+
+	return &chat.ListMessagesResult{
+		Items:      items,
+		NextCursor: nextCursor,
+	}, nil
+}

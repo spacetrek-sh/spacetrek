@@ -26,4 +26,5 @@ type Repository interface {
 	ReleaseActiveLeaseByVM(ctx context.Context, vmID string) error
 	ListActiveLeasesByChat(ctx context.Context, chatID string) ([]Lease, error)
 	FindPreviousLeaseForChat(ctx context.Context, chatID string) (*VM, error)
+	ListPreviousLeasesForChat(ctx context.Context, chatID string) ([]*VM, error)
 }

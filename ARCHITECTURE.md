@@ -540,12 +540,3 @@ observability:
 - [ ] Documentation & deployment configs
 
 ---
-
-## Open Questions to Discuss
-
-1. **VM Provider**: Start with Firecracker or use containers (gVisor) for easier dev?
-2. **State Persistence**: How long should sessions be kept? Archive strategy?
-3. **Tool Framework**: Pre-defined tools vs. user-defined tools?
-4. **Multi-tenancy**: Single tenant or multi-tenant from day 1?
-5. **Scaling**: Horizontal scaling approach (stateless orchestrators + VM pools)?
-6. **Network Policy**: Allow internet access from VMs? If yes, with what restrictions?
