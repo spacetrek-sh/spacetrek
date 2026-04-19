@@ -109,10 +109,21 @@ func (p *Planner) PlanToolsWithMetadata(ctx context.Context, req ports.PlanReque
 
 	contents, systemInstr := convertHistory(req.History)
 
+	// Build user message, injecting VM context if a VM is already available.
+	userText := req.Message
+	if req.VMID != "" {
+		userText = fmt.Sprintf(
+			"[System: A VM (id: %s) is already running and assigned to this conversation. "+
+				"Use vm.execute_command with this vm_id for any commands. "+
+				"Do NOT call vm.create or vm.start.]\n\n%s",
+			req.VMID, req.Message,
+		)
+	}
+
 	// Append current user message.
 	contents = append(contents, &genai.Content{
 		Role:  genai.RoleUser,
-		Parts: []*genai.Part{{Text: req.Message}},
+		Parts: []*genai.Part{{Text: userText}},
 	})
 
 	// Append prior react-loop turns as function call/result pairs so Gemini

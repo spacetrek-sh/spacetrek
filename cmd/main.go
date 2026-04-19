@@ -167,7 +167,8 @@ func main() {
 		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot"}, cfg.Security.MaxTaskDuration),
 	)
 	runtimeEventRepo := postgresrepo.NewRuntimeEventRepository(db)
-	chatService := chatsvc.New(chatRepo, runtimeEventRepo, agentRepo, orchService)
+	vmResolver := chatsvc.NewVMResolver(vmService)
+	chatService := chatsvc.New(chatRepo, runtimeEventRepo, agentRepo, orchService, vmResolver)
 
 	// ── Handlers ────────────────────────────────────────────────────────────
 	agentHandler := agenthttp.NewHandler(agentService, jwtManager)

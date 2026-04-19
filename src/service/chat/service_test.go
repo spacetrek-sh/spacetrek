@@ -42,7 +42,7 @@ func TestSendMessage_ForwardsToOrchestrator(t *testing.T) {
 	agentRepo := memory.NewAgentRepository()
 	chatRepo := memory.NewChatRepository()
 	orch := &fakeOrchestrator{}
-	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch)
+	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch, nil)
 
 	created, err := svc.Create(context.Background(), chat.CreateParams{})
 	if err != nil {
@@ -87,7 +87,7 @@ func TestSendOrCreate_AutoCreatesWhenNoID(t *testing.T) {
 	agentRepo := memory.NewAgentRepository()
 	chatRepo := memory.NewChatRepository()
 	orch := &fakeOrchestrator{}
-	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch)
+	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch, nil)
 
 	c, err := svc.SendOrCreate(context.Background(), "", "hello", chat.CreateParams{})
 	if err != nil {
@@ -109,7 +109,7 @@ func TestSendOrCreate_UsesExistingWhenIDProvided(t *testing.T) {
 	agentRepo := memory.NewAgentRepository()
 	chatRepo := memory.NewChatRepository()
 	orch := &fakeOrchestrator{}
-	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch)
+	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch, nil)
 
 	created, err := svc.Create(context.Background(), chat.CreateParams{})
 	if err != nil {
@@ -130,7 +130,7 @@ func TestSubscribeRuntimeEvents_ReceivesPublishedEvents(t *testing.T) {
 	agentRepo := memory.NewAgentRepository()
 	chatRepo := memory.NewChatRepository()
 	orch := &fakeOrchestrator{}
-	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch)
+	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch, nil)
 
 	created, err := svc.Create(context.Background(), chat.CreateParams{})
 	if err != nil {

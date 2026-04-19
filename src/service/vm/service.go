@@ -414,6 +414,11 @@ func (s *Service) Get(ctx context.Context, id string) (*vmdomain.VM, error) {
 	return s.repo.GetByID(ctx, id)
 }
 
+// GetByChatID retrieves the VM currently assigned to the given chat.
+func (s *Service) GetByChatID(ctx context.Context, chatID string) (*vmdomain.VM, error) {
+	return s.repo.GetByChatID(ctx, chatID)
+}
+
 // GetRuntimeSnapshot returns a VM with refreshed runtime-observed metadata.
 func (s *Service) GetRuntimeSnapshot(ctx context.Context, id string) (*vmdomain.VM, error) {
 	vm, err := s.repo.GetByID(ctx, id)
