@@ -167,44 +167,26 @@ func (r *ChatRepository) ListMessages(_ context.Context, params chat.ListMessage
 		return nil, exception.NotFound("chat", params.ChatID)
 	}
 
-	// Messages are stored in append order (ASC by sequence). Reverse for DESC.
+	// Messages are stored in append order (ASC). Reverse for DESC by created_at.
 	total := len(c.Messages)
-	start := total // past the end = empty
-	if params.Cursor != nil {
-		// Seek: skip messages with sequence >= cursor (already sent).
-		for i := total - 1; i >= 0; i-- {
-			if int64(i+1) < params.Cursor.SequenceNumber {
-				start = i
-				break
-			}
-			start = i
-		}
-		if params.Cursor != nil && start == 0 && int64(1) >= params.Cursor.SequenceNumber {
-			// All messages have sequence >= cursor, nothing left.
-			return &chat.ListMessagesResult{Items: []*chat.MessageSummary{}}, nil
-		}
-	} else {
-		start = total - 1
-	}
 
-	if start < 0 {
-		start = -1
-	}
-
-	// Collect from start downwards (DESC order).
-	count := 0
-	var items []*chat.MessageSummary
-	for i := start; i >= 0 && count < params.Limit+1; i-- {
+	var items []*chat.TimelineEntry
+	for i := total - 1; i >= 0 && len(items) < params.Limit+1; i-- {
 		msg := c.Messages[i]
-		items = append(items, &chat.MessageSummary{
+		// Skip messages before cursor timestamp.
+		if params.Cursor != nil && !msg.At.Before(params.Cursor.Timestamp) {
+			continue
+		}
+		items = append(items, &chat.TimelineEntry{
 			ID:             fmt.Sprintf("%s-%d", params.ChatID, i+1),
+			Source:         "message",
 			SequenceNumber: int64(i + 1),
 			Role:           msg.Role,
 			Content:        msg.Content,
+			ContentType:    msg.ContentType,
 			Metadata:       msg.Metadata,
 			At:             msg.At,
 		})
-		count++
 	}
 
 	hasMore := len(items) > params.Limit
@@ -215,7 +197,7 @@ func (r *ChatRepository) ListMessages(_ context.Context, params chat.ListMessage
 	var nextCursor *chat.MessageCursor
 	if hasMore && len(items) > 0 {
 		nextCursor = &chat.MessageCursor{
-			SequenceNumber: items[len(items)-1].SequenceNumber,
+			Timestamp: items[len(items)-1].At,
 		}
 	}
 

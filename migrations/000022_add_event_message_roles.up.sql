@@ -1,0 +1,9 @@
+ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'tool_start';
+ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'tool_stdout';
+ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'tool_end';
+ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'llm_thinking';
+ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'llm_answer';
+ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'llm_token';
+ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'execution_summary';
+ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'processing_done';
+ALTER TYPE message_role ADD VALUE IF NOT EXISTS 'agent_error';

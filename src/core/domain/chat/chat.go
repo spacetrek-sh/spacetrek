@@ -25,12 +25,26 @@ const (
 	RoleSystem    Role = "system"
 )
 
+// ContentType classifies the payload of a message.
+type ContentType string
+
+const (
+	ContentText  ContentType = "text"
+	ContentImage ContentType = "image"
+)
+
+// ContentTypeForRole maps a Role to the appropriate ContentType.
+func ContentTypeForRole(r Role) ContentType {
+	return ContentText
+}
+
 // Message is a single turn in the conversation history.
 type Message struct {
-	Role     Role
-	Content  string
-	Metadata map[string]any
-	At       time.Time
+	Role        Role
+	Content     string
+	ContentType ContentType
+	Metadata    map[string]any
+	At          time.Time
 }
 
 // Chat is the stateful interaction context between a user and an agent.
@@ -80,10 +94,11 @@ func (c *Chat) AddMessage(role Role, content string) {
 // updates the timestamp.
 func (c *Chat) AddMessageWithMetadata(role Role, content string, metadata map[string]any) {
 	c.Messages = append(c.Messages, Message{
-		Role:     role,
-		Content:  content,
-		Metadata: cloneMetadata(metadata),
-		At:       time.Now().UTC(),
+		Role:        role,
+		Content:     content,
+		ContentType: ContentTypeForRole(role),
+		Metadata:    cloneMetadata(metadata),
+		At:          time.Now().UTC(),
 	})
 	c.UpdatedAt = time.Now().UTC()
 }
@@ -144,7 +159,7 @@ type Repository interface {
 
 // MessageCursor holds the decoded pagination cursor for message listing.
 type MessageCursor struct {
-	SequenceNumber int64
+	Timestamp time.Time
 }
 
 // ListMessagesParams holds the input for listing messages in a chat.
@@ -160,12 +175,28 @@ type MessageSummary struct {
 	SequenceNumber int64
 	Role           Role
 	Content        string
+	ContentType    ContentType
 	Metadata       map[string]any
 	At             time.Time
 }
 
-// ListMessagesResult holds a page of messages and the next cursor.
+// TimelineEntry represents a single item in the merged conversation timeline,
+// which can be either a conversation message or a runtime event.
+type TimelineEntry struct {
+	ID             string
+	SequenceNumber int64
+	Source         string        // "message" or "event"
+	Role           Role          // set for messages ("user"/"assistant"/"system")
+	EventType      string        // set for events ("thinking"/"tool_call"/"done"/etc.)
+	Step           int           // execution step number for runtime events
+	Content        string
+	ContentType    ContentType
+	Metadata       map[string]any
+	At             time.Time
+}
+
+// ListMessagesResult holds a page of timeline entries and the next cursor.
 type ListMessagesResult struct {
-	Items      []*MessageSummary
-	NextCursor *MessageCursor // nil if no more pages
+	Items      []*TimelineEntry
+	NextCursor *MessageCursor
 }

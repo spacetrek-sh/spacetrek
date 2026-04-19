@@ -38,7 +38,7 @@ func (s *stubChatService) ListMessages(_ context.Context, params chat.ListMessag
 	if s.listMessagesResult != nil {
 		return s.listMessagesResult, nil
 	}
-	return &chat.ListMessagesResult{Items: []*chat.MessageSummary{}}, nil
+	return &chat.ListMessagesResult{Items: []*chat.TimelineEntry{}}, nil
 }
 
 func (s *stubChatService) SendOrCreate(_ context.Context, id, content string, p chat.CreateParams) (*chat.Chat, error) {
@@ -47,6 +47,13 @@ func (s *stubChatService) SendOrCreate(_ context.Context, id, content string, p 
 	s.lastParams = p
 	now := time.Now().UTC()
 	return &chat.Chat{ID: "c1", AgentID: "a1", UserID: "u1", Status: chat.StatusActive, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (s *stubChatService) SendOrCreateAsync(_ context.Context, id, content string, p chat.CreateParams) (string, error) {
+	s.lastID = id
+	s.lastContent = content
+	s.lastParams = p
+	return "c1", nil
 }
 
 func (s *stubChatService) Get(context.Context, string) (*chat.Chat, error) {
@@ -114,8 +121,8 @@ func TestSendMessage_AutoCreatesConversation(t *testing.T) {
 
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 	if svc.lastContent != "hello" {
 		t.Fatalf("expected message %q, got %q", "hello", svc.lastContent)
@@ -148,8 +155,8 @@ func TestSendMessage_ContinuesExistingConversation(t *testing.T) {
 
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 	if svc.lastID != "existing-id" {
 		t.Fatalf("expected id %q, got %q", "existing-id", svc.lastID)
@@ -178,8 +185,8 @@ func TestSendMessage_PassesAgentConfig(t *testing.T) {
 
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 	if svc.lastParams.AgentID != "agent-42" {
 		t.Fatalf("expected agent_id %q, got %q", "agent-42", svc.lastParams.AgentID)
@@ -369,7 +376,7 @@ func TestListMessages_WithCursor(t *testing.T) {
 	r := chi.NewRouter()
 	h.RegisterRoutes(r)
 
-	cursor := encodeMessageCursor(&chat.MessageCursor{SequenceNumber: 42})
+	cursor := encodeMessageCursor(&chat.MessageCursor{Timestamp: time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)})
 
 	req := httptest.NewRequest(http.MethodGet, "/chat/chat-1/messages?cursor="+cursor+"&limit=10", nil)
 	req.Header.Set("Authorization", "Bearer "+testToken(jwtMgr, "user-1", "user"))
@@ -386,8 +393,8 @@ func TestListMessages_WithCursor(t *testing.T) {
 	if svc.lastListMsgParams.Cursor == nil {
 		t.Fatal("expected cursor to be decoded, got nil")
 	}
-	if svc.lastListMsgParams.Cursor.SequenceNumber != 42 {
-		t.Fatalf("expected cursor seq 42, got %d", svc.lastListMsgParams.Cursor.SequenceNumber)
+	if !svc.lastListMsgParams.Cursor.Timestamp.Equal(time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)) {
+		t.Fatalf("expected cursor timestamp 2024-01-15T10:30:00Z, got %s", svc.lastListMsgParams.Cursor.Timestamp)
 	}
 }
 

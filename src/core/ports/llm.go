@@ -8,14 +8,22 @@ import (
 	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
 )
 
+// PriorTurn represents one completed react-loop tool call and its result,
+// used to give the planner multi-turn context within a single user turn.
+type PriorTurn struct {
+	ToolCall   ToolPlanStep
+	ToolResult tool.Result
+}
+
 // PlanRequest is passed to planner implementations to choose tools.
 type PlanRequest struct {
-	ChatID  string
-	AgentID string
-	UserID  string
-	Message string
-	VMID    string
-	History []chat.Message
+	ChatID     string
+	AgentID    string
+	UserID     string
+	Message    string
+	VMID       string
+	History    []chat.Message
+	PriorTurns []PriorTurn
 }
 
 // ToolPlanStep is one planned tool call.

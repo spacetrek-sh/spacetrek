@@ -6,30 +6,41 @@ import "time"
 type RuntimeEventType string
 
 const (
-	EventLLMToken         RuntimeEventType = "llm_token"
-	EventLLMThinking      RuntimeEventType = "llm_thinking"
-	EventLLMAnswer        RuntimeEventType = "llm_answer"
-	EventToolStart        RuntimeEventType = "tool_start"
-	EventToolStdout       RuntimeEventType = "tool_stdout"
-	EventToolEnd          RuntimeEventType = "tool_end"
-	EventExecutionSummary RuntimeEventType = "execution_summary"
-	EventAgentError       RuntimeEventType = "agent_error"
+	EventToken   RuntimeEventType = "token"
+	EventThinking RuntimeEventType = "thinking"
+	EventAnswer  RuntimeEventType = "answer"
+	EventToolCall RuntimeEventType = "tool_call"
+	EventError   RuntimeEventType = "error"
+	EventDone    RuntimeEventType = "done"
 )
 
 // RuntimeEvent is the transport-neutral runtime streaming payload.
 type RuntimeEvent struct {
-	Type          RuntimeEventType `json:"type"`
-	ChatID        string           `json:"chat_id,omitempty"`
-	TraceID       string           `json:"trace_id,omitempty"`
-	ExecutionMode string           `json:"execution_mode,omitempty"`
-	Step          int              `json:"step,omitempty"`
-	Reasoning     string           `json:"reasoning,omitempty"`
-	ToolName      string           `json:"tool_name,omitempty"`
-	ToolArguments map[string]any   `json:"tool_arguments,omitempty"`
-	Data          string           `json:"data,omitempty"`
-	Success       bool             `json:"success,omitempty"`
-	Error         string           `json:"error,omitempty"`
-	FinalStatus   string           `json:"final_status,omitempty"`
-	TokenUsage    *TokenUsage      `json:"token_usage,omitempty"`
-	At            time.Time        `json:"at"`
+	Type       RuntimeEventType `json:"type"`
+	ChatID     string           `json:"chat_id,omitempty"`
+	TraceID    string           `json:"trace_id,omitempty"`
+	Step       int              `json:"step,omitempty"`
+	Data       string           `json:"data,omitempty"`
+	Command    string           `json:"command,omitempty"`
+	Result     string           `json:"result,omitempty"`
+	Error      string           `json:"error,omitempty"`
+	TokenUsage *TokenUsage      `json:"token_usage,omitempty"`
+	At         time.Time        `json:"at"`
+}
+
+// ToPersisted converts a streaming RuntimeEvent into a PersistedRuntimeEvent
+// suitable for database insertion.
+func (e RuntimeEvent) ToPersisted() *PersistedRuntimeEvent {
+	return &PersistedRuntimeEvent{
+		ChatID:     e.ChatID,
+		TraceID:    e.TraceID,
+		Type:       e.Type,
+		Step:       e.Step,
+		Data:       e.Data,
+		Command:    e.Command,
+		Result:     e.Result,
+		Error:      e.Error,
+		TokenUsage: e.TokenUsage,
+		CreatedAt:  e.At,
+	}
 }

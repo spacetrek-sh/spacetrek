@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
@@ -20,22 +21,35 @@ const defaultSystemPrompt = `You are an AI assistant with access to a secure mic
 - **vm.execute_command** — Execute a shell command inside a running VM. Requires vm_id and command. This is your main workhorse for doing actual work.
 - **vm.stop** — Stop a VM and release it from the conversation.
 
+## Environment Constraints
+
+- VMs run in an isolated sandbox with NO internet access. Package managers (apt, apk, pip, npm) will NOT work.
+- Only tools and binaries pre-installed in the base image are available. Use "ls /bin && ls /usr/bin" to discover what is available.
+- Alpine images have: sh, awk, sed, bc, and basic Unix utilities. Use these for computation instead of installing new packages.
+- Ubuntu images have: sh, bash, awk, sed, python3 (if included in the base image), and basic Unix utilities.
+- Work within these constraints. If a language or tool is not available, adapt and use what IS available (e.g., use shell/awk instead of Python).
+
 ## Workflow
 
-Follow this workflow for any task that requires running code or commands:
+You receive a conversation history that may include prior tool calls and their results from earlier steps in this turn. Use that context — do NOT re-query state you already have.
 
-1. **Get a VM**: Call vm.list first. If no VMs are available, call vm.create ONCE with a suitable environment (e.g., "ubuntu" for general tasks, "alpine" for lightweight tasks). Do NOT create multiple VMs.
-2. **Execute commands**: Use vm.execute_command with the vm_id to do all your work — write files, install packages, run programs, etc. You can chain multiple vm.execute_command calls.
-3. **Report results**: Once all commands are done, respond with your final answer summarizing what was done.
+1. **Check prior turns**: If a previous step already created a VM, reuse that vm_id. Do NOT call vm.list or vm.create again.
+2. **Create a VM only once**: If no VM exists yet, call vm.create ONCE with a suitable environment (e.g., "ubuntu" for general tasks, "alpine" for lightweight tasks). Do NOT create multiple VMs.
+3. **Execute commands**: Use vm.execute_command with the existing vm_id to do all your work — write files, run programs, etc.
+4. **Report results**: Once all commands are done, respond with your final answer summarizing what was done.
 
 ## Rules
 
 - For general questions that don't need code execution, respond directly without calling any tool.
+- NEVER call vm.list after creating a VM or executing a command — the VM ID is already in the conversation.
+- NEVER recreate or overwrite files that were already written in a previous step.
+- NEVER try to install packages (apt-get, apk, pip, npm) — VMs have no internet access.
 - Create ONLY ONE VM per conversation. Reuse it for all commands.
 - Always prefer calling a tool over describing what you would do.
-- If a tool call fails, analyze the error and retry with different arguments.
+- If a tool call fails, analyze the error and try an alternative approach with the available tools. Do NOT repeat the same failing command.
 - Never fabricate tool results. Only report what the tool actually returned.
-- Be efficient with steps. Minimize unnecessary vm.list or vm.create calls.`
+- Be efficient with steps. Every step counts toward a maximum limit.
+- ALWAYS respond with a text summary of what you did, even if some steps failed.`
 
 // buildSystemInstruction resolves the system instruction to use.
 // Priority: history-extracted system messages > agent system prompt > hardcoded default.
@@ -101,6 +115,30 @@ func (p *Planner) PlanToolsWithMetadata(ctx context.Context, req ports.PlanReque
 		Parts: []*genai.Part{{Text: req.Message}},
 	})
 
+	// Append prior react-loop turns as function call/result pairs so Gemini
+	// has multi-turn context within this user turn.
+	for _, turn := range req.PriorTurns {
+		contents = append(contents, &genai.Content{
+			Role: genai.RoleModel,
+			Parts: []*genai.Part{{
+				FunctionCall: &genai.FunctionCall{
+					Name: turn.ToolCall.Name,
+					Args: turn.ToolCall.Arguments,
+				},
+				ThoughtSignature: turn.ToolCall.ThoughtSignature,
+			}},
+		})
+		contents = append(contents, &genai.Content{
+			Role: genai.RoleUser,
+			Parts: []*genai.Part{{
+				FunctionResponse: &genai.FunctionResponse{
+					Name:     turn.ToolCall.Name,
+					Response: toolResultToResponse(turn.ToolResult),
+				},
+			}},
+		})
+	}
+
 	genConfig := &genai.GenerateContentConfig{
 		Temperature:       genai.Ptr(float32(0)),
 		MaxOutputTokens:   p.config.MaxOutputTokens,
@@ -112,7 +150,26 @@ func (p *Planner) PlanToolsWithMetadata(ctx context.Context, req ports.PlanReque
 		genConfig.Tools = buildTools(p.tools)
 	}
 
-	logger.DebugContext(ctx, "PlanTools: sending to Gemini", "model", p.config.Model, "content_turns", len(contents), "has_tools", genConfig.Tools != nil)
+	logger.DebugContext(ctx, "PlanTools: sending to Gemini", "model", p.config.Model, "content_turns", len(contents), "prior_turns", len(req.PriorTurns), "has_tools", genConfig.Tools != nil)
+
+	if sysInstr := genConfig.SystemInstruction; sysInstr != nil && len(sysInstr.Parts) > 0 {
+		logger.DebugContext(ctx, "LLM input: system instruction", "model", p.config.Model, "text", sysInstr.Parts[0].Text)
+	}
+	for i, c := range contents {
+		role := string(c.Role)
+		for j, part := range c.Parts {
+			switch {
+			case part.Text != "" && part.FunctionCall == nil:
+				logger.DebugContext(ctx, "LLM input: content", "model", p.config.Model, "turn", i, "part", j, "role", role, "text", part.Text)
+			case part.FunctionCall != nil:
+				args, _ := json.Marshal(part.FunctionCall.Args)
+				logger.DebugContext(ctx, "LLM input: content", "model", p.config.Model, "turn", i, "part", j, "role", role, "function_call", part.FunctionCall.Name, "arguments", string(args))
+			case part.FunctionResponse != nil:
+				respJSON, _ := json.Marshal(part.FunctionResponse.Response)
+				logger.DebugContext(ctx, "LLM input: content", "model", p.config.Model, "turn", i, "part", j, "role", role, "function_response", part.FunctionResponse.Name, "response", string(respJSON))
+			}
+		}
+	}
 
 	resp, err := p.client.Models.GenerateContent(ctx, p.config.Model, contents, genConfig)
 	if err != nil {
@@ -218,6 +275,16 @@ func (p *Planner) FinalResponseWithMetadata(ctx context.Context, req ports.Final
 			Role:  genai.RoleUser,
 			Parts: frParts,
 		})
+
+		// Append an explicit synthesis request so the model always produces text output.
+		contents = append(contents, &genai.Content{
+			Role: genai.RoleModel,
+			Parts: []*genai.Part{{Text: "I have completed my tool calls. Let me summarize the results."}},
+		})
+		contents = append(contents, &genai.Content{
+			Role: genai.RoleUser,
+			Parts: []*genai.Part{{Text: fmt.Sprintf("Based on the tool results above, provide a clear summary of what was accomplished for the user's request: %q. If any steps failed, explain what went wrong and what was tried.", req.Message)}},
+		})
 	}
 
 	genConfig := &genai.GenerateContentConfig{
@@ -229,6 +296,25 @@ func (p *Planner) FinalResponseWithMetadata(ctx context.Context, req ports.Final
 	// Log tool results being sent back to LLM for synthesis.
 	for _, result := range req.ToolResults {
 		logger.DebugContext(ctx, "LLM tool result", "model", p.config.Model, "tool", result.ToolName, "ok", result.OK, "output", toolResultToResponse(result))
+	}
+
+	if sysInstr := genConfig.SystemInstruction; sysInstr != nil && len(sysInstr.Parts) > 0 {
+		logger.DebugContext(ctx, "LLM input (final): system instruction", "model", p.config.Model, "text", sysInstr.Parts[0].Text)
+	}
+	for i, c := range contents {
+		role := string(c.Role)
+		for j, part := range c.Parts {
+			switch {
+			case part.Text != "" && part.FunctionCall == nil:
+				logger.DebugContext(ctx, "LLM input (final): content", "model", p.config.Model, "turn", i, "part", j, "role", role, "text", part.Text)
+			case part.FunctionCall != nil:
+				args, _ := json.Marshal(part.FunctionCall.Args)
+				logger.DebugContext(ctx, "LLM input (final): content", "model", p.config.Model, "turn", i, "part", j, "role", role, "function_call", part.FunctionCall.Name, "arguments", string(args))
+			case part.FunctionResponse != nil:
+				respJSON, _ := json.Marshal(part.FunctionResponse.Response)
+				logger.DebugContext(ctx, "LLM input (final): content", "model", p.config.Model, "turn", i, "part", j, "role", role, "function_response", part.FunctionResponse.Name, "response", string(respJSON))
+			}
+		}
 	}
 
 	resp, err := p.client.Models.GenerateContent(ctx, p.config.Model, contents, genConfig)

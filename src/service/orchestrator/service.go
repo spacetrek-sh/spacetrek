@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -127,21 +126,22 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		StartedAt:     time.Now().UTC(),
 	}
 
-	currentMessage := input.Message
 	executedSteps := make([]ports.ToolPlanStep, 0)
 	toolResults := make([]tool.Result, 0)
+	priorTurns := make([]ports.PriorTurn, 0)
 	metaPlanner, hasMetadataPlanner := s.planner.(ports.ToolPlannerWithMetadata)
 
 	for step := 1; step <= s.config.MaxReactSteps; step++ {
 		logger.DebugContext(ctx, "orchestrator: calling planner", "chat_id", input.ChatID, "step", step)
 
 		planReq := ports.PlanRequest{
-			ChatID:  input.ChatID,
-			AgentID: input.AgentID,
-			UserID:  input.UserID,
-			Message: currentMessage,
-			VMID:    input.VMID,
-			History: input.History,
+			ChatID:     input.ChatID,
+			AgentID:    input.AgentID,
+			UserID:     input.UserID,
+			Message:    input.Message,
+			VMID:       input.VMID,
+			History:    input.History,
+			PriorTurns: priorTurns,
 		}
 
 		var (
@@ -160,54 +160,43 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		}
 		trace.TokenUsage.Add(planMeta.TokenUsage)
 
-		// Emit LLM thinking and answer events for this planning step.
+		if len(plan.Steps) == 0 {
+			logger.DebugContext(ctx, "orchestrator: planner returned no tool steps, exiting loop", "chat_id", input.ChatID, "step", step)
+			break
+		}
+
+		// Emit thinking and answer events for this planning step.
 		if planMeta.Thinking != "" {
 			emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-				Type:          orchdomain.EventLLMThinking,
-				ChatID:        input.ChatID,
-				TraceID:       trace.TraceID,
-				ExecutionMode: trace.ExecutionMode,
-				Step:          step,
-				Data:          planMeta.Thinking,
-				At:            time.Now().UTC(),
+				Type:    orchdomain.EventThinking,
+				ChatID:  input.ChatID,
+				TraceID: trace.TraceID,
+				Step:    step,
+				Data:    planMeta.Thinking,
+				At:      time.Now().UTC(),
 			})
 		}
 		if planMeta.Answer != "" {
 			emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-				Type:          orchdomain.EventLLMAnswer,
-				ChatID:        input.ChatID,
-				TraceID:       trace.TraceID,
-				ExecutionMode: trace.ExecutionMode,
-				Step:          step,
-				Data:          planMeta.Answer,
-				At:            time.Now().UTC(),
+				Type:    orchdomain.EventAnswer,
+				ChatID:  input.ChatID,
+				TraceID: trace.TraceID,
+				Step:    step,
+				Data:    planMeta.Answer,
+				At:      time.Now().UTC(),
 			})
-		}
-
-		if len(plan.Steps) == 0 {
-			logger.DebugContext(ctx, "orchestrator: planner returned no tool steps, exiting loop", "chat_id", input.ChatID, "step", step)
-			break
 		}
 
 		// ReAct loop executes one action at a time so the next plan can use the latest observation.
 		next := plan.Steps[0]
 		executedSteps = append(executedSteps, next)
 
-		emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-			Type:          orchdomain.EventToolStart,
-			ChatID:        input.ChatID,
-			TraceID:       trace.TraceID,
-			ExecutionMode: trace.ExecutionMode,
-			Step:          step,
-			Reasoning:     planMeta.Reasoning,
-			ToolName:      next.Name,
-			ToolArguments: next.Arguments,
-			Data:          fmt.Sprintf("react_step=%d", step),
-			At:            time.Now().UTC(),
-		})
-
 		result := s.executeStep(ctx, next)
 		toolResults = append(toolResults, result)
+		priorTurns = append(priorTurns, ports.PriorTurn{
+			ToolCall:   next,
+			ToolResult: result,
+		})
 
 		logger.DebugContext(ctx, "react step executed", "chat_id", input.ChatID, "step", step, "tool", next.Name, "ok", result.OK)
 
@@ -223,30 +212,20 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 			observation = "error: " + result.Error
 		}
 
-		if observation != "" {
+		// Only emit tool_call for vm.execute_command.
+		if next.Name == "vm.execute_command" {
+			cmd, _ := next.Arguments["command"].(string)
 			emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-				Type:          orchdomain.EventToolStdout,
-				ChatID:        input.ChatID,
-				TraceID:       trace.TraceID,
-				ExecutionMode: trace.ExecutionMode,
-				Step:          step,
-				ToolName:      next.Name,
-				Data:          observation,
-				At:            time.Now().UTC(),
+				Type:    orchdomain.EventToolCall,
+				ChatID:  input.ChatID,
+				TraceID: trace.TraceID,
+				Step:    step,
+				Command: cmd,
+				Result:  observation,
+				Error:   result.Error,
+				At:      time.Now().UTC(),
 			})
 		}
-
-		emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-			Type:          orchdomain.EventToolEnd,
-			ChatID:        input.ChatID,
-			TraceID:       trace.TraceID,
-			ExecutionMode: trace.ExecutionMode,
-			Step:          step,
-			ToolName:      next.Name,
-			Success:       result.OK,
-			Error:         result.Error,
-			At:            time.Now().UTC(),
-		})
 
 		trace.Steps = append(trace.Steps, orchdomain.TraceStep{
 			Step:          step,
@@ -260,8 +239,6 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		if planMeta.Reasoning != "" {
 			trace.Reasoning = planMeta.Reasoning
 		}
-
-		currentMessage = buildReactObservationMessage(input.Message, step, next, result)
 	}
 
 	finalReq := ports.FinalResponseRequest{
@@ -292,16 +269,15 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		trace.Reasoning = finalMeta.Reasoning
 	}
 
-	// Emit final LLM thinking event.
+	// Emit final thinking event.
 	if finalMeta.Thinking != "" {
 		emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-			Type:          orchdomain.EventLLMThinking,
-			ChatID:        input.ChatID,
-			TraceID:       trace.TraceID,
-			ExecutionMode: trace.ExecutionMode,
-			Step:          len(trace.Steps) + 1,
-			Data:          finalMeta.Thinking,
-			At:            time.Now().UTC(),
+			Type:    orchdomain.EventThinking,
+			ChatID:  input.ChatID,
+			TraceID: trace.TraceID,
+			Step:    len(trace.Steps) + 1,
+			Data:    finalMeta.Thinking,
+			At:      time.Now().UTC(),
 		})
 	}
 
@@ -317,26 +293,12 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 	}
 
 	emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-		Type:          orchdomain.EventExecutionSummary,
-		ChatID:        input.ChatID,
-		TraceID:       trace.TraceID,
-		ExecutionMode: trace.ExecutionMode,
-		Step:          len(trace.Steps),
-		Data:          fmt.Sprintf("steps=%d", len(trace.Steps)),
-		FinalStatus:   "success",
-		TokenUsage:    tokenUsage,
-		At:            time.Now().UTC(),
-	})
-
-	emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-		Type:          orchdomain.EventLLMToken,
-		ChatID:        input.ChatID,
-		TraceID:       trace.TraceID,
-		ExecutionMode: trace.ExecutionMode,
-		Reasoning:     trace.Reasoning,
-		Data:          assistant,
-		TokenUsage:    tokenUsage,
-		At:            time.Now().UTC(),
+		Type:       orchdomain.EventToken,
+		ChatID:     input.ChatID,
+		TraceID:    trace.TraceID,
+		Data:       assistant,
+		TokenUsage: tokenUsage,
+		At:         time.Now().UTC(),
 	})
 
 	state := orchdomain.State{
@@ -413,24 +375,4 @@ func emitRuntimeEvent(emitFn func(event orchdomain.RuntimeEvent), event orchdoma
 		return
 	}
 	emitFn(event)
-}
-
-func buildReactObservationMessage(original string, step int, executed ports.ToolPlanStep, result tool.Result) string {
-	observation := ""
-	if payload, ok := result.Payload.(map[string]any); ok {
-		if out, ok := payload["output"].(string); ok {
-			observation = out
-		} else if raw, err := json.Marshal(payload); err == nil {
-			observation = string(raw)
-		}
-	}
-	if observation == "" && result.Error != "" {
-		observation = result.Error
-	}
-	observation = strings.TrimSpace(observation)
-	if observation == "" {
-		observation = "(no observation)"
-	}
-
-	return fmt.Sprintf("%s\n\n[react_step=%d]\nexecuted_tool=%s\nobservation=%s", original, step, executed.Name, observation)
 }

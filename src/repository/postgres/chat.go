@@ -31,6 +31,7 @@ type messageRow struct {
 	ID             string       `db:"id"`
 	ChatID         string       `db:"chat_id"`
 	Role           string       `db:"role"`
+	ContentType    string       `db:"content_type"`
 	ContentBody    string       `db:"content_body"`
 	Metadata       []byte       `db:"metadata"`
 	SequenceNumber int64        `db:"sequence_number"`
@@ -170,12 +171,17 @@ func (r *chatRepository) insertMessages(ctx context.Context, chatID string, msgs
 
 	query := `
 		INSERT INTO messages (id, chat_id, role, content_type, content_body, metadata, sequence_number, created_at)
-		VALUES ($1, $2, $3, 'text', $4, $5, $6, $7)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
 
 	for i, m := range msgs {
 		msgID := uuid.NewString()
 		seq := int64(startSeq + i + 1)
+
+		ct := string(m.ContentType)
+		if ct == "" {
+			ct = string(chat.ContentText)
+		}
 
 		var metadataJSON []byte
 		if len(m.Metadata) > 0 {
@@ -187,7 +193,7 @@ func (r *chatRepository) insertMessages(ctx context.Context, chatID string, msgs
 		}
 
 		if _, err := r.db.ExecContext(ctx, query,
-			msgID, chatID, string(m.Role), m.Content, metadataJSON, seq, m.At,
+			msgID, chatID, string(m.Role), ct, m.Content, metadataJSON, seq, m.At,
 		); err != nil {
 			logger.ErrorContext(ctx, "postgres: insert message failed",
 				"chat_id", chatID, "seq", seq, "error", err)
@@ -202,7 +208,7 @@ func (r *chatRepository) loadMessages(ctx context.Context, chatID string) ([]cha
 	logger := pkglog.FromContext(ctx)
 
 	query := `
-		SELECT id, chat_id, role, content_body, metadata, sequence_number, created_at
+		SELECT id, chat_id, role, content_type, content_body, metadata, sequence_number, created_at
 		FROM messages
 		WHERE chat_id = $1 AND deleted_at IS NULL
 		ORDER BY sequence_number ASC
@@ -217,8 +223,9 @@ func (r *chatRepository) loadMessages(ctx context.Context, chatID string) ([]cha
 	msgs := make([]chat.Message, 0, len(rows))
 	for _, row := range rows {
 		m := chat.Message{
-			Role:    chat.Role(row.Role),
-			Content: row.ContentBody,
+			Role:        chat.Role(row.Role),
+			Content:     row.ContentBody,
+			ContentType: chat.ContentType(row.ContentType),
 		}
 		if len(row.Metadata) > 0 {
 			var metadata map[string]any
@@ -374,23 +381,61 @@ func (r *chatRepository) ListMessages(ctx context.Context, params chat.ListMessa
 		params.Limit = 50
 	}
 
+	// UNION ALL merges conversation messages and runtime events into one timeline.
 	query := `
-		SELECT id, chat_id, role, content_body, metadata, sequence_number, created_at
-		FROM messages
-		WHERE chat_id = $1
-		  AND deleted_at IS NULL
-		  AND ($2::bigint IS NULL OR sequence_number < $2)
-		ORDER BY sequence_number DESC
+		SELECT id, role_or_type AS role, content, metadata, created_at, source,
+		       sequence_number, step
+		FROM (
+		    SELECT id, role::text AS role_or_type, content_body AS content,
+		           metadata, created_at, 'message'::text AS source,
+		           sequence_number, 0 AS step
+		    FROM messages
+		    WHERE chat_id = $1 AND deleted_at IS NULL
+		      AND ($2::timestamptz IS NULL OR created_at < $2)
+
+		    UNION ALL
+
+		    SELECT id, type::text AS role_or_type,
+		           COALESCE(NULLIF(data, ''), error, '') AS content,
+		           COALESCE(
+		               metadata,
+		               jsonb_build_object(
+		                   'command', command,
+		                   'result',  result,
+		                   'error',   error,
+		                   'step',    step
+		               )
+		           ) AS metadata,
+		           created_at, 'event'::text AS source,
+		           0::bigint AS sequence_number,
+		           step
+		    FROM runtime_events
+		    WHERE chat_id = $1
+		      AND ($2::timestamptz IS NULL OR created_at < $2)
+		      AND type NOT IN ('done', 'token')
+		) combined
+		ORDER BY created_at DESC
 		LIMIT $3
 	`
 
-	var cursorSeq any
+	var cursorTS any
 	if params.Cursor != nil {
-		cursorSeq = params.Cursor.SequenceNumber
+		cursorTS = params.Cursor.Timestamp
 	}
 
-	rows := make([]messageRow, 0)
-	if err := r.db.SelectContext(ctx, &rows, query, params.ChatID, cursorSeq, params.Limit+1); err != nil {
+	type timelineRow struct {
+		ID             string       `db:"id"`
+		Role           string       `db:"role"`
+		Content        string       `db:"content"`
+		Metadata       []byte       `db:"metadata"`
+		CreatedAt      sql.NullTime `db:"created_at"`
+		Source         string       `db:"source"`
+		SequenceNumber int64        `db:"sequence_number"`
+		Step           int          `db:"step"`
+	}
+
+	rows := make([]timelineRow, 0)
+	if err := r.db.SelectContext(ctx, &rows, query, params.ChatID, cursorTS, params.Limit+1); err != nil {
 		logger.ErrorContext(ctx, "postgres: list messages failed", "chat_id", params.ChatID, "error", err)
 		return nil, exception.Internal(fmt.Errorf("list messages: %w", err))
 	}
@@ -400,30 +445,36 @@ func (r *chatRepository) ListMessages(ctx context.Context, params chat.ListMessa
 		rows = rows[:params.Limit]
 	}
 
-	items := make([]*chat.MessageSummary, len(rows))
+	items := make([]*chat.TimelineEntry, len(rows))
 	for i, row := range rows {
-		m := &chat.MessageSummary{
+		entry := &chat.TimelineEntry{
 			ID:             row.ID,
+			Source:         row.Source,
 			SequenceNumber: row.SequenceNumber,
-			Role:           chat.Role(row.Role),
-			Content:        row.ContentBody,
+			Content:        row.Content,
+			ContentType:    chat.ContentText,
+		}
+		if row.Source == "message" {
+			entry.Role = chat.Role(row.Role)
+		} else {
+			entry.EventType = row.Role
 		}
 		if len(row.Metadata) > 0 {
 			var metadata map[string]any
 			if err := json.Unmarshal(row.Metadata, &metadata); err == nil {
-				m.Metadata = metadata
+				entry.Metadata = metadata
 			}
 		}
 		if row.CreatedAt.Valid {
-			m.At = row.CreatedAt.Time
+			entry.At = row.CreatedAt.Time
 		}
-		items[i] = m
+		items[i] = entry
 	}
 
 	var nextCursor *chat.MessageCursor
 	if hasMore && len(items) > 0 {
 		nextCursor = &chat.MessageCursor{
-			SequenceNumber: items[len(items)-1].SequenceNumber,
+			Timestamp: items[len(items)-1].At,
 		}
 	}
 

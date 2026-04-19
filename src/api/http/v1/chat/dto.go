@@ -13,10 +13,11 @@ type sendMessageRequest struct {
 
 // messageResponse is the JSON representation of a single conversation turn.
 type messageResponse struct {
-	Role     string         `json:"role"`
-	Content  string         `json:"content"`
-	Metadata map[string]any `json:"metadata,omitempty"`
-	At       time.Time      `json:"at"`
+	Role        string         `json:"role"`
+	Content     string         `json:"content"`
+	ContentType string         `json:"content_type"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	At          time.Time      `json:"at"`
 }
 
 // chatResponse is the JSON representation of a chat.
@@ -51,19 +52,30 @@ type listConversationsResponse struct {
 	HasMore       bool                          `json:"has_more"`
 }
 
-// messageSummaryResponse is the JSON representation of a message in a paginated list.
+// messageSummaryResponse is the JSON representation of a timeline entry
+// (either a conversation message or a runtime event).
 type messageSummaryResponse struct {
 	ID             string         `json:"id"`
-	SequenceNumber int64          `json:"sequence_number"`
-	Role           string         `json:"role"`
+	Source         string         `json:"source"`
+	SequenceNumber int64          `json:"sequence_number,omitempty"`
+	Role           string         `json:"role,omitempty"`
+	EventType      string         `json:"event_type,omitempty"`
+	Step           int            `json:"step,omitempty"`
 	Content        string         `json:"content"`
+	ContentType    string         `json:"content_type,omitempty"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
 	At             time.Time      `json:"at"`
 }
 
-// listMessagesResponse wraps a paginated list of messages.
+// listMessagesResponse wraps a paginated list of timeline entries.
 type listMessagesResponse struct {
 	Messages   []messageSummaryResponse `json:"messages"`
 	NextCursor string                   `json:"next_cursor,omitempty"`
 	HasMore    bool                     `json:"has_more"`
+}
+
+// messageAcceptedResponse is returned when a message is accepted for async processing.
+type messageAcceptedResponse struct {
+	ChatID string `json:"chat_id"`
+	Status string `json:"status"`
 }

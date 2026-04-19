@@ -23,21 +23,27 @@ type Orchestrator interface {
 
 // Service implements the chat business logic.
 type Service struct {
-	chats  chat.Repository
-	agents agent.Repository
-	orch   Orchestrator
+	chats    chat.Repository
+	runtimes orchdomain.RuntimeEventRepository
+	agents   agent.Repository
+	orch     Orchestrator
 
 	mu          sync.RWMutex
 	subscribers map[string]map[uint64]chan orchdomain.RuntimeEvent
 	subscriberN atomic.Uint64
+
+	eventBufMu sync.Mutex
+	eventBufs  map[string][]orchdomain.RuntimeEvent
 }
 
-func New(chats chat.Repository, agents agent.Repository, orch Orchestrator) *Service {
+func New(chats chat.Repository, runtimes orchdomain.RuntimeEventRepository, agents agent.Repository, orch Orchestrator) *Service {
 	return &Service{
 		chats:       chats,
+		runtimes:    runtimes,
 		agents:      agents,
 		orch:        orch,
 		subscribers: make(map[string]map[uint64]chan orchdomain.RuntimeEvent),
+		eventBufs:   make(map[string][]orchdomain.RuntimeEvent),
 	}
 }
 
@@ -131,6 +137,143 @@ func (s *Service) SendOrCreate(ctx context.Context, id, content string, p chat.C
 	return s.SendMessage(ctx, c.ID, content, "")
 }
 
+// SendOrCreateAsync is the async variant — returns the chat immediately,
+// runs orchestration in the background, streams events to SSE subscribers.
+func (s *Service) SendOrCreateAsync(ctx context.Context, id, content string, p chat.CreateParams) (string, error) {
+	if id == "" {
+		c, err := s.Create(ctx, p)
+		if err != nil {
+			return "", err
+		}
+		id = c.ID
+	}
+
+	if err := s.SendMessageAsync(ctx, id, content, ""); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// SendMessageAsync validates, persists the user message, launches orchestration
+// in a background goroutine, and returns immediately.
+// Events are published to SSE subscribers. A processing_done event signals completion.
+func (s *Service) SendMessageAsync(ctx context.Context, id, content, vmID string) error {
+	logger := pkglog.FromContext(ctx)
+
+	logger.DebugContext(ctx, "chat send message async: starting", "chat_id", id, "message_len", len(content), "vm_id", vmID)
+
+	c, err := s.chats.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if c.Status == chat.StatusClosed {
+		return exception.BadRequest("chat is already closed")
+	}
+
+	c.AddMessage(chat.RoleUser, content)
+	if err := s.chats.Update(ctx, c); err != nil {
+		logger.ErrorContext(ctx, "failed to persist user message", "chat_id", id, "error", err)
+		return err
+	}
+	logger.DebugContext(ctx, "chat send message async: user message persisted", "chat_id", id, "history_count", len(c.Messages))
+
+	chatID := id
+	agentID := c.AgentID
+	userID := c.UserID
+
+	go func() {
+		bgCtx := context.Background()
+		bgLogger := pkglog.FromContext(bgCtx).With("chat_id", chatID)
+		bgCtx = pkglog.WithLogger(bgCtx, bgLogger)
+
+		if s.orch == nil {
+			bgLogger.WarnContext(bgCtx, "no orchestrator configured")
+			errEvent := orchdomain.RuntimeEvent{
+				Type:   orchdomain.EventError,
+				ChatID: chatID,
+				Error:  "orchestrator not configured",
+				At:     time.Now().UTC(),
+			}
+			s.publish(errEvent)
+			s.persistEvent(chatID, errEvent)
+			return
+		}
+
+		emit := func(event orchdomain.RuntimeEvent) {
+			if event.ChatID == "" {
+				event.ChatID = chatID
+			}
+			if event.At.IsZero() {
+				event.At = time.Now().UTC()
+			}
+			s.publish(event)
+			s.persistEvent(chatID, event)
+		}
+
+		bgLogger.DebugContext(bgCtx, "async orchestrator: starting")
+		result, err := s.orch.Process(bgCtx, orchestratorsvc.ProcessInput{
+			ChatID:    chatID,
+			AgentID:   agentID,
+			UserID:    userID,
+			Message:   content,
+			VMID:      vmID,
+			History:   c.Messages,
+			EmitEvent: emit,
+		})
+
+		if err != nil {
+			bgLogger.ErrorContext(bgCtx, "async orchestrator failed", "error", err)
+			errEvent := orchdomain.RuntimeEvent{
+				Type:   orchdomain.EventError,
+				ChatID: chatID,
+				Error:  err.Error(),
+				At:     time.Now().UTC(),
+			}
+			s.publish(errEvent)
+			s.persistEvent(chatID, errEvent)
+			return
+		}
+
+		assistant := result.AssistantMessage
+		if assistant == "" {
+			assistant = "[orchestrator returned empty response]"
+		}
+
+		updated, err := s.chats.GetByID(bgCtx, chatID)
+		if err != nil {
+			bgLogger.ErrorContext(bgCtx, "failed to reload chat for persisting assistant", "error", err)
+			return
+		}
+		updated.AddMessageWithMetadata(chat.RoleAssistant, assistant, buildAssistantMetadata(result.Trace))
+		if err := s.chats.Update(bgCtx, updated); err != nil {
+			bgLogger.ErrorContext(bgCtx, "failed to persist assistant message", "error", err)
+			return
+		}
+
+		bgLogger.DebugContext(bgCtx, "async orchestrator completed", "response_len", len(assistant))
+
+		doneEvent := orchdomain.RuntimeEvent{
+			Type:       orchdomain.EventDone,
+			ChatID:     chatID,
+			Data:       assistant,
+			TokenUsage: tokenUsagePtr(result.Trace),
+			At:         time.Now().UTC(),
+		}
+		s.publish(doneEvent)
+		s.persistEvent(chatID, doneEvent)
+	}()
+
+	return nil
+}
+
+func tokenUsagePtr(trace *orchdomain.ExecutionTrace) *orchdomain.TokenUsage {
+	if trace == nil || trace.TokenUsage.IsZero() {
+		return nil
+	}
+	copy := trace.TokenUsage
+	return &copy
+}
+
 // SendMessage appends user input, runs orchestrator flow, and persists updates.
 func (s *Service) SendMessage(ctx context.Context, id, content, vmID string) (*chat.Chat, error) {
 	logger := pkglog.FromContext(ctx)
@@ -159,6 +302,7 @@ func (s *Service) SendMessage(ctx context.Context, id, content, vmID string) (*c
 				event.At = time.Now().UTC()
 			}
 			s.publish(event)
+			s.persistEvent(id, event)
 		}
 
 		result, err := s.orch.Process(ctx, orchestratorsvc.ProcessInput{
@@ -172,12 +316,14 @@ func (s *Service) SendMessage(ctx context.Context, id, content, vmID string) (*c
 		})
 		if err != nil {
 			logger.ErrorContext(ctx, "orchestrator process failed", "chat_id", id, "error", err)
-			s.publish(orchdomain.RuntimeEvent{
-				Type:   orchdomain.EventAgentError,
+			errEvent := orchdomain.RuntimeEvent{
+				Type:   orchdomain.EventError,
 				ChatID: id,
 				Error:  err.Error(),
 				At:     time.Now().UTC(),
-			})
+			}
+			s.publish(errEvent)
+			s.persistEvent(id, errEvent)
 			return nil, err
 		}
 
@@ -226,10 +372,36 @@ func (s *Service) SubscribeRuntimeEvents(ctx context.Context, chatID string) (<-
 	}()
 
 	logger.DebugContext(ctx, "runtime events subscriber registered", "chat_id", chatID)
+
+	// Replay buffered events so late subscribers don't miss anything.
+	s.eventBufMu.Lock()
+	buf := s.eventBufs[chatID]
+	s.eventBufMu.Unlock()
+
+	if len(buf) > 0 {
+		go func() {
+			for _, evt := range buf {
+				select {
+				case ch <- evt:
+				default:
+				}
+			}
+		}()
+	}
+
 	return ch, nil
 }
 
 func (s *Service) publish(event orchdomain.RuntimeEvent) {
+	// Buffer event for late subscribers.
+	s.eventBufMu.Lock()
+	s.eventBufs[event.ChatID] = append(s.eventBufs[event.ChatID], event)
+	// Keep buffer bounded: clear on done.
+	if event.Type == orchdomain.EventDone {
+		delete(s.eventBufs, event.ChatID)
+	}
+	s.eventBufMu.Unlock()
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -258,6 +430,22 @@ func (s *Service) unsubscribe(chatID string, id uint64) {
 
 	if len(listeners) == 0 {
 		delete(s.subscribers, chatID)
+	}
+}
+
+// persistEvent saves a runtime event via direct INSERT into runtime_events table.
+func (s *Service) persistEvent(chatID string, event orchdomain.RuntimeEvent) {
+	ctx := context.Background()
+	logger := pkglog.FromContext(ctx)
+
+	persisted := event.ToPersisted()
+	if persisted.ChatID == "" {
+		persisted.ChatID = chatID
+	}
+
+	if err := s.runtimes.Insert(ctx, persisted); err != nil {
+		logger.WarnContext(ctx, "failed to persist runtime event",
+			"chat_id", chatID, "event_type", event.Type, "error", err)
 	}
 }
 

@@ -21,7 +21,7 @@ import (
 // chatService is the local dependency interface for the handler.
 // chatsvc.Service satisfies this automatically.
 type chatService interface {
-	SendOrCreate(ctx context.Context, id, content string, p chat.CreateParams) (*chat.Chat, error)
+	SendOrCreateAsync(ctx context.Context, id, content string, p chat.CreateParams) (string, error)
 	Get(ctx context.Context, id string) (*chat.Chat, error)
 	ListConversations(ctx context.Context, params chat.ListParams) (*chat.ListResult, error)
 	ListMessages(ctx context.Context, params chat.ListMessagesParams) (*chat.ListMessagesResult, error)
@@ -75,7 +75,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		"agent_id", req.AgentID,
 		"user_id", userID)
 
-	c, err := h.svc.SendOrCreate(ctx, req.ConversationID, req.Message, chat.CreateParams{
+	chatID, err := h.svc.SendOrCreateAsync(ctx, req.ConversationID, req.Message, chat.CreateParams{
 		UserID:       userID,
 		AgentID:      req.AgentID,
 		Model:        req.Model,
@@ -88,14 +88,14 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	statusCode := http.StatusOK
-	if req.ConversationID == "" {
-		statusCode = http.StatusCreated
-	}
+	statusCode := http.StatusAccepted
 
-	logger.InfoContext(ctx, "chat message processed",
-		"chat_id", c.ID, "message_count", len(c.Messages))
-	httputil.WriteJSON(w, statusCode, "message sent", toResponse(c))
+	logger.InfoContext(ctx, "chat message accepted",
+		"chat_id", chatID)
+	httputil.WriteJSON(w, statusCode, "message accepted", messageAcceptedResponse{
+		ChatID: chatID,
+		Status: "processing",
+	})
 }
 
 // Get handles GET /api/v1/chat/{id}
@@ -279,16 +279,17 @@ func parseMessageCursor(r *http.Request) *chat.MessageCursor {
 	}
 
 	var raw struct {
-		Seq int64 `json:"s"`
+		T string `json:"t"`
 	}
 	if err := json.Unmarshal(decoded, &raw); err != nil {
 		return nil
 	}
-	if raw.Seq <= 0 {
+	ts, err := time.Parse(time.RFC3339Nano, raw.T)
+	if err != nil {
 		return nil
 	}
 
-	return &chat.MessageCursor{SequenceNumber: raw.Seq}
+	return &chat.MessageCursor{Timestamp: ts}
 }
 
 func encodeMessageCursor(c *chat.MessageCursor) string {
@@ -296,8 +297,8 @@ func encodeMessageCursor(c *chat.MessageCursor) string {
 		return ""
 	}
 	raw := struct {
-		Seq int64 `json:"s"`
-	}{Seq: c.SequenceNumber}
+		T string `json:"t"`
+	}{T: c.Timestamp.Format(time.RFC3339Nano)}
 	b, _ := json.Marshal(raw)
 	return base64.URLEncoding.EncodeToString(b)
 }
@@ -307,9 +308,13 @@ func toListMessagesResponse(result *chat.ListMessagesResult) *listMessagesRespon
 	for i, m := range result.Items {
 		items[i] = messageSummaryResponse{
 			ID:             m.ID,
+			Source:         m.Source,
 			SequenceNumber: m.SequenceNumber,
 			Role:           string(m.Role),
+			EventType:      m.EventType,
+			Step:           m.Step,
 			Content:        m.Content,
+			ContentType:    string(m.ContentType),
 			Metadata:       m.Metadata,
 			At:             m.At,
 		}
@@ -394,10 +399,11 @@ func toResponse(c *chat.Chat) *chatResponse {
 	msgs := make([]messageResponse, len(c.Messages))
 	for i, m := range c.Messages {
 		msgs[i] = messageResponse{
-			Role:     string(m.Role),
-			Content:  m.Content,
-			Metadata: m.Metadata,
-			At:       m.At,
+			Role:        string(m.Role),
+			Content:     m.Content,
+			ContentType: string(m.ContentType),
+			Metadata:    m.Metadata,
+			At:          m.At,
 		}
 	}
 	return &chatResponse{

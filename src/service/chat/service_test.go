@@ -42,7 +42,7 @@ func TestSendMessage_ForwardsToOrchestrator(t *testing.T) {
 	agentRepo := memory.NewAgentRepository()
 	chatRepo := memory.NewChatRepository()
 	orch := &fakeOrchestrator{}
-	svc := New(chatRepo, agentRepo, orch)
+	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch)
 
 	created, err := svc.Create(context.Background(), chat.CreateParams{})
 	if err != nil {
@@ -87,7 +87,7 @@ func TestSendOrCreate_AutoCreatesWhenNoID(t *testing.T) {
 	agentRepo := memory.NewAgentRepository()
 	chatRepo := memory.NewChatRepository()
 	orch := &fakeOrchestrator{}
-	svc := New(chatRepo, agentRepo, orch)
+	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch)
 
 	c, err := svc.SendOrCreate(context.Background(), "", "hello", chat.CreateParams{})
 	if err != nil {
@@ -109,7 +109,7 @@ func TestSendOrCreate_UsesExistingWhenIDProvided(t *testing.T) {
 	agentRepo := memory.NewAgentRepository()
 	chatRepo := memory.NewChatRepository()
 	orch := &fakeOrchestrator{}
-	svc := New(chatRepo, agentRepo, orch)
+	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch)
 
 	created, err := svc.Create(context.Background(), chat.CreateParams{})
 	if err != nil {
@@ -130,7 +130,7 @@ func TestSubscribeRuntimeEvents_ReceivesPublishedEvents(t *testing.T) {
 	agentRepo := memory.NewAgentRepository()
 	chatRepo := memory.NewChatRepository()
 	orch := &fakeOrchestrator{}
-	svc := New(chatRepo, agentRepo, orch)
+	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch)
 
 	created, err := svc.Create(context.Background(), chat.CreateParams{})
 	if err != nil {
@@ -145,12 +145,12 @@ func TestSubscribeRuntimeEvents_ReceivesPublishedEvents(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	svc.publish(orchestrator.RuntimeEvent{Type: orchestrator.EventLLMToken, ChatID: created.ID, Data: "x", At: time.Now().UTC()})
+	svc.publish(orchestrator.RuntimeEvent{Type: orchestrator.EventToken, ChatID: created.ID, Data: "x", At: time.Now().UTC()})
 
 	select {
 	case ev := <-events:
-		if ev.Type != orchestrator.EventLLMToken {
-			t.Fatalf("expected %q, got %q", orchestrator.EventLLMToken, ev.Type)
+		if ev.Type != orchestrator.EventToken {
+			t.Fatalf("expected %q, got %q", orchestrator.EventToken, ev.Type)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for runtime event")
