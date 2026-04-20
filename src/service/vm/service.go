@@ -5,17 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	"github.com/kumori-sh/spacetrk/src/core/domain/environment"
-	"github.com/kumori-sh/spacetrk/src/core/domain/snapshot"
-	"github.com/kumori-sh/spacetrk/src/core/ports"
-	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/environment"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/snapshot"
+	"github.com/spacetrek-sh/spacetrek/src/core/ports"
+	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 )
 
 const (
@@ -34,9 +35,88 @@ type Service struct {
 	backend       vmdomain.Backend // VM provider (Firecracker, etc.)
 	envRepo       EnvironmentRepository
 	snapshotStore ports.SnapshotStore // nil = local-only mode
+	ipAllocator   *IPAllocator       // nil when networking disabled
+	networkCfg    NetworkConfig      // zero-value when networking disabled
 	idleTimeout   time.Duration
 	autoSnapshot  bool
 	resumeGrace   time.Duration
+}
+
+// NetworkConfig carries network parameters from app config to the VM service.
+type NetworkConfig struct {
+	BridgeName string
+	Subnet     string
+	GatewayIP  string
+	DNSIP      string
+}
+
+// IPAllocator manages IP address allocation from a configured range.
+type IPAllocator struct {
+	repo    vmdomain.Repository
+	ipStart net.IP
+	ipEnd   net.IP
+}
+
+// NewIPAllocator creates an IPAllocator from the given range strings.
+func NewIPAllocator(repo vmdomain.Repository, ipStart, ipEnd string) (*IPAllocator, error) {
+	start := net.ParseIP(ipStart)
+	if start == nil {
+		return nil, fmt.Errorf("invalid ip_start: %s", ipStart)
+	}
+	end := net.ParseIP(ipEnd)
+	if end == nil {
+		return nil, fmt.Errorf("invalid ip_end: %s", ipEnd)
+	}
+	return &IPAllocator{repo: repo, ipStart: start, ipEnd: end}, nil
+}
+
+// Allocate finds the first free IP in the range and assigns it to the VM.
+func (a *IPAllocator) Allocate(ctx context.Context, vmID string) (string, error) {
+	allocated, err := a.repo.GetAllocatedIPs(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get allocated ips: %w", err)
+	}
+
+	inUse := make(map[string]struct{}, len(allocated))
+	for _, ip := range allocated {
+		inUse[ip] = struct{}{}
+	}
+
+	for ip := a.ipStart; !ip.Equal(a.ipEnd); ip = nextIP(ip) {
+		if _, used := inUse[ip.String()]; !used {
+			if err := a.repo.SetIPAddress(ctx, vmID, ip.String()); err != nil {
+				return "", fmt.Errorf("set ip address: %w", err)
+			}
+			return ip.String(), nil
+		}
+	}
+	// Check the last IP too.
+	if _, used := inUse[a.ipEnd.String()]; !used {
+		if err := a.repo.SetIPAddress(ctx, vmID, a.ipEnd.String()); err != nil {
+			return "", fmt.Errorf("set ip address: %w", err)
+		}
+		return a.ipEnd.String(), nil
+	}
+
+	return "", fmt.Errorf("no available IPs in range %s-%s", a.ipStart, a.ipEnd)
+}
+
+// Release clears the IP address for a VM.
+func (a *IPAllocator) Release(ctx context.Context, vmID string) error {
+	return a.repo.ReleaseIPAddress(ctx, vmID)
+}
+
+// nextIP increments an IPv4 address by 1.
+func nextIP(ip net.IP) net.IP {
+	result := make(net.IP, len(ip))
+	copy(result, ip)
+	for i := len(result) - 1; i >= 0; i-- {
+		result[i]++
+		if result[i] != 0 {
+			break
+		}
+	}
+	return result
 }
 
 // EnvironmentRepository defines the interface for fetching environment details.
@@ -46,7 +126,7 @@ type EnvironmentRepository interface {
 }
 
 // NewService creates a new VM service.
-func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRepository, backend vmdomain.Backend, envRepo EnvironmentRepository, snapRepo snapshot.Repository, snapshotStore ports.SnapshotStore, idleTimeout time.Duration, autoSnapshot bool, resumeGrace time.Duration) *Service {
+func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRepository, backend vmdomain.Backend, envRepo EnvironmentRepository, snapRepo snapshot.Repository, snapshotStore ports.SnapshotStore, idleTimeout time.Duration, autoSnapshot bool, resumeGrace time.Duration, networkCfg NetworkConfig, ipAllocator *IPAllocator) *Service {
 	if idleTimeout <= 0 {
 		idleTimeout = 5 * time.Minute
 	}
@@ -61,6 +141,8 @@ func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRep
 		backend:       backend,
 		envRepo:       envRepo,
 		snapshotStore: snapshotStore,
+		ipAllocator:   ipAllocator,
+		networkCfg:    networkCfg,
 		idleTimeout:   idleTimeout,
 		autoSnapshot:  autoSnapshot,
 		resumeGrace:   resumeGrace,
@@ -378,6 +460,24 @@ func (s *Service) Create(ctx context.Context, envID string, provider vmdomain.Pr
 		Runtime: vmdomain.DefaultRuntimeConfig(),
 	}
 
+	// Allocate IP and enable networking if configured.
+	if s.ipAllocator != nil {
+		ip, allocErr := s.ipAllocator.Allocate(ctx, vm.ID)
+		if allocErr != nil {
+			vm.Terminate()
+			s.repo.Update(ctx, vm)
+			return nil, exception.Internal(fmt.Errorf("allocate ip: %w", allocErr))
+		}
+		vm.IPAddress = &ip
+		spec.Runtime.Network = vmdomain.NetworkConfig{
+			Enabled:       true,
+			IP:            ip,
+			Bridge:        s.networkCfg.BridgeName,
+			AllowInternet: true,
+		}
+		spec.Runtime.EnableNetworking = true
+	}
+
 	backendID, err := s.backend.Create(ctx, spec)
 	if err != nil {
 		logger.ErrorContext(ctx, "backend provisioning failed", "vm_id", vm.ID, "error", err)
@@ -636,6 +736,14 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 		logger.ErrorContext(ctx, "failed to release VM lease", "vm_id", id, "error", err)
 		return err
 	}
+
+	// Release allocated IP.
+	if s.ipAllocator != nil {
+		if err := s.ipAllocator.Release(ctx, id); err != nil {
+			logger.WarnContext(ctx, "failed to release IP on destroy", "vm_id", id, "error", err)
+		}
+	}
+
 	if err := s.repo.Update(ctx, vm); err != nil {
 		logger.ErrorContext(ctx, "failed to update VM status", "vm_id", id, "error", err)
 		return err
@@ -691,6 +799,15 @@ func (s *Service) ExecuteCommand(ctx context.Context, id, command string) (strin
 			logger.ErrorContext(ctx, "command execution failed", "vm_id", id, "attempt", attempt, "exit_code", exitCode, "stdout_preview", logPreview(stdout, executeLogPreviewLimit), "stderr_preview", logPreview(stderr, executeLogPreviewLimit), "error", execErr)
 			if transient {
 				return "", exception.ServiceUnavailable("VM command channel is still initializing, retry shortly")
+			}
+			// Command ran but returned a non-zero exit code — surface output for debugging.
+			if exitCode >= 0 {
+				output := buildCommandErrorOutput(stdout, stderr, exitCode)
+				s.refreshIdleDeadline(vm)
+				if err := s.repo.Update(ctx, vm); err != nil {
+					logger.WarnContext(ctx, "failed to refresh VM idle deadline after failed command", "vm_id", id, "error", err)
+				}
+				return output, exception.Internal(execErr)
 			}
 			return "", exception.Internal(execErr)
 		}
@@ -781,6 +898,20 @@ func sleepWithContext(ctx context.Context, duration time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+func buildCommandErrorOutput(stdout, stderr string, exitCode int) string {
+	var parts []string
+	if stderr = strings.TrimSpace(stderr); stderr != "" {
+		parts = append(parts, "stderr:\n"+stderr)
+	}
+	if stdout = strings.TrimSpace(stdout); stdout != "" {
+		parts = append(parts, "stdout:\n"+stdout)
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("command exited with code %d (no output)", exitCode)
+	}
+	return fmt.Sprintf("command exited with code %d\n%s", exitCode, strings.Join(parts, "\n"))
 }
 
 func logPreview(text string, limit int) string {
@@ -917,6 +1048,26 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 				GuestPort: meta.GuestPort,
 			},
 		},
+	}
+
+	// Reuse the VM's existing IP for networking after restore.
+	if vm.IPAddress != nil && *vm.IPAddress != "" && s.ipAllocator != nil {
+		// Verify no other active VM holds this IP.
+		allocated, checkErr := s.repo.GetAllocatedIPs(ctx)
+		if checkErr == nil {
+			for _, usedIP := range allocated {
+				if usedIP == *vm.IPAddress {
+					return nil, exception.Internal(fmt.Errorf("IP %s is already in use by another VM, cannot restore", *vm.IPAddress))
+				}
+			}
+		}
+		spec.Runtime.Network = vmdomain.NetworkConfig{
+			Enabled:       true,
+			IP:            *vm.IPAddress,
+			Bridge:        s.networkCfg.BridgeName,
+			AllowInternet: true,
+		}
+		spec.Runtime.EnableNetworking = true
 	}
 
 	// Restore the VM from snapshot.

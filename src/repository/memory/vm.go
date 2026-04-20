@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 )
 
 // VMRepository is a thread-safe in-memory VM repository.

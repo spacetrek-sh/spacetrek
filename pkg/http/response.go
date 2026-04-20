@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
 )
 
 // successResponse is the standard JSON wrapper for successful responses.

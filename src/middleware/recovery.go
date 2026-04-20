@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	httputil "github.com/kumori-sh/spacetrk/pkg/http"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	httputil "github.com/spacetrek-sh/spacetrek/pkg/http"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 )
 
 // Recovery is an HTTP middleware that catches panics in downstream handlers,

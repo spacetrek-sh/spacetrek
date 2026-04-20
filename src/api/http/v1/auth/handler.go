@@ -5,14 +5,14 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/kumori-sh/spacetrk/pkg/auth/jwt"
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	httputil "github.com/kumori-sh/spacetrk/pkg/http"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	"github.com/kumori-sh/spacetrk/src/middleware"
-	authservice "github.com/kumori-sh/spacetrk/src/service/auth"
-	userservice "github.com/kumori-sh/spacetrk/src/service/user"
-	"github.com/kumori-sh/spacetrk/src/core/domain/user"
+	"github.com/spacetrek-sh/spacetrek/pkg/auth/jwt"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	httputil "github.com/spacetrek-sh/spacetrek/pkg/http"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/src/middleware"
+	authservice "github.com/spacetrek-sh/spacetrek/src/service/auth"
+	userservice "github.com/spacetrek-sh/spacetrek/src/service/user"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/user"
 )
 
 // Handler groups all authentication-related HTTP handlers.

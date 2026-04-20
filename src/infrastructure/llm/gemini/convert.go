@@ -3,9 +3,9 @@ package gemini
 import (
 	"strings"
 
-	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
-	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
-	"github.com/kumori-sh/spacetrk/src/core/ports"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/chat"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/tool"
+	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 	"google.golang.org/genai"
 )
 

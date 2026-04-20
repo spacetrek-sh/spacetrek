@@ -13,9 +13,9 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	grpcutil "github.com/kumori-sh/spacetrk/pkg/grpc"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	grpcutil "github.com/spacetrek-sh/spacetrek/pkg/grpc"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 )
 
 // requestIDMetaKey is the gRPC metadata key used to propagate request IDs.

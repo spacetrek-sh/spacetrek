@@ -3,8 +3,8 @@ package chatsvc
 import (
 	"context"
 
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 )
 
 // VMResolver resolves an available VM for a chat, resuming from snapshot if needed.

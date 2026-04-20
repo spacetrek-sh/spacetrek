@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
+	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 )
 
 // fakeVMResolutionService mocks the VMResolutionService for testing.

@@ -3,9 +3,9 @@ package toolsvc
 import (
 	"context"
 
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
-	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/tool"
+	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 )
 
 // VMCreator is the subset of VM service needed by the create tool.

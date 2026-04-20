@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
-	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
-	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
-	"github.com/kumori-sh/spacetrk/src/core/ports"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/chat"
+	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/tool"
+	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 )
 
 // ProcessInput is one runtime turn passed to the orchestrator.

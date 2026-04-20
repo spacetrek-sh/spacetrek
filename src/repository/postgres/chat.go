@@ -7,9 +7,9 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/chat"
 )
 
 type chatRepository struct {

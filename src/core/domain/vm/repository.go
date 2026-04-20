@@ -27,4 +27,9 @@ type Repository interface {
 	ListActiveLeasesByChat(ctx context.Context, chatID string) ([]Lease, error)
 	FindPreviousLeaseForChat(ctx context.Context, chatID string) (*VM, error)
 	ListPreviousLeasesForChat(ctx context.Context, chatID string) ([]*VM, error)
+
+	// IP allocation
+	GetAllocatedIPs(ctx context.Context) ([]string, error)
+	SetIPAddress(ctx context.Context, vmID string, ip string) error
+	ReleaseIPAddress(ctx context.Context, vmID string) error
 }

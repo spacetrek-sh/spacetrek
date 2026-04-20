@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
-	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
-	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
-	"github.com/kumori-sh/spacetrk/src/core/ports"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/chat"
+	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/tool"
+	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 )
 
 type fakePlanner struct {

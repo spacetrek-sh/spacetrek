@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/kumori-sh/spacetrk/pkg/config"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	postgresrepo "github.com/kumori-sh/spacetrk/src/repository/postgres"
+	"github.com/spacetrek-sh/spacetrek/pkg/config"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	postgresrepo "github.com/spacetrek-sh/spacetrek/src/repository/postgres"
 )
 
 const defaultSeedFile = "seeds/environments.json"

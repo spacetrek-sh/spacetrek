@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
+	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
 )
 
 // MemoryStateStore keeps orchestrator state in process memory.

@@ -38,6 +38,9 @@ type Config struct {
 	DefaultExecTimeout time.Duration `json:"default_exec_timeout" env:"FIRECRACKER_DEFAULT_EXEC_TIMEOUT"`
 	MaxStdoutBytes     int           `json:"max_stdout_bytes" env:"FIRECRACKER_MAX_STDOUT_BYTES"`
 	MaxStderrBytes     int           `json:"max_stderr_bytes" env:"FIRECRACKER_MAX_STDERR_BYTES"`
+
+	// Network configuration. BridgeName must be non-empty to enable networking.
+	Network NetworkConfig
 }
 
 // DefaultConfig returns the default Firecracker configuration.

@@ -72,6 +72,19 @@ type VMFirecrackerConfig struct {
 	DefaultExecTimeout time.Duration `yaml:"default_exec_timeout"`
 	MaxStdoutBytes     int           `yaml:"max_stdout_bytes"`
 	MaxStderrBytes     int           `yaml:"max_stderr_bytes"`
+	Network            VMNetworkConfig `yaml:"network"`
+}
+
+// VMNetworkConfig defines the VM network topology (bridge, TAP, NAT).
+// The guest agent must write /etc/resolv.conf pointing to dns_ip for DNS resolution.
+type VMNetworkConfig struct {
+	BridgeName string `yaml:"bridge_name"` // Linux bridge name (e.g. br-stk)
+	Subnet     string `yaml:"subnet"`      // CIDR subnet (e.g. 10.200.0.0/16)
+	GatewayIP  string `yaml:"gateway_ip"`  // Bridge IP acting as VM gateway
+	DNSIP      string `yaml:"dns_ip"`      // DNS resolver IP (dnsmasq on bridge gateway)
+	IPStart    string `yaml:"ip_start"`    // First allocatable IP
+	IPEnd      string `yaml:"ip_end"`      // Last allocatable IP
+	EnableNAT  bool   `yaml:"enable_nat"`  // Set up iptables MASQUERADE for internet
 }
 
 type LLMConfig struct {

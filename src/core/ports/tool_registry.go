@@ -1,6 +1,6 @@
 package ports
 
-import "github.com/kumori-sh/spacetrk/src/core/domain/tool"
+import "github.com/spacetrek-sh/spacetrek/src/core/domain/tool"
 
 // ToolRegistry provides lookup and discovery of registered tools.
 type ToolRegistry interface {

@@ -4,5 +4,6 @@
 Dockerfile
 .dockerignore
 tests/
-scripts/
+scripts/*
+!scripts/entrypoint.sh
 configs/

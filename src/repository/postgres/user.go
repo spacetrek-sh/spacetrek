@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	"github.com/kumori-sh/spacetrk/src/core/domain/user"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/user"
 )
 
 type userRepository struct {

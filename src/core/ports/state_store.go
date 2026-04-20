@@ -3,7 +3,7 @@ package ports
 import (
 	"context"
 
-	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
+	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
 )
 
 // ConversationStateStore persists orchestrator state by chat.

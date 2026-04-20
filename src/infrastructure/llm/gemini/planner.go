@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
-	"github.com/kumori-sh/spacetrk/src/core/ports"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
+	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 	"google.golang.org/genai"
 )
 

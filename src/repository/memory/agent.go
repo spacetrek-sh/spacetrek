@@ -5,8 +5,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	"github.com/kumori-sh/spacetrk/src/core/domain/agent"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/agent"
 )
 
 // AgentRepository is a thread-safe, in-memory implementation of agent.Repository.

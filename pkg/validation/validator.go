@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/go-playground/validator/v10"
-	"github.com/kumori-sh/spacetrk/pkg/exception"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
 )
 
 var (

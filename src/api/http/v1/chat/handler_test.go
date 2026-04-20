@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/kumori-sh/spacetrk/pkg/auth/jwt"
-	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
-	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
+	"github.com/spacetrek-sh/spacetrek/pkg/auth/jwt"
+	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/chat"
 )
 
 type stubChatService struct {

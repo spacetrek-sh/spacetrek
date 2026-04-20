@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
+	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
 )
 
 // RuntimeEventRepository is a thread-safe, in-memory implementation of

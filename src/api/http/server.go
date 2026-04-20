@@ -8,12 +8,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
-	httputil "github.com/kumori-sh/spacetrk/pkg/http"
-	agenthttp "github.com/kumori-sh/spacetrk/src/api/http/v1/agent"
-	authhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/auth"
-	chathttp "github.com/kumori-sh/spacetrk/src/api/http/v1/chat"
-	vmhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/vm"
-	"github.com/kumori-sh/spacetrk/src/middleware"
+	httputil "github.com/spacetrek-sh/spacetrek/pkg/http"
+	agenthttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/agent"
+	authhttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/auth"
+	chathttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/chat"
+	vmhttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/vm"
+	"github.com/spacetrek-sh/spacetrek/src/middleware"
 )
 
 // Config holds everything the HTTP server needs to start.

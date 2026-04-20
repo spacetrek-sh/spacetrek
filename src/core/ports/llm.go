@@ -3,9 +3,9 @@ package ports
 import (
 	"context"
 
-	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
-	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
-	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/chat"
+	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/tool"
 )
 
 // PriorTurn represents one completed react-loop tool call and its result,

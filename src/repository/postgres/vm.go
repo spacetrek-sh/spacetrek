@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 )
 
 type vmRepository struct {
@@ -563,4 +563,57 @@ func toNullableInt64(v *uint32) *int64 {
 	}
 	r := int64(*v)
 	return &r
+}
+
+func (r *vmRepository) GetAllocatedIPs(ctx context.Context) ([]string, error) {
+	logger := pkglog.FromContext(ctx)
+	query := `
+		SELECT ip_address
+		FROM vm_instances
+		WHERE ip_address IS NOT NULL
+		  AND status != 'terminated'
+	`
+
+	var ips []string
+	if err := r.db.SelectContext(ctx, &ips, query); err != nil {
+		logger.ErrorContext(ctx, "postgres: get allocated ips failed", "error", err)
+		return nil, exception.Internal(fmt.Errorf("get allocated ips: %w", err))
+	}
+	if ips == nil {
+		ips = []string{}
+	}
+	return ips, nil
+}
+
+func (r *vmRepository) SetIPAddress(ctx context.Context, vmID string, ip string) error {
+	logger := pkglog.FromContext(ctx)
+	query := `UPDATE vm_instances SET ip_address = $1 WHERE id = $2`
+
+	result, err := r.db.ExecContext(ctx, query, ip, vmID)
+	if err != nil {
+		logger.ErrorContext(ctx, "postgres: set ip address failed", "vm_id", vmID, "ip", ip, "error", err)
+		return exception.Internal(fmt.Errorf("set ip address: %w", err))
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return exception.Internal(fmt.Errorf("set ip address rows affected: %w", err))
+	}
+	if rowsAffected == 0 {
+		return exception.NotFound("vm", vmID)
+	}
+
+	return nil
+}
+
+func (r *vmRepository) ReleaseIPAddress(ctx context.Context, vmID string) error {
+	logger := pkglog.FromContext(ctx)
+	query := `UPDATE vm_instances SET ip_address = NULL WHERE id = $1`
+
+	if _, err := r.db.ExecContext(ctx, query, vmID); err != nil {
+		logger.ErrorContext(ctx, "postgres: release ip address failed", "vm_id", vmID, "error", err)
+		return exception.Internal(fmt.Errorf("release ip address: %w", err))
+	}
+
+	return nil
 }

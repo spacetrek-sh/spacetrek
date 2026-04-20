@@ -70,12 +70,19 @@ services:
     devices:
       # KVM device passthrough for hardware virtualization
       - /dev/kvm:/dev/kvm
+      # TUN device for TAP network interfaces
+      - /dev/net/tun:/dev/net/tun
     ports:
       - "8080:8080"
     cap_add:
       - SYS_ADMIN  # Required for Firecracker
+      - NET_ADMIN  # Required for bridge/TAP/iptables (VM networking)
     security_opt:
       - seccomp=unconfined  # Required for Firecracker syscall filtering
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.bridge.bridge-nf-call-iptables=0
+      - net.ipv4.conf.all.forwarding=1
     depends_on:
       db:
         condition: service_healthy

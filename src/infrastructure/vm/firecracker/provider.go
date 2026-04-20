@@ -19,13 +19,14 @@ import (
 
 	fcsdk "github.com/firecracker-microvm/firecracker-go-sdk"
 	models "github.com/firecracker-microvm/firecracker-go-sdk/client/models"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 )
 
 // Provider implements the vmdomain.Backend interface for Firecracker.
 type Provider struct {
 	config Config
+	netMgr *NetworkManager // nil when networking disabled
 	mu     sync.RWMutex
 	vms    map[string]*VMInstance // Track running VMs
 	prev   map[string]cpuSample
@@ -61,8 +62,27 @@ func NewProvider(cfg Config) (*Provider, error) {
 		return nil, fmt.Errorf("failed to create base directory: %w", err)
 	}
 
+	var netMgr *NetworkManager
+	if cfg.Network.BridgeName != "" {
+		var err error
+		netMgr, err = NewNetworkManager(cfg.Network)
+		if err != nil {
+			return nil, fmt.Errorf("init network manager: %w", err)
+		}
+		if err := netMgr.EnsureBridge(); err != nil {
+			return nil, fmt.Errorf("ensure bridge: %w", err)
+		}
+		if err := netMgr.EnsureNAT(); err != nil {
+			return nil, fmt.Errorf("ensure nat: %w", err)
+		}
+		if err := netMgr.EnsureLocalDNSReady(5 * time.Second); err != nil {
+			return nil, fmt.Errorf("ensure local dns: %w", err)
+		}
+	}
+
 	return &Provider{
 		config: cfg,
+		netMgr: netMgr,
 		vms:    make(map[string]*VMInstance),
 		prev:   make(map[string]cpuSample),
 	}, nil
@@ -111,6 +131,14 @@ func (p *Provider) Create(ctx context.Context, spec vmdomain.CreateSpec) (string
 	}
 	logger.Info("Rootfs clone mode selected", "vm_id", vmID, "clone_mode", cloneMode, "source_image", spec.ImagePath, "destination_image", vmRootfsPath)
 
+	if spec.Resources.DiskMB > 0 {
+		if err := resizeRootfs(vmRootfsPath, spec.Resources.DiskMB); err != nil {
+			_ = os.RemoveAll(vmDir)
+			return "", fmt.Errorf("failed to resize rootfs to %d MB: %w", spec.Resources.DiskMB, err)
+		}
+		logger.Info("Rootfs resized", "vm_id", vmID, "disk_mb", spec.Resources.DiskMB)
+	}
+
 	fcCfg := fcsdk.Config{
 		SocketPath:      socketPath,
 		KernelImagePath: p.config.KernelPath,
@@ -124,7 +152,39 @@ func (p *Provider) Create(ctx context.Context, spec vmdomain.CreateSpec) (string
 		VMID: vmID,
 	}
 
-	if spec.Runtime.Network.Enabled && spec.Runtime.Network.Interface != "" {
+	// Set up networking: create TAP, inject ip= kernel arg, attach to Firecracker config.
+	if spec.Runtime.Network.Enabled && p.netMgr != nil {
+		tapName := TAPName(vmID)
+		if err := p.netMgr.CreateTAP(tapName); err != nil {
+			_ = os.RemoveAll(vmDir)
+			return "", fmt.Errorf("create tap device: %w", err)
+		}
+		if err := p.netMgr.ConfigureTAP(tapName, spec.Runtime.Network.IP); err != nil {
+			_ = p.netMgr.DestroyTAP(tapName)
+			_ = os.RemoveAll(vmDir)
+			return "", fmt.Errorf("configure tap device: %w", err)
+		}
+		if err := p.netMgr.EnsureDNSReady(5 * time.Second); err != nil {
+			_ = p.netMgr.DestroyTAP(tapName)
+			_ = os.RemoveAll(vmDir)
+			return "", fmt.Errorf("ensure dns after tap setup: %w", err)
+		}
+		spec.Runtime.Network.Interface = tapName
+
+		ipArg := p.netMgr.BuildIPKernelArg(spec.Runtime.Network.IP)
+		fcCfg.KernelArgs = fcCfg.KernelArgs + " " + ipArg
+
+		mac := macForVM(vmID)
+		fcCfg.NetworkInterfaces = []fcsdk.NetworkInterface{
+			{
+				StaticConfiguration: &fcsdk.StaticNetworkConfiguration{
+					MacAddress:  mac,
+					HostDevName: tapName,
+				},
+				AllowMMDS: p.config.EnableMmds,
+			},
+		}
+	} else if spec.Runtime.Network.Enabled && spec.Runtime.Network.Interface != "" {
 		fcCfg.NetworkInterfaces = []fcsdk.NetworkInterface{
 			{
 				StaticConfiguration: &fcsdk.StaticNetworkConfiguration{
@@ -409,7 +469,39 @@ func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.Create
 		VMID: vmID,
 	}
 
-	if spec.Runtime.Network.Enabled && spec.Runtime.Network.Interface != "" {
+	// Set up networking for restored VM.
+	if spec.Runtime.Network.Enabled && p.netMgr != nil {
+		tapName := TAPName(vmID)
+		if err := p.netMgr.CreateTAP(tapName); err != nil {
+			_ = p.releaseGuestCID(vmID)
+			return "", fmt.Errorf("create tap device for restore: %w", err)
+		}
+		if err := p.netMgr.ConfigureTAP(tapName, spec.Runtime.Network.IP); err != nil {
+			_ = p.netMgr.DestroyTAP(tapName)
+			_ = p.releaseGuestCID(vmID)
+			return "", fmt.Errorf("configure tap device for restore: %w", err)
+		}
+		if err := p.netMgr.EnsureDNSReady(5 * time.Second); err != nil {
+			_ = p.netMgr.DestroyTAP(tapName)
+			_ = p.releaseGuestCID(vmID)
+			return "", fmt.Errorf("ensure dns after tap setup for restore: %w", err)
+		}
+		spec.Runtime.Network.Interface = tapName
+
+		ipArg := p.netMgr.BuildIPKernelArg(spec.Runtime.Network.IP)
+		fcCfg.KernelArgs = fcCfg.KernelArgs + " " + ipArg
+
+		mac := macForVM(vmID)
+		fcCfg.NetworkInterfaces = []fcsdk.NetworkInterface{
+			{
+				StaticConfiguration: &fcsdk.StaticNetworkConfiguration{
+					MacAddress:  mac,
+					HostDevName: tapName,
+				},
+				AllowMMDS: p.config.EnableMmds,
+			},
+		}
+	} else if spec.Runtime.Network.Enabled && spec.Runtime.Network.Interface != "" {
 		fcCfg.NetworkInterfaces = []fcsdk.NetworkInterface{
 			{
 				StaticConfiguration: &fcsdk.StaticNetworkConfiguration{
@@ -724,6 +816,11 @@ func (p *Provider) cleanup(ctx context.Context, id string, removeDir bool) error
 		_ = os.RemoveAll(p.config.VMDir(id))
 	}
 
+	// Clean up TAP device if networking was enabled.
+	if p.netMgr != nil {
+		_ = p.netMgr.DestroyTAP(TAPName(id))
+	}
+
 	return nil
 }
 
@@ -908,6 +1005,18 @@ func cloneRootfs(srcPath, dstPath string) (string, string, error) {
 	}
 
 	return "copy", reflinkErr.Error(), nil
+}
+
+func resizeRootfs(imagePath string, sizeMB int) error {
+	targetBytes := int64(sizeMB) * 1024 * 1024
+	if err := os.Truncate(imagePath, targetBytes); err != nil {
+		return fmt.Errorf("truncate rootfs to %d MB: %w", sizeMB, err)
+	}
+	exec.Command("e2fsck", "-f", "-y", imagePath).Run()
+	if out, err := exec.Command("resize2fs", imagePath).CombinedOutput(); err != nil {
+		return fmt.Errorf("resize2fs %s: %w (%s)", imagePath, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func reflinkClone(srcPath, dstPath string) error {
@@ -1168,4 +1277,20 @@ func readPersistedGuestCID(path string) (uint32, error) {
 	}
 
 	return uint32(parsed), nil
+}
+
+// macForVM generates a deterministic MAC address from the VM ID.
+// Format: 02:FC:XX:XX:XX:XX where XX bytes are derived from the VM ID.
+func macForVM(vmID string) string {
+	h := fnvHash(vmID)
+	return fmt.Sprintf("02:FC:%02X:%02X:%02X:%02X", byte(h>>24), byte(h>>16), byte(h>>8), byte(h))
+}
+
+func fnvHash(s string) uint32 {
+	h := uint32(2166136261)
+	for _, c := range s {
+		h ^= uint32(c)
+		h *= 16777619
+	}
+	return h
 }

@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
-	"github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
-	"github.com/kumori-sh/spacetrk/src/repository/memory"
-	orchestratorsvc "github.com/kumori-sh/spacetrk/src/service/orchestrator"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/chat"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
+	"github.com/spacetrek-sh/spacetrek/src/repository/memory"
+	orchestratorsvc "github.com/spacetrek-sh/spacetrek/src/service/orchestrator"
 )
 
 type fakeOrchestrator struct {

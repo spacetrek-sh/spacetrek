@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
+	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 )
 
 func TestResolveGuestCIDAvoidsInUseCandidates(t *testing.T) {

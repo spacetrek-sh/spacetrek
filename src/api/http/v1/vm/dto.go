@@ -65,9 +65,10 @@ type executeCommandRequest struct {
 	Command string `json:"command" validate:"required"`
 }
 
-// executeCommandResponse is the JSON response for successful command execution.
+// executeCommandResponse is the JSON response for command execution.
 type executeCommandResponse struct {
 	Output string `json:"output"`
+	Error  string `json:"error,omitempty"`
 }
 
 // assignVMRequest is the JSON body for POST /api/v1/vm/{id}/assign.

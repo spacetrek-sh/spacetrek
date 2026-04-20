@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 )
 
 type vmMetricsHistoryRepository struct {

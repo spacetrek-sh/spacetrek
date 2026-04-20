@@ -8,8 +8,8 @@ import (
 	"mime/multipart"
 	"net/http"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	"github.com/kumori-sh/spacetrk/pkg/validation"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	"github.com/spacetrek-sh/spacetrek/pkg/validation"
 )
 
 const defaultMaxMemory int64 = 32 << 20 // 32 MB

@@ -10,27 +10,27 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kumori-sh/spacetrk/pkg/auth/jwt"
-	"github.com/kumori-sh/spacetrk/pkg/config"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	apihttp "github.com/kumori-sh/spacetrk/src/api/http"
-	agenthttp "github.com/kumori-sh/spacetrk/src/api/http/v1/agent"
-	authhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/auth"
-	chathttp "github.com/kumori-sh/spacetrk/src/api/http/v1/chat"
-	vmhttp "github.com/kumori-sh/spacetrk/src/api/http/v1/vm"
-	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
-	"github.com/kumori-sh/spacetrk/src/core/ports"
-	geminiadapter "github.com/kumori-sh/spacetrk/src/infrastructure/llm/gemini"
-	"github.com/kumori-sh/spacetrk/src/infrastructure/vm/firecracker"
-	s3storage "github.com/kumori-sh/spacetrk/src/infrastructure/storage/s3"
-	postgresrepo "github.com/kumori-sh/spacetrk/src/repository/postgres"
-	agentsvc "github.com/kumori-sh/spacetrk/src/service/agent"
-	authservice "github.com/kumori-sh/spacetrk/src/service/auth"
-	orchestratorsvc "github.com/kumori-sh/spacetrk/src/service/orchestrator"
-	chatsvc "github.com/kumori-sh/spacetrk/src/service/chat"
-	toolsvc "github.com/kumori-sh/spacetrk/src/service/tool"
-	usersvc "github.com/kumori-sh/spacetrk/src/service/user"
-	vmsvc "github.com/kumori-sh/spacetrk/src/service/vm"
+	"github.com/spacetrek-sh/spacetrek/pkg/auth/jwt"
+	"github.com/spacetrek-sh/spacetrek/pkg/config"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	apihttp "github.com/spacetrek-sh/spacetrek/src/api/http"
+	agenthttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/agent"
+	authhttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/auth"
+	chathttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/chat"
+	vmhttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/vm"
+	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
+	"github.com/spacetrek-sh/spacetrek/src/core/ports"
+	geminiadapter "github.com/spacetrek-sh/spacetrek/src/infrastructure/llm/gemini"
+	"github.com/spacetrek-sh/spacetrek/src/infrastructure/vm/firecracker"
+	s3storage "github.com/spacetrek-sh/spacetrek/src/infrastructure/storage/s3"
+	postgresrepo "github.com/spacetrek-sh/spacetrek/src/repository/postgres"
+	agentsvc "github.com/spacetrek-sh/spacetrek/src/service/agent"
+	authservice "github.com/spacetrek-sh/spacetrek/src/service/auth"
+	orchestratorsvc "github.com/spacetrek-sh/spacetrek/src/service/orchestrator"
+	chatsvc "github.com/spacetrek-sh/spacetrek/src/service/chat"
+	toolsvc "github.com/spacetrek-sh/spacetrek/src/service/tool"
+	usersvc "github.com/spacetrek-sh/spacetrek/src/service/user"
+	vmsvc "github.com/spacetrek-sh/spacetrek/src/service/vm"
 )
 
 func main() {
@@ -92,6 +92,19 @@ func main() {
 		MaxStdoutBytes:     cfg.VM.Firecracker.MaxStdoutBytes,
 		MaxStderrBytes:     cfg.VM.Firecracker.MaxStderrBytes,
 	}
+
+	// Pass network config to firecracker provider when enabled.
+	if cfg.VM.NetworkEnabled && cfg.VM.Firecracker.Network.BridgeName != "" {
+		fcCfg.Network = firecracker.NetworkConfig{
+			BridgeName: cfg.VM.Firecracker.Network.BridgeName,
+			Subnet:     cfg.VM.Firecracker.Network.Subnet,
+			GatewayIP:  cfg.VM.Firecracker.Network.GatewayIP,
+			DNSIP:      cfg.VM.Firecracker.Network.DNSIP,
+			IPStart:    cfg.VM.Firecracker.Network.IPStart,
+			IPEnd:      cfg.VM.Firecracker.Network.IPEnd,
+			EnableNAT:  cfg.VM.Firecracker.Network.EnableNAT,
+		}
+	}
 	var vmBackend vmdomain.Backend
 	provider, err := firecracker.NewProvider(fcCfg)
 	if err != nil {
@@ -123,7 +136,27 @@ func main() {
 		}
 	}
 
-	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, snapRepo, snapshotStore, cfg.VM.IdleTimeout, cfg.VM.AutoSnapshot, cfg.VM.ResumeGrace)
+	// Build IP allocator when networking is enabled.
+	var vmIPAllocator *vmsvc.IPAllocator
+	var vmNetworkCfg vmsvc.NetworkConfig
+	if cfg.VM.NetworkEnabled && cfg.VM.Firecracker.Network.BridgeName != "" {
+		var allocErr error
+		vmIPAllocator, allocErr = vmsvc.NewIPAllocator(vmRepo, cfg.VM.Firecracker.Network.IPStart, cfg.VM.Firecracker.Network.IPEnd)
+		if allocErr != nil {
+			logger.Warn("failed to create IP allocator, networking disabled", slog.Any("error", allocErr))
+			vmIPAllocator = nil
+		} else {
+			vmNetworkCfg = vmsvc.NetworkConfig{
+				BridgeName: cfg.VM.Firecracker.Network.BridgeName,
+				Subnet:     cfg.VM.Firecracker.Network.Subnet,
+				GatewayIP:  cfg.VM.Firecracker.Network.GatewayIP,
+				DNSIP:      cfg.VM.Firecracker.Network.DNSIP,
+			}
+			logger.Info("VM networking enabled", slog.String("bridge", vmNetworkCfg.BridgeName), slog.String("subnet", vmNetworkCfg.Subnet))
+		}
+	}
+
+	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, snapRepo, snapshotStore, cfg.VM.IdleTimeout, cfg.VM.AutoSnapshot, cfg.VM.ResumeGrace, vmNetworkCfg, vmIPAllocator)
 	orchTools := orchestratorsvc.NewInMemoryToolRegistry(nil)
 	orchTools.Register(toolsvc.NewVMCommandTool(vmService))
 	orchTools.Register(toolsvc.NewVMCreateTool(vmService))

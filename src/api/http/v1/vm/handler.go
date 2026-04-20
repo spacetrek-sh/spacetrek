@@ -10,14 +10,14 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/kumori-sh/spacetrk/pkg/auth/jwt"
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	httputil "github.com/kumori-sh/spacetrk/pkg/http"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	"github.com/kumori-sh/spacetrk/src/core/domain/environment"
-	vmdomain "github.com/kumori-sh/spacetrk/src/core/domain/vm"
-	"github.com/kumori-sh/spacetrk/src/middleware"
-	vmservice "github.com/kumori-sh/spacetrk/src/service/vm"
+	"github.com/spacetrek-sh/spacetrek/pkg/auth/jwt"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	httputil "github.com/spacetrek-sh/spacetrek/pkg/http"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/environment"
+	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
+	"github.com/spacetrek-sh/spacetrek/src/middleware"
+	vmservice "github.com/spacetrek-sh/spacetrek/src/service/vm"
 )
 
 // Handler groups all VM-related HTTP handlers.
@@ -485,7 +485,11 @@ func (h *Handler) ExecuteCommand(w http.ResponseWriter, r *http.Request) {
 	output, err := h.vmservice.ExecuteCommand(ctx, id, req.Command)
 	if err != nil {
 		logger.WarnContext(ctx, "command execution failed", "vm_id", id, "command_preview", logPreview(req.Command, 256), "error", err)
-		httputil.WriteError(w, err)
+		if output != "" {
+			httputil.WriteJSON(w, http.StatusOK, "command executed", executeCommandResponse{Output: output, Error: err.Error()})
+		} else {
+			httputil.WriteError(w, err)
+		}
 		return
 	}
 

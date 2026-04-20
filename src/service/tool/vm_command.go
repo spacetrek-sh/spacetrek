@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/tool"
 )
 
 // VMCommandExecutor is the subset of VM service needed by the command tool.
@@ -68,6 +68,9 @@ func (t *VMCommandTool) Execute(ctx context.Context, call tool.Call) (tool.Resul
 	if err != nil {
 		result.OK = false
 		result.Error = err.Error()
+		if output != "" {
+			result.Payload = map[string]any{"output": strings.TrimSpace(output)}
+		}
 		logger.ErrorContext(ctx, "vm command tool failed", "vm_id", vmID, "error", err)
 		return result, nil
 	}

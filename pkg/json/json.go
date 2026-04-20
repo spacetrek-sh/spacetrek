@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
 )
 
 // Marshal encodes v to JSON. Returns an Internal AppError on failure.

@@ -5,8 +5,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	"github.com/kumori-sh/spacetrk/src/core/domain/environment"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/environment"
 )
 
 // EnvironmentRepository is a thread-safe in-memory environment repository.

@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/kumori-sh/spacetrk/pkg/auth/jwt"
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	httputil "github.com/kumori-sh/spacetrk/pkg/http"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
-	orchdomain "github.com/kumori-sh/spacetrk/src/core/domain/orchestrator"
-	"github.com/kumori-sh/spacetrk/src/middleware"
+	"github.com/spacetrek-sh/spacetrek/pkg/auth/jwt"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	httputil "github.com/spacetrek-sh/spacetrek/pkg/http"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/chat"
+	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
+	"github.com/spacetrek-sh/spacetrek/src/middleware"
 )
 
 // chatService is the local dependency interface for the handler.

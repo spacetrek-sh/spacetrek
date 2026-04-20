@@ -6,8 +6,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	"github.com/kumori-sh/spacetrk/src/core/domain/chat"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/chat"
 )
 
 // ChatRepository is a thread-safe, in-memory implementation of chat.Repository.

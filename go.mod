@@ -1,4 +1,4 @@
-module github.com/kumori-sh/spacetrk
+module github.com/spacetrek-sh/spacetrek
 
 go 1.24.0
 

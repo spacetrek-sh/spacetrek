@@ -9,11 +9,11 @@ import (
 	"encoding/hex"
 	"time"
 
-	"github.com/kumori-sh/spacetrk/pkg/auth/jwt"
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	authdomain "github.com/kumori-sh/spacetrk/src/core/domain/auth"
-	userdomain "github.com/kumori-sh/spacetrk/src/core/domain/user"
+	"github.com/spacetrek-sh/spacetrek/pkg/auth/jwt"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	authdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/auth"
+	userdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/user"
 )
 
 const (

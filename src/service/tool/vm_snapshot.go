@@ -3,9 +3,9 @@ package toolsvc
 import (
 	"context"
 
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	"github.com/kumori-sh/spacetrk/src/core/domain/snapshot"
-	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/snapshot"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/tool"
 )
 
 // VMSnapshotter is the subset of VM service needed by the snapshot tool.

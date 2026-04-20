@@ -6,7 +6,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/kumori-sh/spacetrk/pkg/exception"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
 )
 
 // FromAppError converts an *exception.AppError to a gRPC *status.Status.

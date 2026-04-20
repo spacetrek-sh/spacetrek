@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 )
 
 // responseWriter wraps http.ResponseWriter to capture the status code written

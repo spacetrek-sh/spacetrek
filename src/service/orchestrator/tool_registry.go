@@ -3,7 +3,7 @@ package orchestratorsvc
 import (
 	"sync"
 
-	"github.com/kumori-sh/spacetrk/src/core/domain/tool"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/tool"
 )
 
 // InMemoryToolRegistry is the bootstrap tool registry implementation.

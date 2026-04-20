@@ -4,7 +4,7 @@ package vm
 import (
 	"context"
 
-	"github.com/kumori-sh/spacetrk/src/core/domain/environment"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/environment"
 )
 
 // CreateSpec combines environment and runtime configuration for VM creation.

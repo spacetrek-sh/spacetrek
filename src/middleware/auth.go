@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/kumori-sh/spacetrk/pkg/auth/jwt"
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	httputil "github.com/kumori-sh/spacetrk/pkg/http"
+	"github.com/spacetrek-sh/spacetrek/pkg/auth/jwt"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	httputil "github.com/spacetrek-sh/spacetrek/pkg/http"
 )
 
 type userContextKey struct{}

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/kumori-sh/spacetrk/src/core/ports"
+	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 )
 
 // RulePlanner is a deterministic planner used as bootstrap before real LLM integration.

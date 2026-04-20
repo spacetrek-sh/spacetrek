@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	"github.com/kumori-sh/spacetrk/src/core/domain/agent"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/agent"
 )
 
 // Service implements the agent business logic.

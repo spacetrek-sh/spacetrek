@@ -6,12 +6,12 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/kumori-sh/spacetrk/pkg/auth/jwt"
-	"github.com/kumori-sh/spacetrk/pkg/exception"
-	httputil "github.com/kumori-sh/spacetrk/pkg/http"
-	pkglog "github.com/kumori-sh/spacetrk/pkg/log"
-	"github.com/kumori-sh/spacetrk/src/core/domain/agent"
-	"github.com/kumori-sh/spacetrk/src/middleware"
+	"github.com/spacetrek-sh/spacetrek/pkg/auth/jwt"
+	"github.com/spacetrek-sh/spacetrek/pkg/exception"
+	httputil "github.com/spacetrek-sh/spacetrek/pkg/http"
+	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/agent"
+	"github.com/spacetrek-sh/spacetrek/src/middleware"
 )
 
 // agentService is the local dependency interface for the handler.
