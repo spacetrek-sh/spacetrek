@@ -328,4 +328,4 @@ curl http://localhost:8080/api/v1/vm/runtimes/stream \
 
 ## License
 
-Proprietary - see [LICENSE](LICENSE) for details
+This project is licensed under the MIT License - see [LICENSE](LICENSE) for details
