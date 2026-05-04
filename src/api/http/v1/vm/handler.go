@@ -364,7 +364,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.DebugContext(ctx, "VM create requested", "env_id", req.EnvironmentID, "provider", req.Provider, "vcpu", req.VCPU, "memory_mb", req.MemoryMB, "disk_mb", req.DiskMB)
+	logger.DebugContext(ctx, "VM create requested", "env_id", req.EnvironmentID, "conversation_id", req.ConversationID, "provider", req.Provider, "workspace_size_gb", req.WorkspaceSizeGB, "vcpu", req.VCPU, "memory_mb", req.MemoryMB, "disk_mb", req.DiskMB)
 
 	// Parse provider
 	var provider vmdomain.Provider
@@ -372,7 +372,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		provider = vmdomain.Provider(req.Provider)
 	}
 
-	vm, err := h.vmservice.Create(ctx, req.EnvironmentID, provider, req.VCPU, req.MemoryMB, req.DiskMB)
+	vm, err := h.vmservice.Create(ctx, req.EnvironmentID, req.ConversationID, provider, req.WorkspaceSizeGB, req.VCPU, req.MemoryMB, req.DiskMB)
 	if err != nil {
 		logger.WarnContext(ctx, "VM creation failed", "env_id", req.EnvironmentID, "error", err)
 		httputil.WriteError(w, err)
@@ -565,8 +565,10 @@ func toCreateVMResponse(vm *vmdomain.VM, env *environment.Environment) createVMR
 	return createVMResponse{
 		ID:              vm.ID,
 		EnvironmentID:   vm.EnvironmentID,
+		ConversationID:  vm.ConversationID,
 		Provider:        string(vm.Provider),
 		Status:          string(vm.Status),
+		WorkspaceSizeGB: vm.WorkspaceSizeGB,
 		RuntimeID:       vm.RuntimeID,
 		RuntimeState:    vm.RuntimeState,
 		PID:             vm.PID,
@@ -583,8 +585,10 @@ func toGetVMResponse(vm *vmdomain.VM) getVMResponse {
 	return getVMResponse{
 		ID:              vm.ID,
 		EnvironmentID:   vm.EnvironmentID,
+		ConversationID:  vm.ConversationID,
 		Provider:        string(vm.Provider),
 		Status:          string(vm.Status),
+		WorkspaceSizeGB: vm.WorkspaceSizeGB,
 		RuntimeID:       vm.RuntimeID,
 		RuntimeState:    vm.RuntimeState,
 		PID:             vm.PID,

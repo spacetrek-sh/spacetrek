@@ -11,7 +11,7 @@ import (
 // VMCreator is the subset of VM service needed by the create tool.
 type VMCreator interface {
 	ResolveEnvironment(ctx context.Context, envType string) (string, error)
-	Create(ctx context.Context, envID string, provider vmdomain.Provider, vcpu, memoryMB, diskMB *int) (*vmdomain.VM, error)
+	Create(ctx context.Context, envID, conversationID string, provider vmdomain.Provider, workspaceSizeGB int, vcpu, memoryMB, diskMB *int) (*vmdomain.VM, error)
 	AssignToChat(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error)
 }
 
@@ -64,7 +64,7 @@ func (t *VMCreateTool) Execute(ctx context.Context, call tool.Call) (tool.Result
 		return result, nil
 	}
 
-	vm, err := t.creator.Create(ctx, envID, vmdomain.ProviderFirecracker, nil, nil, nil)
+	vm, err := t.creator.Create(ctx, envID, chatID, vmdomain.ProviderFirecracker, 2, nil, nil, nil)
 	if err != nil {
 		result.OK = false
 		result.Error = err.Error()
@@ -82,9 +82,9 @@ func (t *VMCreateTool) Execute(ctx context.Context, call tool.Call) (tool.Result
 
 	result.OK = true
 	result.Payload = map[string]any{
-		"vm_id":     assigned.ID,
-		"status":    string(assigned.Status),
-		"provider":  string(assigned.Provider),
+		"vm_id":    assigned.ID,
+		"status":   string(assigned.Status),
+		"provider": string(assigned.Provider),
 	}
 	logger.InfoContext(ctx, "vm create tool: created and assigned", "vm_id", assigned.ID, "chat_id", chatID)
 	return result, nil

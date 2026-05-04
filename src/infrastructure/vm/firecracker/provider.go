@@ -139,11 +139,24 @@ func (p *Provider) Create(ctx context.Context, spec vmdomain.CreateSpec) (string
 		logger.Info("Rootfs resized", "vm_id", vmID, "disk_mb", spec.Resources.DiskMB)
 	}
 
+	workspaceSizeGB := spec.Workspace.SizeGB
+	if workspaceSizeGB <= 0 {
+		workspaceSizeGB = 2
+	}
+	workspacePath := filepath.Join(vmDir, "workspace.ext4")
+	if err := ensureWorkspaceImage(workspacePath, workspaceSizeGB); err != nil {
+		_ = os.RemoveAll(vmDir)
+		return "", fmt.Errorf("failed to provision workspace image: %w", err)
+	}
+
+	drives := fcsdk.NewDrivesBuilder(vmRootfsPath).Build()
+	drives = append(drives, workspaceDrive(workspacePath))
+
 	fcCfg := fcsdk.Config{
 		SocketPath:      socketPath,
 		KernelImagePath: p.config.KernelPath,
 		KernelArgs:      p.config.KernelArgs,
-		Drives:          fcsdk.NewDrivesBuilder(vmRootfsPath).Build(),
+		Drives:          drives,
 		MachineCfg: models.MachineConfiguration{
 			VcpuCount:  fcsdk.Int64(int64(spec.Resources.VCPU)),
 			MemSizeMib: fcsdk.Int64(int64(spec.Resources.MemoryMB)),
@@ -437,6 +450,18 @@ func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.Create
 	_ = os.Remove(socketPath)
 	_ = os.Remove(vsockPath)
 
+	workspaceSizeGB := spec.Workspace.SizeGB
+	if workspaceSizeGB <= 0 {
+		workspaceSizeGB = 2
+	}
+	workspacePath := filepath.Join(vmDir, "workspace.ext4")
+	if err := ensureWorkspaceImage(workspacePath, workspaceSizeGB); err != nil {
+		return "", fmt.Errorf("failed to provision workspace image for restore: %w", err)
+	}
+
+	drives := fcsdk.NewDrivesBuilder(rootfsPath).Build()
+	drives = append(drives, workspaceDrive(workspacePath))
+
 	// Resolve guest CID — reuse the same CID from the snapshot metadata.
 	effectiveVsock := spec.Runtime.Vsock
 	if effectiveVsock.GuestPort == 0 {
@@ -460,7 +485,7 @@ func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.Create
 		SocketPath:      socketPath,
 		KernelImagePath: p.config.KernelPath,
 		KernelArgs:      p.config.KernelArgs,
-		Drives:          fcsdk.NewDrivesBuilder(rootfsPath).Build(),
+		Drives:          drives,
 		MachineCfg: models.MachineConfiguration{
 			VcpuCount:  fcsdk.Int64(int64(spec.Resources.VCPU)),
 			MemSizeMib: fcsdk.Int64(int64(spec.Resources.MemoryMB)),
@@ -1017,6 +1042,43 @@ func resizeRootfs(imagePath string, sizeMB int) error {
 		return fmt.Errorf("resize2fs %s: %w (%s)", imagePath, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func ensureWorkspaceImage(imagePath string, sizeGB int) error {
+	if _, err := os.Stat(imagePath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat workspace image: %w", err)
+	}
+
+	f, err := os.OpenFile(imagePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("create workspace image: %w", err)
+	}
+	defer f.Close()
+
+	if err := f.Truncate(int64(sizeGB) * 1024 * 1024 * 1024); err != nil {
+		return fmt.Errorf("truncate workspace image: %w", err)
+	}
+
+	if out, err := exec.Command("mkfs.ext4", "-F", "-L", "workspace", imagePath).CombinedOutput(); err != nil {
+		return fmt.Errorf("mkfs.ext4 workspace image: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	return nil
+}
+
+func workspaceDrive(path string) models.Drive {
+	driveID := "workspace"
+	isRootDevice := false
+	isReadOnly := false
+
+	return models.Drive{
+		DriveID:      &driveID,
+		PathOnHost:   &path,
+		IsRootDevice: &isRootDevice,
+		IsReadOnly:   &isReadOnly,
+	}
 }
 
 func reflinkClone(srcPath, dstPath string) error {

@@ -57,6 +57,8 @@ services:
     container_name: spacetrk-api
     environment:
       CONFIG_PATH: /app/configs/config.yaml
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       - ./configs:/app/configs:ro

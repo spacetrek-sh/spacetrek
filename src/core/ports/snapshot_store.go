@@ -10,6 +10,9 @@ type SnapshotFile struct {
 
 // SnapshotStore abstracts object storage for VM snapshot binary files.
 type SnapshotStore interface {
+	// ObjectExists checks whether an object exists at the provided key.
+	ObjectExists(ctx context.Context, key string) (bool, error)
+
 	// UploadFiles uploads multiple files to object storage.
 	// Returns the total bytes uploaded.
 	UploadFiles(ctx context.Context, files []SnapshotFile) (int64, error)

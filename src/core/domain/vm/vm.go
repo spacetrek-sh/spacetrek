@@ -29,10 +29,12 @@ const (
 // VM represents a microVM instance for secure task execution.
 // Aligned with database table vm_instances.
 type VM struct {
-	ID            string   `db:"id"`
-	EnvironmentID string   `db:"environment_id"` // FK to environments
-	Provider      Provider `db:"provider"`
-	Status        Status   `db:"status"`
+	ID              string   `db:"id"`
+	EnvironmentID   string   `db:"environment_id"` // FK to environments
+	ConversationID  string   `db:"conversation_id"`
+	Provider        Provider `db:"provider"`
+	Status          Status   `db:"status"`
+	WorkspaceSizeGB int      `db:"workspace_size_gb"`
 
 	// Runtime metadata (nullable, persisted for reconciliation)
 	RuntimeID       *string    `db:"runtime_id"`
@@ -66,8 +68,10 @@ type VM struct {
 
 // CreateParams contains the parameters for creating a new VM.
 type CreateParams struct {
-	EnvironmentID string
-	Provider      Provider
+	EnvironmentID   string
+	ConversationID  string
+	Provider        Provider
+	WorkspaceSizeGB int
 	// Optional resource overrides
 	VCPU     *int // nil = use environment default
 	MemoryMB *int // nil = use environment default
@@ -84,15 +88,22 @@ func New(params CreateParams) *VM {
 		provider = ProviderFirecracker
 	}
 
+	workspaceSizeGB := params.WorkspaceSizeGB
+	if workspaceSizeGB <= 0 {
+		workspaceSizeGB = 2
+	}
+
 	return &VM{
-		ID:            uuid.NewString(),
-		EnvironmentID: params.EnvironmentID,
-		Provider:      provider,
-		Status:        StatusProvisioning,
-		VCPU:          params.VCPU,
-		MemoryMB:      params.MemoryMB,
-		DiskMB:        params.DiskMB,
-		CreatedAt:     now,
+		ID:              uuid.NewString(),
+		EnvironmentID:   params.EnvironmentID,
+		ConversationID:  params.ConversationID,
+		Provider:        provider,
+		Status:          StatusProvisioning,
+		WorkspaceSizeGB: workspaceSizeGB,
+		VCPU:            params.VCPU,
+		MemoryMB:        params.MemoryMB,
+		DiskMB:          params.DiskMB,
+		CreatedAt:       now,
 	}
 }
 

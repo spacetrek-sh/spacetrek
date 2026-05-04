@@ -14,7 +14,14 @@ type CreateSpec struct {
 	EnvironmentID string
 	ImagePath     string
 	Resources     environment.ResourceLimits
+	Workspace     WorkspaceConfig
 	Runtime       RuntimeConfig
+}
+
+// WorkspaceConfig captures persistent workspace provisioning for a VM.
+type WorkspaceConfig struct {
+	ConversationID string
+	SizeGB         int
 }
 
 // Backend defines the interface for VM backend providers.

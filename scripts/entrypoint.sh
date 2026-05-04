@@ -14,7 +14,6 @@ domain-needed
 bogus-priv
 cache-size=1000
 bind-dynamic
-local-service
 no-resolv
 interface=lo
 interface=${DNS_TAP_INTERFACE_PATTERN}

@@ -3,7 +3,9 @@ package vm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -15,8 +17,8 @@ import (
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/environment"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/snapshot"
-	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
+	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 )
 
 const (
@@ -25,6 +27,10 @@ const (
 	executeMaxAttempts           = 3
 	executeRetryInterval         = 450 * time.Millisecond
 	executeLogPreviewLimit       = 512
+
+	defaultWorkspaceSizeGB = 2
+	workspaceMountPath     = "/workspace"
+	workspaceBaseDir       = "/var/lib/firecracker/vms"
 )
 
 // Service handles VM business logic.
@@ -35,8 +41,8 @@ type Service struct {
 	backend       vmdomain.Backend // VM provider (Firecracker, etc.)
 	envRepo       EnvironmentRepository
 	snapshotStore ports.SnapshotStore // nil = local-only mode
-	ipAllocator   *IPAllocator       // nil when networking disabled
-	networkCfg    NetworkConfig      // zero-value when networking disabled
+	ipAllocator   *IPAllocator        // nil when networking disabled
+	networkCfg    NetworkConfig       // zero-value when networking disabled
 	idleTimeout   time.Duration
 	autoSnapshot  bool
 	resumeGrace   time.Duration
@@ -260,7 +266,7 @@ func (s *Service) reconcileRuntimeStates(ctx context.Context) {
 		if statusErr != nil {
 			if strings.Contains(strings.ToLower(statusErr.Error()), "not found") {
 				state := "stopped"
-			vm.RuntimeState = &state
+				vm.RuntimeState = &state
 				vm.PID = nil
 				vm.LastHeartbeatAt = &now
 				vm.IdleDeadlineAt = nil
@@ -313,6 +319,10 @@ func (s *Service) reapIdleVMs(ctx context.Context) {
 			if _, snapErr := s.CreateSnapshot(ctx, vm.ID); snapErr != nil {
 				logger.WarnContext(ctx, "VM idle reaper auto-snapshot failed, proceeding with stop", "vm_id", vm.ID, "error", snapErr)
 			}
+		}
+
+		if err := s.teardownWorkspace(ctx, vm, vm.ID); err != nil {
+			logger.WarnContext(ctx, "VM idle reaper workspace teardown failed, proceeding", "vm_id", vm.ID, "error", err)
 		}
 
 		if err := s.backend.StopPreserving(ctx, vm.ID); err != nil {
@@ -408,10 +418,17 @@ func (s *Service) collectAndPersistMetrics(ctx context.Context) {
 }
 
 // Create provisions a new VM instance for the given environment.
-func (s *Service) Create(ctx context.Context, envID string, provider vmdomain.Provider, vcpu, memoryMB, diskMB *int) (*vmdomain.VM, error) {
+func (s *Service) Create(ctx context.Context, envID, conversationID string, provider vmdomain.Provider, workspaceSizeGB int, vcpu, memoryMB, diskMB *int) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 
-	logger.DebugContext(ctx, "VM create: starting", "env_id", envID, "provider", provider)
+	logger.DebugContext(ctx, "VM create: starting", "env_id", envID, "conversation_id", conversationID, "provider", provider, "workspace_size_gb", workspaceSizeGB)
+
+	if strings.TrimSpace(conversationID) == "" {
+		return nil, exception.BadRequest("conversation_id is required")
+	}
+	if workspaceSizeGB <= 0 {
+		workspaceSizeGB = defaultWorkspaceSizeGB
+	}
 
 	// Validate environment exists
 	env, err := s.envRepo.GetByID(ctx, envID)
@@ -427,11 +444,13 @@ func (s *Service) Create(ctx context.Context, envID string, provider vmdomain.Pr
 
 	// Create VM entity with optional resource overrides
 	vm := vmdomain.New(vmdomain.CreateParams{
-		EnvironmentID: envID,
-		Provider:      provider,
-		VCPU:          vcpu,
-		MemoryMB:      memoryMB,
-		DiskMB:        diskMB,
+		EnvironmentID:   envID,
+		ConversationID:  strings.TrimSpace(conversationID),
+		Provider:        provider,
+		WorkspaceSizeGB: workspaceSizeGB,
+		VCPU:            vcpu,
+		MemoryMB:        memoryMB,
+		DiskMB:          diskMB,
 	})
 
 	// Persist VM to database
@@ -457,6 +476,11 @@ func (s *Service) Create(ctx context.Context, envID string, provider vmdomain.Pr
 			MemoryMB: effectiveMemory,
 			DiskMB:   effectiveDisk,
 		},
+		Workspace: vmdomain.WorkspaceConfig{
+			ConversationID: vm.ConversationID,
+			SizeGB:         vm.WorkspaceSizeGB,
+		},
+		
 		Runtime: vmdomain.DefaultRuntimeConfig(),
 	}
 
@@ -478,6 +502,12 @@ func (s *Service) Create(ctx context.Context, envID string, provider vmdomain.Pr
 		spec.Runtime.EnableNetworking = true
 	}
 
+	if err := s.prepareWorkspaceImageFromStorage(ctx, vm.ID, vm.ConversationID); err != nil {
+		vm.Terminate()
+		_ = s.repo.Update(ctx, vm)
+		return nil, exception.Internal(fmt.Errorf("prepare workspace image: %w", err))
+	}
+
 	backendID, err := s.backend.Create(ctx, spec)
 	if err != nil {
 		logger.ErrorContext(ctx, "backend provisioning failed", "vm_id", vm.ID, "error", err)
@@ -488,6 +518,14 @@ func (s *Service) Create(ctx context.Context, envID string, provider vmdomain.Pr
 	}
 
 	logger.DebugContext(ctx, "VM create: backend provisioned", "vm_id", vm.ID, "backend_id", backendID, "vcpu", effectiveVCPU, "memory_mb", effectiveMemory, "disk_mb", effectiveDisk)
+
+	if err := s.ensureWorkspaceMounted(ctx, backendID); err != nil {
+		logger.ErrorContext(ctx, "workspace mount failed after create", "vm_id", vm.ID, "error", err)
+		_ = s.backend.Destroy(ctx, backendID)
+		vm.Terminate()
+		_ = s.repo.Update(ctx, vm)
+		return nil, err
+	}
 
 	// Persist runtime metadata for reconciliation.
 	vm.SetRuntimeMetadata(backendID, "", 0, "created")
@@ -685,6 +723,10 @@ func (s *Service) Stop(ctx context.Context, id string) (*vmdomain.VM, error) {
 		}
 	}
 
+	if err := s.teardownWorkspace(ctx, vm, id); err != nil {
+		logger.WarnContext(ctx, "workspace teardown failed before stop, proceeding", "vm_id", id, "error", err)
+	}
+
 	// Stop via backend (preserves rootfs for potential resume).
 	if err := s.backend.StopPreserving(ctx, id); err != nil {
 		logger.ErrorContext(ctx, "backend stop failed", "vm_id", id, "error", err)
@@ -719,6 +761,10 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	if err != nil {
 		logger.WarnContext(ctx, "VM not found", "vm_id", id, "error", err)
 		return err
+	}
+
+	if err := s.teardownWorkspace(ctx, vm, id); err != nil {
+		logger.WarnContext(ctx, "workspace teardown failed before destroy, proceeding", "vm_id", id, "error", err)
 	}
 
 	// Destroy via backend
@@ -1031,6 +1077,18 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 		return nil, exception.Internal(fmt.Errorf("failed to parse snapshot metadata: %w", err))
 	}
 
+	conversationID := strings.TrimSpace(vm.ConversationID)
+	if conversationID == "" {
+		conversationID = strings.TrimSpace(chatID)
+		vm.ConversationID = conversationID
+	}
+	if vm.WorkspaceSizeGB <= 0 {
+		vm.WorkspaceSizeGB = defaultWorkspaceSizeGB
+	}
+	if err := s.prepareWorkspaceImageFromStorage(ctx, vm.ID, conversationID); err != nil {
+		return nil, exception.Internal(fmt.Errorf("prepare workspace image for resume: %w", err))
+	}
+
 	// Build CreateSpec from snapshot metadata to reconstruct the Firecracker machine.
 	spec := vmdomain.CreateSpec{
 		InstanceID:    vmID,
@@ -1041,10 +1099,14 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 			MemoryMB: meta.MemoryMB,
 			DiskMB:   meta.DiskMB,
 		},
+		Workspace: vmdomain.WorkspaceConfig{
+			ConversationID: conversationID,
+			SizeGB:         vm.WorkspaceSizeGB,
+		},
 		Runtime: vmdomain.RuntimeConfig{
 			Vsock: vmdomain.VsockConfig{
-				Enabled:  true,
-				GuestCID: meta.GuestCID,
+				Enabled:   true,
+				GuestCID:  meta.GuestCID,
 				GuestPort: meta.GuestPort,
 			},
 		},
@@ -1091,6 +1153,12 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 	if err != nil {
 		logger.ErrorContext(ctx, "failed to restore VM from snapshot", "vm_id", vmID, "snapshot_id", snap.ID, "error", err)
 		return nil, exception.Internal(err)
+	}
+
+	if err := s.ensureWorkspaceMounted(ctx, backendID); err != nil {
+		logger.ErrorContext(ctx, "workspace mount failed after restore", "vm_id", vmID, "error", err)
+		_ = s.backend.StopPreserving(ctx, backendID)
+		return nil, err
 	}
 
 	// Update runtime metadata from the restored VM.
@@ -1206,6 +1274,10 @@ func (s *Service) Shutdown(ctx context.Context) {
 			}
 		}
 
+		if err := s.teardownWorkspace(ctx, vm, runtimeID); err != nil {
+			logger.WarnContext(ctx, "shutdown: workspace teardown failed, proceeding", "vm_id", vm.ID, "error", err)
+		}
+
 		if err := s.backend.StopPreserving(ctx, runtimeID); err != nil {
 			logger.WarnContext(ctx, "shutdown: backend stop failed", "vm_id", vm.ID, "error", err)
 			failed++
@@ -1222,4 +1294,213 @@ func (s *Service) Shutdown(ctx context.Context) {
 	}
 
 	logger.InfoContext(ctx, "shutdown: VM cleanup complete", "stopped", stopped, "failed", failed, "total", len(vms))
+}
+
+func (s *Service) ensureWorkspaceMounted(ctx context.Context, runtimeID string) error {
+	if err := s.waitForExecuteReadiness(ctx, runtimeID); err != nil {
+		return err
+	}
+
+	mountCmd := fmt.Sprintf("mkdir -p %s && if ! mountpoint -q %s; then mount -L workspace %s || mount /dev/vdb %s; fi", workspaceMountPath, workspaceMountPath, workspaceMountPath, workspaceMountPath)
+	if err := s.executeGuestShellWithRetry(ctx, runtimeID, mountCmd, 3); err != nil {
+		return exception.ServiceUnavailable("workspace mount is not ready yet, retry shortly")
+	}
+
+	// If a workspace archive was downloaded from S3, extract it into the mounted workspace.
+	archivePath := workspaceArchivePath(runtimeID)
+	if data, err := os.ReadFile(archivePath); err == nil {
+		encoded := base64.StdEncoding.EncodeToString(data)
+		extractCmd := fmt.Sprintf("printf '%%s' '%s' | base64 -d | tar xzf - -C %s", encoded, workspaceMountPath)
+		if err := s.executeGuestShellWithRetry(ctx, runtimeID, extractCmd, 2); err != nil {
+			return fmt.Errorf("extract workspace archive: %w", err)
+		}
+		_ = os.Remove(archivePath)
+	}
+
+	return nil
+}
+
+func (s *Service) teardownWorkspace(ctx context.Context, vm *vmdomain.VM, runtimeID string) error {
+	if vm == nil {
+		return nil
+	}
+	if runtimeID == "" {
+		runtimeID = vm.ID
+	}
+
+	var failures []string
+
+	if err := s.uploadWorkspaceSnapshot(ctx, runtimeID, vm.ID, vm.ConversationID); err != nil {
+		failures = append(failures, fmt.Sprintf("upload workspace snapshot: %v", err))
+	}
+
+	if err := s.syncAndUnmountWorkspace(ctx, runtimeID); err != nil {
+		failures = append(failures, fmt.Sprintf("unmount workspace: %v", err))
+	}
+
+	if len(failures) > 0 {
+		return errors.New(strings.Join(failures, "; "))
+	}
+
+	return nil
+}
+
+func (s *Service) syncAndUnmountWorkspace(ctx context.Context, runtimeID string) error {
+	if err := s.waitForExecuteReadiness(ctx, runtimeID); err != nil {
+		return fmt.Errorf("workspace command channel not ready: %w", err)
+	}
+
+	umountCmd := fmt.Sprintf("sync && if mountpoint -q %s; then umount %s || umount -l %s; fi", workspaceMountPath, workspaceMountPath, workspaceMountPath)
+	return s.executeGuestShellWithRetry(ctx, runtimeID, umountCmd, 2)
+}
+
+func (s *Service) executeGuestShellWithRetry(ctx context.Context, runtimeID, command string, attempts int) error {
+	if attempts <= 0 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		_, _, _, err := s.backend.Execute(ctx, runtimeID, []string{"/bin/sh", "-c", command})
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		if attempt == attempts || !isTransientExecuteError(err) {
+			break
+		}
+
+		if !sleepWithContext(ctx, executeRetryInterval) {
+			return exception.ServiceUnavailable("workspace command execution canceled")
+		}
+	}
+
+	if lastErr != nil {
+		return lastErr
+	}
+
+	return fmt.Errorf("workspace command failed")
+}
+
+// executeGuestShellWithRetryResult runs a shell command in the guest and returns stdout.
+func (s *Service) executeGuestShellWithRetryResult(ctx context.Context, runtimeID, command string, attempts int) (string, error) {
+	if attempts <= 0 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		stdout, _, _, err := s.backend.Execute(ctx, runtimeID, []string{"/bin/sh", "-c", command})
+		if err == nil {
+			return stdout, nil
+		}
+
+		lastErr = err
+		if attempt == attempts || !isTransientExecuteError(err) {
+			break
+		}
+
+		if !sleepWithContext(ctx, executeRetryInterval) {
+			return "", exception.ServiceUnavailable("workspace command execution canceled")
+		}
+	}
+
+	return "", lastErr
+}
+
+func (s *Service) prepareWorkspaceImageFromStorage(ctx context.Context, vmID, conversationID string) error {
+	if s.snapshotStore == nil {
+		return nil
+	}
+
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return nil
+	}
+
+	key := workspaceSnapshotKey(conversationID)
+	exists, err := s.snapshotStore.ObjectExists(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Join(workspaceBaseDir, vmID), 0755); err != nil {
+		return fmt.Errorf("create workspace directory: %w", err)
+	}
+
+	tarPath := workspaceArchivePath(vmID)
+	files := []ports.SnapshotFile{{Key: key, LocalPath: tarPath}}
+	if err := s.snapshotStore.DownloadFiles(ctx, files); err != nil {
+		return fmt.Errorf("download workspace archive %s: %w", key, err)
+	}
+
+	return nil
+}
+
+func (s *Service) uploadWorkspaceSnapshot(ctx context.Context, runtimeID, vmID, conversationID string) error {
+	if s.snapshotStore == nil {
+		return nil
+	}
+
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return fmt.Errorf("missing conversation_id for workspace snapshot")
+	}
+
+	imagePath := workspaceImagePath(vmID)
+	if _, err := os.Stat(imagePath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat workspace image: %w", err)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "workspace-upload-"+vmID)
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tarPath := filepath.Join(tmpDir, "workspace.tar.gz")
+
+	// Archive workspace contents from inside the guest via vsock.
+	// Base64-encode because the vsock protocol uses JSON framing and can't carry raw binary.
+	stdout, err := s.executeGuestShellWithRetryResult(ctx, runtimeID,
+		"tar czf - -C /workspace --exclude=./lost+found . | base64 -w0", 2)
+	if err != nil {
+		return fmt.Errorf("archive workspace via guest: %w", err)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(stdout))
+	if err != nil {
+		return fmt.Errorf("decode base64 archive: %w", err)
+	}
+
+	if err := os.WriteFile(tarPath, decoded, 0644); err != nil {
+		return fmt.Errorf("write archive: %w", err)
+	}
+
+	key := workspaceSnapshotKey(conversationID)
+	files := []ports.SnapshotFile{{Key: key, LocalPath: tarPath}}
+	if _, err := s.snapshotStore.UploadFiles(ctx, files); err != nil {
+		return fmt.Errorf("upload workspace archive %s: %w", key, err)
+	}
+
+	return nil
+}
+
+func workspaceImagePath(vmID string) string {
+	return filepath.Join(workspaceBaseDir, vmID, "workspace.ext4")
+}
+
+func workspaceSnapshotKey(conversationID string) string {
+	return fmt.Sprintf("workspaces/%s.tar.gz", conversationID)
+}
+
+func workspaceArchivePath(vmID string) string {
+	return filepath.Join(workspaceBaseDir, vmID, "workspace.tar.gz")
 }

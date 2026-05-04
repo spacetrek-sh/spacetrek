@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 )
@@ -89,6 +90,25 @@ func (s *store) UploadFiles(ctx context.Context, files []ports.SnapshotFile) (in
 	}
 
 	return total, nil
+}
+
+func (s *store) ObjectExists(ctx context.Context, key string) (bool, error) {
+	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err == nil {
+		return true, nil
+	}
+
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.ErrorCode() == "NotFound" || apiErr.ErrorCode() == "NoSuchKey" {
+			return false, nil
+		}
+	}
+
+	return false, fmt.Errorf("s3: head object %s: %w", key, err)
 }
 
 func (s *store) DownloadFiles(ctx context.Context, files []ports.SnapshotFile) error {

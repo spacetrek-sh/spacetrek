@@ -199,9 +199,8 @@ func (s *Service) SendMessageAsync(ctx context.Context, id, content, vmID string
 	userID := c.UserID
 
 	go func() {
-		bgCtx := context.Background()
-		bgLogger := pkglog.FromContext(bgCtx).With("chat_id", chatID)
-		bgCtx = pkglog.WithLogger(bgCtx, bgLogger)
+		bgCtx := pkglog.WithLogger(context.Background(), pkglog.FromContext(ctx).With("chat_id", chatID))
+		bgLogger := pkglog.FromContext(bgCtx)
 
 		if s.orch == nil {
 			bgLogger.WarnContext(bgCtx, "no orchestrator configured")
@@ -212,7 +211,7 @@ func (s *Service) SendMessageAsync(ctx context.Context, id, content, vmID string
 				At:     time.Now().UTC(),
 			}
 			s.publish(errEvent)
-			s.persistEvent(chatID, errEvent)
+			s.persistEvent(bgCtx, chatID, errEvent)
 			return
 		}
 
@@ -224,7 +223,7 @@ func (s *Service) SendMessageAsync(ctx context.Context, id, content, vmID string
 				event.At = time.Now().UTC()
 			}
 			s.publish(event)
-			s.persistEvent(chatID, event)
+			s.persistEvent(bgCtx, chatID, event)
 		}
 
 		bgLogger.DebugContext(bgCtx, "async orchestrator: starting")
@@ -256,7 +255,7 @@ func (s *Service) SendMessageAsync(ctx context.Context, id, content, vmID string
 				At:     time.Now().UTC(),
 			}
 			s.publish(errEvent)
-			s.persistEvent(chatID, errEvent)
+			s.persistEvent(bgCtx, chatID, errEvent)
 			return
 		}
 
@@ -286,7 +285,7 @@ func (s *Service) SendMessageAsync(ctx context.Context, id, content, vmID string
 			At:         time.Now().UTC(),
 		}
 		s.publish(doneEvent)
-		s.persistEvent(chatID, doneEvent)
+		s.persistEvent(bgCtx, chatID, doneEvent)
 	}()
 
 	return nil
@@ -328,7 +327,7 @@ func (s *Service) SendMessage(ctx context.Context, id, content, vmID string) (*c
 				event.At = time.Now().UTC()
 			}
 			s.publish(event)
-			s.persistEvent(id, event)
+			s.persistEvent(ctx, id, event)
 		}
 
 		resolvedVMID := vmID
@@ -357,7 +356,7 @@ func (s *Service) SendMessage(ctx context.Context, id, content, vmID string) (*c
 				At:     time.Now().UTC(),
 			}
 			s.publish(errEvent)
-			s.persistEvent(id, errEvent)
+			s.persistEvent(ctx, id, errEvent)
 			return nil, err
 		}
 
@@ -468,8 +467,7 @@ func (s *Service) unsubscribe(chatID string, id uint64) {
 }
 
 // persistEvent saves a runtime event via direct INSERT into runtime_events table.
-func (s *Service) persistEvent(chatID string, event orchdomain.RuntimeEvent) {
-	ctx := context.Background()
+func (s *Service) persistEvent(ctx context.Context, chatID string, event orchdomain.RuntimeEvent) {
 	logger := pkglog.FromContext(ctx)
 
 	persisted := event.ToPersisted()

@@ -3,8 +3,10 @@ package vm
 
 // createVMRequest is the JSON body for POST /api/v1/vm.
 type createVMRequest struct {
-	EnvironmentID string `json:"environment_id" validate:"required"`
-	Provider      string `json:"provider" validate:"omitempty,oneof=firecracker cloud-hypervisor"`
+	EnvironmentID   string `json:"environment_id" validate:"required"`
+	ConversationID  string `json:"conversation_id" validate:"required"`
+	Provider        string `json:"provider" validate:"omitempty,oneof=firecracker cloud-hypervisor"`
+	WorkspaceSizeGB int    `json:"workspace_size_gb,omitempty" validate:"omitempty,min=1,max=64"`
 	// Optional resource overrides (null = use environment default)
 	VCPU     *int `json:"vcpu" validate:"omitempty,min=1,max=16"`
 	MemoryMB *int `json:"memory_mb" validate:"omitempty,min=128,max=32768"`
@@ -15,8 +17,10 @@ type createVMRequest struct {
 type createVMResponse struct {
 	ID              string  `json:"id"`
 	EnvironmentID   string  `json:"environment_id"`
+	ConversationID  string  `json:"conversation_id"`
 	Provider        string  `json:"provider"`
 	Status          string  `json:"status"`
+	WorkspaceSizeGB int     `json:"workspace_size_gb"`
 	RuntimeID       *string `json:"runtime_id,omitempty"`
 	RuntimeState    *string `json:"runtime_state,omitempty"`
 	PID             *int    `json:"pid,omitempty"`
@@ -30,10 +34,12 @@ type createVMResponse struct {
 
 // getVMResponse is the JSON response for GET /api/v1/vm/{id}.
 type getVMResponse struct {
-	ID            string `json:"id"`
-	EnvironmentID string `json:"environment_id"`
-	Provider      string `json:"provider"`
-	Status        string `json:"status"`
+	ID              string `json:"id"`
+	EnvironmentID   string `json:"environment_id"`
+	ConversationID  string `json:"conversation_id"`
+	Provider        string `json:"provider"`
+	Status          string `json:"status"`
+	WorkspaceSizeGB int    `json:"workspace_size_gb"`
 	// Runtime observed metadata
 	RuntimeID       *string `json:"runtime_id,omitempty"`
 	RuntimeState    *string `json:"runtime_state,omitempty"`

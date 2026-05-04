@@ -27,6 +27,8 @@ const defaultSystemPrompt = `You are an AI assistant with access to a secure mic
 - Only tools and binaries pre-installed in the base image are available. Use "ls /bin && ls /usr/bin" to discover what is available.
 - Alpine images have: sh, awk, sed, bc, and basic Unix utilities. Use these for computation instead of installing new packages.
 - Ubuntu images have: sh, bash, awk, sed, python3 (if included in the base image), and basic Unix utilities.
+- The default working directory is /workspace. Prefer reading, writing, and executing files under /workspace unless the user requests a different path.
+- /workspace is persistent across conversation resumes.
 - Work within these constraints. If a language or tool is not available, adapt and use what IS available (e.g., use shell/awk instead of Python).
 
 ## Workflow
@@ -92,7 +94,6 @@ func NewPlanner(ctx context.Context, cfg Config, tools ports.ToolRegistry) (*Pla
 		tools:  tools,
 	}, nil
 }
-
 
 // PlanTools sends the conversation to Gemini and extracts any function calls
 // as planned tool steps. Returns an empty plan when the model responds with
@@ -289,11 +290,11 @@ func (p *Planner) FinalResponseWithMetadata(ctx context.Context, req ports.Final
 
 		// Append an explicit synthesis request so the model always produces text output.
 		contents = append(contents, &genai.Content{
-			Role: genai.RoleModel,
+			Role:  genai.RoleModel,
 			Parts: []*genai.Part{{Text: "I have completed my tool calls. Let me summarize the results."}},
 		})
 		contents = append(contents, &genai.Content{
-			Role: genai.RoleUser,
+			Role:  genai.RoleUser,
 			Parts: []*genai.Part{{Text: fmt.Sprintf("Based on the tool results above, provide a clear summary of what was accomplished for the user's request: %q. If any steps failed, explain what went wrong and what was tried.", req.Message)}},
 		})
 	}
