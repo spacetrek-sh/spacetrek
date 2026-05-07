@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	executeReadinessMaxAttempts  = 8
-	executeReadinessPollInterval = 350 * time.Millisecond
+	executeReadinessMaxAttempts  = 12
+	executeReadinessPollInterval = 500 * time.Millisecond
 	executeMaxAttempts           = 3
 	executeRetryInterval         = 450 * time.Millisecond
 	executeLogPreviewLimit       = 512
@@ -167,6 +167,19 @@ func (s *Service) ResolveEnvironment(ctx context.Context, envType string) (strin
 		}
 	}
 	return "", exception.NotFound("environment type", envType)
+}
+
+// ResolveEnvironmentHint returns the environment description for a VM's environment.
+func (s *Service) ResolveEnvironmentHint(ctx context.Context, vmID string) (string, error) {
+	vm, err := s.repo.GetByID(ctx, vmID)
+	if err != nil {
+		return "", err
+	}
+	env, err := s.envRepo.GetByID(ctx, vm.EnvironmentID)
+	if err != nil {
+		return "", err
+	}
+	return env.Description, nil
 }
 
 // StartMetricsCollector periodically captures and persists VM metrics samples.
@@ -876,24 +889,42 @@ func (s *Service) waitForExecuteReadiness(ctx context.Context, vmID string) erro
 
 	for attempt := 1; attempt <= executeReadinessMaxAttempts; attempt++ {
 		status, err := s.backend.Status(ctx, vmID)
-		if err == nil && isRuntimeReadyForExecute(status) {
-			logger.DebugContext(ctx, "VM execute readiness confirmed", "vm_id", vmID, "attempt", attempt, "runtime_state", status.State, "pid", status.PID, "vsock_path", status.VsockPath, "guest_cid", status.GuestCID)
+		if err != nil || !isRuntimeReadyForExecute(status) {
+			reason := "unknown"
+			if err != nil {
+				reason = err.Error()
+			} else {
+				reason = fmt.Sprintf("state=%s pid=%d vsock_path_set=%t guest_cid=%d", status.State, status.PID, status.VsockPath != "", status.GuestCID)
+			}
+
+			if attempt == executeReadinessMaxAttempts {
+				logger.WarnContext(ctx, "VM execute readiness timed out", "vm_id", vmID, "attempts", executeReadinessMaxAttempts, "reason", reason)
+				return exception.ServiceUnavailable("VM command channel is not ready yet, retry shortly")
+			}
+
+			logger.DebugContext(ctx, "VM not ready for execute yet", "vm_id", vmID, "attempt", attempt, "reason", reason, "retry_in", executeReadinessPollInterval.String())
+			if !sleepWithContext(ctx, executeReadinessPollInterval) {
+				return exception.ServiceUnavailable("VM readiness check canceled")
+			}
+			continue
+		}
+
+		// Host-side state is running. Probe the guest agent via vsock to confirm
+		// it has finished initializing (mount filesystems, start listener, etc.).
+		probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, _, _, probeErr := s.backend.Execute(probeCtx, vmID, []string{"/bin/true"})
+		probeCancel()
+		if probeErr == nil {
+			logger.DebugContext(ctx, "VM execute readiness confirmed (vsock probe OK)", "vm_id", vmID, "attempt", attempt)
 			return nil
 		}
 
-		reason := ""
-		if err != nil {
-			reason = err.Error()
-		} else {
-			reason = fmt.Sprintf("state=%s pid=%d vsock_path_set=%t guest_cid=%d", status.State, status.PID, status.VsockPath != "", status.GuestCID)
-		}
-
 		if attempt == executeReadinessMaxAttempts {
-			logger.WarnContext(ctx, "VM execute readiness timed out", "vm_id", vmID, "attempts", executeReadinessMaxAttempts, "reason", reason)
+			logger.WarnContext(ctx, "VM execute readiness timed out (guest agent probe)", "vm_id", vmID, "attempts", executeReadinessMaxAttempts, "probe_error", probeErr)
 			return exception.ServiceUnavailable("VM command channel is not ready yet, retry shortly")
 		}
 
-		logger.DebugContext(ctx, "VM not ready for execute yet", "vm_id", vmID, "attempt", attempt, "max_attempts", executeReadinessMaxAttempts, "reason", reason, "retry_in", executeReadinessPollInterval.String())
+		logger.DebugContext(ctx, "VM host-side ready but guest agent not responding", "vm_id", vmID, "attempt", attempt, "probe_error", probeErr, "retry_in", executeReadinessPollInterval.String())
 		if !sleepWithContext(ctx, executeReadinessPollInterval) {
 			return exception.ServiceUnavailable("VM readiness check canceled")
 		}
@@ -1301,9 +1332,11 @@ func (s *Service) ensureWorkspaceMounted(ctx context.Context, runtimeID string) 
 		return err
 	}
 
+	// The readiness check already confirmed vsock connectivity with a /bin/true probe,
+	// so the guest agent is listening. A single mount attempt is sufficient.
 	mountCmd := fmt.Sprintf("mkdir -p %s && if ! mountpoint -q %s; then mount -L workspace %s || mount /dev/vdb %s; fi", workspaceMountPath, workspaceMountPath, workspaceMountPath, workspaceMountPath)
-	if err := s.executeGuestShellWithRetry(ctx, runtimeID, mountCmd, 3); err != nil {
-		return exception.ServiceUnavailable("workspace mount is not ready yet, retry shortly")
+	if _, _, exitCode, err := s.backend.Execute(ctx, runtimeID, []string{"/bin/sh", "-c", mountCmd}); err != nil {
+		return fmt.Errorf("mount workspace: %w (exit_code=%d)", err, exitCode)
 	}
 
 	// If a workspace archive was downloaded from S3, extract it into the mounted workspace.

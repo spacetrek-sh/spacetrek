@@ -193,15 +193,19 @@ func main() {
 		logger.Info("using rule-based planner (no gemini config)")
 	}
 
+	maxReactSteps := cfg.LLM.MaxReactSteps
+	if maxReactSteps <= 0 {
+		maxReactSteps = 30
+	}
 	orchService := orchestratorsvc.NewWithConfig(
 		planner,
 		orchTools,
 		orchestratorsvc.NewMemoryStateStore(),
-		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot"}, cfg.Security.MaxTaskDuration),
+		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot"}, cfg.Security.MaxTaskDuration, maxReactSteps),
 	)
 	runtimeEventRepo := postgresrepo.NewRuntimeEventRepository(db)
 	vmResolver := chatsvc.NewVMResolver(vmService)
-	chatService := chatsvc.New(chatRepo, runtimeEventRepo, agentRepo, orchService, vmResolver)
+	chatService := chatsvc.New(chatRepo, runtimeEventRepo, agentRepo, orchService, vmResolver, vmService)
 
 	// ── Handlers ────────────────────────────────────────────────────────────
 	agentHandler := agenthttp.NewHandler(agentService, jwtManager)

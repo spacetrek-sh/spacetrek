@@ -21,6 +21,7 @@ type environmentRow struct {
 	Type           string           `db:"type"`
 	ImagePath      string           `db:"image_path"`
 	ResourceLimits json.RawMessage  `db:"resource_limits"`
+	Description    string           `db:"description"`
 	Metadata       *json.RawMessage `db:"metadata"`
 	CreatedAt      sql.NullTime     `db:"created_at"`
 	UpdatedAt      sql.NullTime     `db:"updated_at"`
@@ -41,8 +42,8 @@ func (r *environmentRepository) Create(ctx context.Context, env *environment.Env
 	}
 
 	query := `
-		INSERT INTO environments (id, type, image_path, resource_limits, metadata, created_at, updated_at)
-		VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
+		INSERT INTO environments (id, type, image_path, resource_limits, description, metadata, created_at, updated_at)
+		VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8)
 	`
 
 	if _, err := r.db.ExecContext(
@@ -52,6 +53,7 @@ func (r *environmentRepository) Create(ctx context.Context, env *environment.Env
 		string(env.Type),
 		env.ImagePath,
 		resourceLimitsJSON,
+		env.Description,
 		env.Metadata,
 		env.CreatedAt,
 		env.UpdatedAt,
@@ -67,7 +69,7 @@ func (r *environmentRepository) GetByID(ctx context.Context, id string) (*enviro
 	logger := pkglog.FromContext(ctx)
 
 	query := `
-		SELECT id, type, image_path, resource_limits, metadata, created_at, updated_at
+		SELECT id, type, image_path, resource_limits, description, metadata, created_at, updated_at
 		FROM environments
 		WHERE id = $1
 	`
@@ -88,7 +90,7 @@ func (r *environmentRepository) List(ctx context.Context) ([]*environment.Enviro
 	logger := pkglog.FromContext(ctx)
 
 	query := `
-		SELECT id, type, image_path, resource_limits, metadata, created_at, updated_at
+		SELECT id, type, image_path, resource_limits, description, metadata, created_at, updated_at
 		FROM environments
 		ORDER BY created_at DESC
 	`
@@ -125,8 +127,9 @@ func (r *environmentRepository) Update(ctx context.Context, env *environment.Env
 		SET type = $2,
 		    image_path = $3,
 		    resource_limits = $4::jsonb,
-		    metadata = $5::jsonb,
-		    updated_at = $6
+		    description = $5,
+		    metadata = $6::jsonb,
+		    updated_at = $7
 		WHERE id = $1
 	`
 
@@ -137,6 +140,7 @@ func (r *environmentRepository) Update(ctx context.Context, env *environment.Env
 		string(env.Type),
 		env.ImagePath,
 		resourceLimitsJSON,
+		env.Description,
 		env.Metadata,
 		env.UpdatedAt,
 	)
@@ -193,6 +197,7 @@ func mapEnvironmentRow(row environmentRow) (*environment.Environment, error) {
 		Type:           environment.Type(row.Type),
 		ImagePath:      row.ImagePath,
 		ResourceLimits: resourceLimits,
+		Description:    row.Description,
 		Metadata:       row.Metadata,
 	}
 

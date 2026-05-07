@@ -5,6 +5,7 @@ DNS_ENABLED="${SPACETRK_VM_DNS_ENABLED:-true}"
 DNS_PORT="${SPACETRK_VM_DNS_PORT:-53}"
 DNS_UPSTREAM="${SPACETRK_VM_DNS_UPSTREAM:-1.1.1.1,8.8.8.8}"
 DNS_TAP_INTERFACE_PATTERN="${SPACETRK_VM_DNS_TAP_INTERFACE_PATTERN:-tap*}"
+DNS_BRIDGE_INTERFACE="${SPACETRK_VM_DNS_BRIDGE_INTERFACE:-br-stk}"
 DNS_CONF="/tmp/dnsmasq-spacetrk.conf"
 
 start_dns() {
@@ -16,6 +17,7 @@ cache-size=1000
 bind-dynamic
 no-resolv
 interface=lo
+interface=${DNS_BRIDGE_INTERFACE}
 interface=${DNS_TAP_INTERFACE_PATTERN}
 except-interface=eth0
 EOF

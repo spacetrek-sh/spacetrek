@@ -14,8 +14,10 @@ type Type string
 
 const (
 	TypeAlpine Type = "alpine"
-	TypePython Type = "python"
+	TypeBun    Type = "bun"
 	TypeNode   Type = "node"
+	TypePython Type = "python"
+	TypeUv     Type = "uv"
 	TypeUbuntu Type = "ubuntu"
 )
 
@@ -32,6 +34,7 @@ type Environment struct {
 	Type           Type             `db:"type"`
 	ImagePath      string           `db:"image_path"`
 	ResourceLimits ResourceLimits   `db:"resource_limits"`
+	Description    string           `db:"description"`
 	Metadata       *json.RawMessage `db:"metadata"` // Flexible metadata (nullable)
 	CreatedAt      time.Time        `db:"created_at"`
 	UpdatedAt      time.Time        `db:"updated_at"`
@@ -42,6 +45,7 @@ type CreateParams struct {
 	Type           Type
 	ImagePath      string
 	ResourceLimits ResourceLimits
+	Description    string
 	Metadata       *json.RawMessage
 }
 
@@ -57,6 +61,7 @@ func New(params CreateParams) *Environment {
 		Type:           params.Type,
 		ImagePath:      params.ImagePath,
 		ResourceLimits: params.ResourceLimits,
+		Description:    params.Description,
 		Metadata:       metadata,
 		CreatedAt:      now,
 		UpdatedAt:      now,

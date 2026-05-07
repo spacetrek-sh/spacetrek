@@ -79,3 +79,8 @@ func (r *vmResolver) ResolveVMForChat(ctx context.Context, chatID string) (strin
 
 // Compile-time check that vmResolver satisfies VMResolver.
 var _ VMResolver = (*vmResolver)(nil)
+
+// EnvironmentHintResolver resolves the environment description for a VM.
+type EnvironmentHintResolver interface {
+	ResolveEnvironmentHint(ctx context.Context, vmID string) (string, error)
+}

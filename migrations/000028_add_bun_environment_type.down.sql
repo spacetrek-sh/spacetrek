@@ -1,0 +1,4 @@
+-- PostgreSQL does not support removing enum values.
+-- To revert, recreate the enum without 'bun' and 'uv' values, and update any columns using the enum to use the new type.
+-- This requires dropping all columns using the type, which is destructive.
+-- Only run this if you understand the consequences.

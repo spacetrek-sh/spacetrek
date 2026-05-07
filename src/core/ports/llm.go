@@ -17,13 +17,14 @@ type PriorTurn struct {
 
 // PlanRequest is passed to planner implementations to choose tools.
 type PlanRequest struct {
-	ChatID     string
-	AgentID    string
-	UserID     string
-	Message    string
-	VMID       string
-	History    []chat.Message
-	PriorTurns []PriorTurn
+	ChatID           string
+	AgentID          string
+	UserID           string
+	Message          string
+	VMID             string
+	EnvironmentHint  string
+	History          []chat.Message
+	PriorTurns       []PriorTurn
 }
 
 // ToolPlanStep is one planned tool call.
@@ -49,10 +50,11 @@ type ToolPlan struct {
 
 // FinalResponseRequest is used to synthesize final assistant text.
 type FinalResponseRequest struct {
-	Message     string
-	Plan        ToolPlan
-	ToolResults []tool.Result
-	History     []chat.Message
+	Message          string
+	Plan             ToolPlan
+	ToolResults      []tool.Result
+	History          []chat.Message
+	EnvironmentHint  string
 }
 
 // FinalResponseMetadata carries optional metadata from final response generation.

@@ -20,6 +20,7 @@ type Config struct {
 	Storage       StorageConfig       `yaml:"storage"`
 	Security      SecurityConfig      `yaml:"security"`
 	Observability ObservabilityConfig `yaml:"observability"`
+	Seed         SeedConfig         `yaml:"seed"`
 }
 
 type ServerConfig struct {
@@ -88,10 +89,11 @@ type VMNetworkConfig struct {
 }
 
 type LLMConfig struct {
-	DefaultProvider string       `yaml:"default_provider"`
+	DefaultProvider string        `yaml:"default_provider"`
 	Timeout         time.Duration `yaml:"timeout"`
-	MaxRetries      int          `yaml:"max_retries"`
-	Gemini          GeminiConfig `yaml:"gemini"`
+	MaxRetries      int           `yaml:"max_retries"`
+	MaxReactSteps   int           `yaml:"max_react_steps"`
+	Gemini          GeminiConfig  `yaml:"gemini"`
 }
 
 type GeminiConfig struct {
@@ -115,6 +117,10 @@ type SecurityConfig struct {
 	AccessTokenExpiry  time.Duration `yaml:"access_token_expiry"`
 	RefreshTokenExpiry time.Duration `yaml:"refresh_token_expiry"`
 	MaxTaskDuration    time.Duration `yaml:"max_task_duration"`
+}
+
+type SeedConfig struct {
+	NamespaceUUID string `yaml:"namespace_uuid"`
 }
 
 type ObservabilityConfig struct {

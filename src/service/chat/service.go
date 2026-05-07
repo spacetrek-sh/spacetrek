@@ -23,11 +23,12 @@ type Orchestrator interface {
 
 // Service implements the chat business logic.
 type Service struct {
-	chats      chat.Repository
-	runtimes   orchdomain.RuntimeEventRepository
-	agents     agent.Repository
-	orch       Orchestrator
-	vmResolver VMResolver
+	chats       chat.Repository
+	runtimes    orchdomain.RuntimeEventRepository
+	agents      agent.Repository
+	orch        Orchestrator
+	vmResolver  VMResolver
+	envHintRes  EnvironmentHintResolver
 
 	mu          sync.RWMutex
 	subscribers map[string]map[uint64]chan orchdomain.RuntimeEvent
@@ -37,13 +38,14 @@ type Service struct {
 	eventBufs  map[string][]orchdomain.RuntimeEvent
 }
 
-func New(chats chat.Repository, runtimes orchdomain.RuntimeEventRepository, agents agent.Repository, orch Orchestrator, vmRes VMResolver) *Service {
+func New(chats chat.Repository, runtimes orchdomain.RuntimeEventRepository, agents agent.Repository, orch Orchestrator, vmRes VMResolver, envHintRes EnvironmentHintResolver) *Service {
 	return &Service{
 		chats:       chats,
 		runtimes:    runtimes,
 		agents:      agents,
 		orch:        orch,
 		vmResolver:  vmRes,
+		envHintRes:  envHintRes,
 		subscribers: make(map[string]map[uint64]chan orchdomain.RuntimeEvent),
 		eventBufs:   make(map[string][]orchdomain.RuntimeEvent),
 	}
@@ -62,6 +64,20 @@ func (s *Service) resolveVMID(ctx context.Context, chatID string) string {
 		return ""
 	}
 	return vmID
+}
+
+// resolveEnvironmentHint looks up the environment description for a VM.
+func (s *Service) resolveEnvironmentHint(ctx context.Context, vmID string) string {
+	if s.envHintRes == nil || vmID == "" {
+		return ""
+	}
+	hint, err := s.envHintRes.ResolveEnvironmentHint(ctx, vmID)
+	if err != nil {
+		logger := pkglog.FromContext(ctx)
+		logger.WarnContext(ctx, "failed to resolve environment hint", "vm_id", vmID, "error", err)
+		return ""
+	}
+	return hint
 }
 
 // Create opens a new chat, verifying that the requested agent exists first.
@@ -236,14 +252,17 @@ func (s *Service) SendMessageAsync(ctx context.Context, id, content, vmID string
 			bgLogger.DebugContext(bgCtx, "async orchestrator: resolved VM", "vm_id", resolvedVMID)
 		}
 
+		envHint := s.resolveEnvironmentHint(bgCtx, resolvedVMID)
+
 		result, err := s.orch.Process(bgCtx, orchestratorsvc.ProcessInput{
-			ChatID:    chatID,
-			AgentID:   agentID,
-			UserID:    userID,
-			Message:   content,
-			VMID:      resolvedVMID,
-			History:   c.Messages,
-			EmitEvent: emit,
+			ChatID:           chatID,
+			AgentID:          agentID,
+			UserID:           userID,
+			Message:          content,
+			VMID:             resolvedVMID,
+			EnvironmentHint:  envHint,
+			History:          c.Messages,
+			EmitEvent:        emit,
 		})
 
 		if err != nil {
@@ -338,14 +357,17 @@ func (s *Service) SendMessage(ctx context.Context, id, content, vmID string) (*c
 			logger.DebugContext(ctx, "chat send message: resolved VM", "vm_id", resolvedVMID)
 		}
 
+		envHint := s.resolveEnvironmentHint(ctx, resolvedVMID)
+
 		result, err := s.orch.Process(ctx, orchestratorsvc.ProcessInput{
-			ChatID:    id,
-			AgentID:   c.AgentID,
-			UserID:    c.UserID,
-			Message:   content,
-			VMID:      resolvedVMID,
-			History:   c.Messages,
-			EmitEvent: emit,
+			ChatID:           id,
+			AgentID:          c.AgentID,
+			UserID:           c.UserID,
+			Message:          content,
+			VMID:             resolvedVMID,
+			EnvironmentHint:  envHint,
+			History:          c.Messages,
+			EmitEvent:        emit,
 		})
 		if err != nil {
 			logger.ErrorContext(ctx, "orchestrator process failed", "chat_id", id, "error", err)

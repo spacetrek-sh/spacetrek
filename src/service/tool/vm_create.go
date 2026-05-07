@@ -31,7 +31,7 @@ func (t *VMCreateTool) Definition() tool.Definition {
 		Parameters: map[string]tool.Parameter{
 			"environment": {
 				Type:        "string",
-				Description: "Environment type for the VM (e.g., 'alpine', 'ubuntu')",
+				Description: "Environment type: 'uv' (Python/data science), 'bun' (JS/TS), or 'ubuntu' (generic shell). Pick the most specific match for the task.",
 				Required:    true,
 			},
 		},

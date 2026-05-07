@@ -16,13 +16,14 @@ import (
 
 // ProcessInput is one runtime turn passed to the orchestrator.
 type ProcessInput struct {
-	ChatID    string
-	AgentID   string
-	UserID    string
-	Message   string
-	VMID      string
-	History   []chat.Message
-	EmitEvent func(event orchdomain.RuntimeEvent)
+	ChatID           string
+	AgentID          string
+	UserID           string
+	Message          string
+	VMID             string
+	EnvironmentHint  string
+	History          []chat.Message
+	EmitEvent        func(event orchdomain.RuntimeEvent)
 }
 
 // ProcessResult is the orchestrator output for one user turn.
@@ -48,7 +49,7 @@ type Config struct {
 }
 
 // NewConfig creates Config from simple inputs.
-func NewConfig(allowedTools []string, toolTimeout time.Duration) Config {
+func NewConfig(allowedTools []string, toolTimeout time.Duration, maxReactSteps int) Config {
 	allow := make(map[string]struct{}, len(allowedTools))
 	for _, name := range allowedTools {
 		if name == "" {
@@ -60,7 +61,7 @@ func NewConfig(allowedTools []string, toolTimeout time.Duration) Config {
 	return Config{
 		AllowedTools:  allow,
 		ToolTimeout:   toolTimeout,
-		MaxReactSteps: 10,
+		MaxReactSteps: maxReactSteps,
 	}
 }
 
@@ -84,7 +85,7 @@ func NewWithConfig(planner ports.ToolPlanner, tools ports.ToolRegistry, states p
 		cfg.ToolTimeout = 30 * time.Second
 	}
 	if cfg.MaxReactSteps <= 0 {
-		cfg.MaxReactSteps = 10
+		cfg.MaxReactSteps = 30
 	}
 
 	return &Service{
@@ -135,13 +136,14 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		logger.DebugContext(ctx, "orchestrator: calling planner", "chat_id", input.ChatID, "step", step)
 
 		planReq := ports.PlanRequest{
-			ChatID:     input.ChatID,
-			AgentID:    input.AgentID,
-			UserID:     input.UserID,
-			Message:    input.Message,
-			VMID:       input.VMID,
-			History:    input.History,
-			PriorTurns: priorTurns,
+			ChatID:          input.ChatID,
+			AgentID:         input.AgentID,
+			UserID:          input.UserID,
+			Message:         input.Message,
+			VMID:            input.VMID,
+			EnvironmentHint: input.EnvironmentHint,
+			History:         input.History,
+			PriorTurns:      priorTurns,
 		}
 
 		var (
@@ -248,6 +250,7 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		},
 		ToolResults: toolResults,
 		History:     input.History,
+		EnvironmentHint: input.EnvironmentHint,
 	}
 
 	var (

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
@@ -15,7 +16,11 @@ const defaultSystemPrompt = `You are an AI assistant with access to a secure mic
 
 ## Available Tools
 
-- **vm.create** — Create a new microVM and assign it to the current conversation. Requires an environment type (e.g., "alpine", "ubuntu").
+- **vm.create** — Create a new microVM and assign it to the current conversation. Requires an environment type.
+  - **"uv"** — Python with uv package manager. Use for data science, scripting, ML, math, file processing, or any Python task.
+  - **"bun"** — Bun JS/TS runtime. Use for JavaScript/TypeScript tasks, web dev, or npm ecosystem work.
+  - **"ubuntu"** — Generic Ubuntu shell. Use only when no language-specific environment fits (pure shell/awk/sed tasks).
+  Pick the most specific environment that matches the task. Prefer "uv" over "ubuntu" for Python work.
 - **vm.start** — Resume a previously used VM from this conversation's history.
 - **vm.list** — List all VMs currently assigned to this conversation.
 - **vm.execute_command** — Execute a shell command inside a running VM. Requires vm_id and command. This is your main workhorse for doing actual work.
@@ -25,8 +30,7 @@ const defaultSystemPrompt = `You are an AI assistant with access to a secure mic
 
 - VMs run in an isolated sandbox with NO internet access. Package managers (apt, apk, pip, npm) will NOT work.
 - Only tools and binaries pre-installed in the base image are available. Use "ls /bin && ls /usr/bin" to discover what is available.
-- Alpine images have: sh, awk, sed, bc, and basic Unix utilities. Use these for computation instead of installing new packages.
-- Ubuntu images have: sh, bash, awk, sed, python3 (if included in the base image), and basic Unix utilities.
+{{ENVIRONMENT_HINT}}
 - The default working directory is /workspace. Prefer reading, writing, and executing files under /workspace unless the user requests a different path.
 - /workspace is persistent across conversation resumes.
 - Work within these constraints. If a language or tool is not available, adapt and use what IS available (e.g., use shell/awk instead of Python).
@@ -36,7 +40,7 @@ const defaultSystemPrompt = `You are an AI assistant with access to a secure mic
 You receive a conversation history that may include prior tool calls and their results from earlier steps in this turn. Use that context — do NOT re-query state you already have.
 
 1. **Check prior turns**: If a previous step already created a VM, reuse that vm_id. Do NOT call vm.list or vm.create again.
-2. **Create a VM only once**: If no VM exists yet, call vm.create ONCE with a suitable environment (e.g., "ubuntu" for general tasks, "alpine" for lightweight tasks). Do NOT create multiple VMs.
+2. **Create a VM only once**: If no VM exists yet, call vm.create ONCE with a suitable environment. Do NOT create multiple VMs.
 3. **Execute commands**: Use vm.execute_command with the existing vm_id to do all your work — write files, run programs, etc.
 4. **Report results**: Once all commands are done, respond with your final answer summarizing what was done.
 
@@ -55,13 +59,18 @@ You receive a conversation history that may include prior tool calls and their r
 
 // buildSystemInstruction resolves the system instruction to use.
 // Priority: history-extracted system messages > agent system prompt > hardcoded default.
-func buildSystemInstruction(systemInstr, agentPrompt string) *genai.Content {
+func buildSystemInstruction(systemInstr, agentPrompt, envHint string) *genai.Content {
 	text := systemInstr
 	if text == "" {
 		text = agentPrompt
 	}
 	if text == "" {
 		text = defaultSystemPrompt
+	}
+	if envHint != "" {
+		text = strings.Replace(text, "{{ENVIRONMENT_HINT}}", "- Active environment: "+envHint, 1)
+	} else {
+		text = strings.Replace(text, "{{ENVIRONMENT_HINT}}\n", "", 1)
 	}
 	return &genai.Content{Parts: []*genai.Part{{Text: text}}}
 }
@@ -154,7 +163,7 @@ func (p *Planner) PlanToolsWithMetadata(ctx context.Context, req ports.PlanReque
 	genConfig := &genai.GenerateContentConfig{
 		Temperature:       genai.Ptr(float32(0)),
 		MaxOutputTokens:   p.config.MaxOutputTokens,
-		SystemInstruction: buildSystemInstruction(systemInstr, p.config.SystemPrompt),
+		SystemInstruction: buildSystemInstruction(systemInstr, p.config.SystemPrompt, req.EnvironmentHint),
 	}
 
 	// Tool declarations (may be nil if registry is empty).
@@ -302,7 +311,7 @@ func (p *Planner) FinalResponseWithMetadata(ctx context.Context, req ports.Final
 	genConfig := &genai.GenerateContentConfig{
 		Temperature:       genai.Ptr(responseTemperature),
 		MaxOutputTokens:   p.config.MaxOutputTokens,
-		SystemInstruction: buildSystemInstruction(systemInstr, p.config.SystemPrompt),
+		SystemInstruction: buildSystemInstruction(systemInstr, p.config.SystemPrompt, req.EnvironmentHint),
 	}
 
 	// Log tool results being sent back to LLM for synthesis.

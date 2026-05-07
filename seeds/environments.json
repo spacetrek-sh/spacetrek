@@ -1,18 +1,26 @@
 [
   {
-    "id": "",
-    "type": "alpine",
-    "image_path": "/var/lib/firecracker/alpine-base.ext4",
-    "vcpu": 1,
-    "memory_mb": 512,
-    "disk_mb": 1024
-  },
-  {
-    "id": "",
     "type": "ubuntu",
     "image_path": "/var/lib/firecracker/ubuntu-base.ext4",
     "vcpu": 1,
     "memory_mb": 1024,
-    "disk_mb": 2048
+    "disk_mb": 2048,
+    "description": "Ubuntu-based environment. Available tools: sh, bash, awk, sed, python3 (if included in the base image), and basic Unix utilities. Suitable for general-purpose tasks."
+  },
+  {
+    "type": "bun",
+    "image_path": "/var/lib/firecracker/bun-base.ext4",
+    "vcpu": 1,
+    "memory_mb": 1024,
+    "disk_mb": 2048,
+    "description": "Bun JavaScript/TypeScript runtime environment. Use 'bun run <file>' to execute .ts, .js, or .mjs files. Do NOT use node, npm, or npx — use bun as the package manager and runtime instead. Available: bun, sh, bash, basic Unix utilities."
+  },
+  {
+    "type": "uv",
+    "image_path": "/var/lib/firecracker/uv-base.ext4",
+    "vcpu": 1,
+    "memory_mb": 1024,
+    "disk_mb": 2048,
+    "description": "Python environment with uv package manager. Use 'uv run <file>' to execute Python files — this automatically manages dependencies. Do NOT use pip or virtualenv. Use 'uv add <package>' to declare dependencies in pyproject.toml. Available: uv, python3, sh, bash, basic Unix utilities."
   }
 ]

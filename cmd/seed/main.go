@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/google/uuid"
 	"github.com/spacetrek-sh/spacetrek/pkg/config"
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 	postgresrepo "github.com/spacetrek-sh/spacetrek/src/repository/postgres"
@@ -16,12 +17,13 @@ import (
 const defaultSeedFile = "seeds/environments.json"
 
 type environmentSeed struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	ImagePath string `json:"image_path"`
-	VCPU      int    `json:"vcpu"`
-	MemoryMB  int    `json:"memory_mb"`
-	DiskMB    int    `json:"disk_mb"`
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	ImagePath   string `json:"image_path"`
+	VCPU        int    `json:"vcpu"`
+	MemoryMB    int    `json:"memory_mb"`
+	DiskMB      int    `json:"disk_mb"`
+	Description string `json:"description"`
 }
 
 func main() {
@@ -45,14 +47,14 @@ func main() {
 	}
 	defer db.Close()
 
-	if err := seedFromJSON(ctx, db, *seedFile); err != nil {
+	if err := seedFromJSON(ctx, db, cfg, *seedFile); err != nil {
 		logger.Error("failed to seed database from json", slog.Any("error", err), slog.String("file", *seedFile))
 		os.Exit(1)
 	}
 	logger.Info("database seeded from json", "file", *seedFile)
 }
 
-func seedFromJSON(ctx context.Context, db *postgresrepo.DB, filePath string) error {
+func seedFromJSON(ctx context.Context, db *postgresrepo.DB, cfg *config.Config, filePath string) error {
 	content, err := os.ReadFile(filePath) // #nosec G304 -- operator-supplied seed file path
 	if err != nil {
 		return fmt.Errorf("read seed file: %w", err)
@@ -67,56 +69,40 @@ func seedFromJSON(ctx context.Context, db *postgresrepo.DB, filePath string) err
 		return fmt.Errorf("json seed file contains no rows: %s", filePath)
 	}
 
-	return upsertEnvironments(ctx, db, rows)
+	return upsertEnvironments(ctx, db, cfg, rows)
 }
 
-func upsertEnvironments(ctx context.Context, db *postgresrepo.DB, rows []environmentSeed) error {
-	queryByID := `
-		INSERT INTO environments (id, type, image_path, resource_limits, metadata)
-		VALUES ($1, $2::environment_type, $3, jsonb_build_object('vcpu', $4::int, 'memory_mb', $5::int, 'disk_mb', $6::int), NULL)
-		ON CONFLICT (id) DO UPDATE SET
-			type = EXCLUDED.type,
-			image_path = EXCLUDED.image_path,
-			resource_limits = EXCLUDED.resource_limits,
-			updated_at = NOW()
-	`
-
-	queryByType := `
-		WITH updated AS (
-			UPDATE environments
-			SET image_path = $2,
-				resource_limits = jsonb_build_object('vcpu', $3::int, 'memory_mb', $4::int, 'disk_mb', $5::int),
-				updated_at = NOW()
-			WHERE type = $1::environment_type
-			RETURNING id
-		)
-		INSERT INTO environments (type, image_path, resource_limits, metadata)
-		SELECT $1::environment_type, $2, jsonb_build_object('vcpu', $3::int, 'memory_mb', $4::int, 'disk_mb', $5::int), NULL
-		WHERE NOT EXISTS (SELECT 1 FROM updated)
-	`
-
+func upsertEnvironments(ctx context.Context, db *postgresrepo.DB, cfg *config.Config, rows []environmentSeed) error {
 	tx, err := db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
+	defer tx.Rollback()
+
+	ns := uuid.MustParse(cfg.Seed.NamespaceUUID)
+	queryByID := `
+		INSERT INTO environments (id, type, image_path, resource_limits, description, metadata)
+		VALUES ($1, $2::environment_type, $3, jsonb_build_object('vcpu', $4::int, 'memory_mb', $5::int, 'disk_mb', $6::int), $7, NULL)
+		ON CONFLICT (id) DO UPDATE SET
+			type = EXCLUDED.type,
+			image_path = EXCLUDED.image_path,
+			resource_limits = EXCLUDED.resource_limits,
+			description = EXCLUDED.description,
+			updated_at = NOW()
+	`
 
 	for _, row := range rows {
 		if row.Type == "" || row.ImagePath == "" {
-			_ = tx.Rollback()
 			return fmt.Errorf("invalid seed row: type and image_path are required")
 		}
 
-		if row.ID == "" {
-			if _, err := tx.ExecContext(ctx, queryByType, row.Type, row.ImagePath, row.VCPU, row.MemoryMB, row.DiskMB); err != nil {
-				_ = tx.Rollback()
-				return fmt.Errorf("upsert environment by type %q: %w", row.Type, err)
-			}
-			continue
+		id := row.ID
+		if id == "" {
+			id = uuid.NewSHA1(ns, []byte("environment:"+row.Type)).String()
 		}
 
-		if _, err := tx.ExecContext(ctx, queryByID, row.ID, row.Type, row.ImagePath, row.VCPU, row.MemoryMB, row.DiskMB); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("upsert environment %q: %w", row.ID, err)
+		if _, err := tx.ExecContext(ctx, queryByID, id, row.Type, row.ImagePath, row.VCPU, row.MemoryMB, row.DiskMB, row.Description); err != nil {
+			return fmt.Errorf("upsert environment %q: %w", row.Type, err)
 		}
 	}
 
