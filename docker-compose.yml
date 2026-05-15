@@ -1,8 +1,8 @@
-name: spacetrk
+name: spacetrek
 
 services:
-  db:
-    container_name: spacetrk-db
+  psql:
+    container_name: spacetrek-psql
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
@@ -12,28 +12,28 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - spacetrk-psql-data:/var/lib/postgresql/data
+      - spacetrek-psql-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U spacetrk -d spacetrk"]
+      test: ["CMD-SHELL", "pg_isready -U spacetrek -d spacetrek"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   migrate:
     image: migrate/migrate:v4.19.1
-    container_name: spacetrk-migrate
+    container_name: spacetrek-migrate
     profiles: ["migrate"]
     volumes:
       - ./migrations:/migrations
     # Run migrations on startup, then exit successfully
     command: ["-path", "/migrations", "-database", "postgres://spacetrk:password@db:5432/spacetrk?sslmode=disable", "up"]
     depends_on:
-      db:
+      psql:
         condition: service_healthy
     restart: "no"
 
   rustfs:
-    container_name: spacetrk-rustfs
+    container_name: spacetrek-rustfs
     image: rustfs/rustfs:latest
     restart: unless-stopped
     environment:
@@ -44,7 +44,7 @@ services:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - spacetrk-rustfs-data:/data
+      - spacetrek-rustfs-data:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
       interval: 10s
@@ -54,7 +54,7 @@ services:
   api:
     build: .
     restart: unless-stopped
-    container_name: spacetrk-api
+    container_name: spacetrek-api
     environment:
       CONFIG_PATH: /app/configs/config.yaml
       RUSTFS_ACCESS_KEY: rustfsadmin
@@ -74,23 +74,23 @@ services:
       - /dev/kvm:/dev/kvm
       # TUN device for TAP network interfaces
       - /dev/net/tun:/dev/net/tun
+      # Device-mapper control for dm-snapshot (incremental snapshots)
+      - /dev/mapper/control:/dev/mapper/control
+      # Loop devices for losetup (dm-snapshot CoW)
+      - /dev/loop-control:/dev/loop-control
     ports:
       - "8080:8080"
-    cap_add:
-      - SYS_ADMIN  # Required for Firecracker
-      - NET_ADMIN  # Required for bridge/TAP/iptables (VM networking)
-    security_opt:
-      - seccomp=unconfined  # Required for Firecracker syscall filtering
+    privileged: true
     sysctls:
       - net.ipv4.ip_forward=1
       - net.bridge.bridge-nf-call-iptables=0
       - net.ipv4.conf.all.forwarding=1
     depends_on:
-      db:
+      psql:
         condition: service_healthy
       rustfs:
         condition: service_started
 
 volumes:
-  spacetrk-psql-data:
-  spacetrk-rustfs-data:
+  spacetrek-psql-data:
+  spacetrek-rustfs-data:

@@ -61,6 +61,9 @@ type VM struct {
 	// Resume tracking
 	LastResumedAt *time.Time `db:"last_resumed_at"` // When VM was last resumed from snapshot
 
+	// Snapshot configuration
+	DiffSnapshotsEnabled bool `db:"diff_snapshots_enabled"`
+
 	// Lifecycle
 	TerminatedAt *time.Time `db:"terminated_at"` // When VM was terminated
 	CreatedAt    time.Time  `db:"created_at"`
@@ -137,8 +140,10 @@ func (v *VM) GetDiskMB(defaultMB int) int {
 }
 
 // IsAvailable checks if the VM is available for chat assignment.
+// A VM in Ready (fresh from pool), Running (restored from snapshot), or Idle
+// (stopped but recoverable) state with no chat assignment can be assigned.
 func (v *VM) IsAvailable() bool {
-	return v.Status == StatusReady && v.ChatID == nil
+	return (v.Status == StatusReady || v.Status == StatusRunning || v.Status == StatusIdle) && v.ChatID == nil
 }
 
 // AssignTo assigns the VM to a chat.

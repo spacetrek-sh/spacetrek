@@ -62,6 +62,7 @@ func main() {
 	vmRepo := postgresrepo.NewVMRepository(db)
 	vmMetricsHistoryRepo := postgresrepo.NewVMMetricsHistoryRepository(db)
 	snapRepo := postgresrepo.NewSnapshotRepository(db)
+	snapMetricsRepo := postgresrepo.NewSnapshotMetricsRepository(db)
 	userRepo := postgresrepo.NewUserRepository(db)
 	authRepo := postgresrepo.NewAuthRepository(db)
 
@@ -156,7 +157,7 @@ func main() {
 		}
 	}
 
-	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, snapRepo, snapshotStore, cfg.VM.IdleTimeout, cfg.VM.AutoSnapshot, cfg.VM.ResumeGrace, vmNetworkCfg, vmIPAllocator)
+	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, snapRepo, snapMetricsRepo, snapshotStore, cfg.VM.IdleTimeout, cfg.VM.AutoSnapshot, cfg.VM.ResumeGrace, vmNetworkCfg, vmIPAllocator)
 	orchTools := orchestratorsvc.NewInMemoryToolRegistry(nil)
 	orchTools.Register(toolsvc.NewVMCommandTool(vmService))
 	orchTools.Register(toolsvc.NewVMCreateTool(vmService))
@@ -204,8 +205,8 @@ func main() {
 		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot"}, cfg.Security.MaxTaskDuration, maxReactSteps),
 	)
 	runtimeEventRepo := postgresrepo.NewRuntimeEventRepository(db)
-	vmResolver := chatsvc.NewVMResolver(vmService)
-	chatService := chatsvc.New(chatRepo, runtimeEventRepo, agentRepo, orchService, vmResolver, vmService)
+	vmCollector := chatsvc.NewAvailableVMCollector(vmService, environmentRepo)
+	chatService := chatsvc.New(chatRepo, runtimeEventRepo, agentRepo, orchService, vmCollector)
 
 	// ── Handlers ────────────────────────────────────────────────────────────
 	agentHandler := agenthttp.NewHandler(agentService, jwtManager)
@@ -285,8 +286,8 @@ func (b unavailableBackend) GetMetrics(context.Context, string) (vmdomain.Metric
 	return vmdomain.Metrics{}, b.err()
 }
 
-func (b unavailableBackend) CreateSnapshot(context.Context, string) (string, int64, error) {
-	return "", 0, b.err()
+func (b unavailableBackend) CreateSnapshot(context.Context, string) (*vmdomain.SnapshotResult, error) {
+	return nil, b.err()
 }
 
 func (b unavailableBackend) RestoreFromSnapshot(context.Context, vmdomain.CreateSpec, string) (string, error) {

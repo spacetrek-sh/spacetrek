@@ -23,10 +23,14 @@ func (p *fakePlanner) PlanTools(ctx context.Context, req ports.PlanRequest) (por
 }
 
 func (p *fakePlanner) PlanToolsWithMetadata(_ context.Context, req ports.PlanRequest) (ports.ToolPlan, ports.PlanMetadata, error) {
+	vmID := ""
+	if len(req.AvailableVMs) > 0 {
+		vmID = req.AvailableVMs[0].VMID
+	}
 	p.planCalls++
 	switch p.planCalls {
 	case 1:
-		return ports.ToolPlan{Steps: []ports.ToolPlanStep{{Name: "vm.execute_command", Arguments: map[string]any{"vm_id": req.VMID, "command": "echo step1"}}}}, ports.PlanMetadata{
+		return ports.ToolPlan{Steps: []ports.ToolPlanStep{{Name: "vm.execute_command", Arguments: map[string]any{"vm_id": vmID, "command": "echo step1"}}}}, ports.PlanMetadata{
 			Reasoning: "Need first execution step.",
 			TokenUsage: orchdomain.TokenUsage{
 				PromptTokens:     10,
@@ -35,7 +39,7 @@ func (p *fakePlanner) PlanToolsWithMetadata(_ context.Context, req ports.PlanReq
 			},
 		}, nil
 	case 2:
-		return ports.ToolPlan{Steps: []ports.ToolPlanStep{{Name: "vm.execute_command", Arguments: map[string]any{"vm_id": req.VMID, "command": "echo step2"}}}}, ports.PlanMetadata{
+		return ports.ToolPlan{Steps: []ports.ToolPlanStep{{Name: "vm.execute_command", Arguments: map[string]any{"vm_id": vmID, "command": "echo step2"}}}}, ports.PlanMetadata{
 			Reasoning: "Need second execution step.",
 			TokenUsage: orchdomain.TokenUsage{
 				PromptTokens:     8,
@@ -117,7 +121,9 @@ func TestProcess_ReactLoopExecutesIterativeSteps(t *testing.T) {
 		AgentID: "a-1",
 		UserID:  "u-1",
 		Message: "hello",
-		VMID:    "vm-1",
+		AvailableVMs: []ports.AvailableVM{
+			{VMID: "vm-1", Environment: "ubuntu", Status: "running"},
+		},
 		History: []chat.Message{},
 	})
 	if err != nil {
@@ -154,8 +160,6 @@ func TestProcess_ReactLoopExecutesIterativeSteps(t *testing.T) {
 }
 
 func TestProcess_StructuredPayloadObservation(t *testing.T) {
-	// Tests that tools returning structured payloads (no "output" key) produce
-	// JSON-marshaled observations instead of "(no observation)".
 	planner := &fakeVMListPlanner{}
 	vmListTool := &fakeVMListTool{}
 	reg := &fakeToolRegistry{tool: vmListTool}
@@ -172,7 +176,6 @@ func TestProcess_StructuredPayloadObservation(t *testing.T) {
 		AgentID: "a-1",
 		UserID:  "u-1",
 		Message: "list my VMs",
-		VMID:    "",
 		History: []chat.Message{},
 	})
 	if err != nil {
@@ -189,7 +192,6 @@ func TestProcess_StructuredPayloadObservation(t *testing.T) {
 	if obs == "" || obs == "(no observation)" {
 		t.Fatalf("expected JSON observation, got %q", obs)
 	}
-	// Observation must contain the vm_id from the structured payload.
 	if !strings.Contains(obs, "vm-abc") {
 		t.Fatalf("expected observation to contain vm_id 'vm-abc', got %q", obs)
 	}

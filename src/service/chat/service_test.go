@@ -42,7 +42,7 @@ func TestSendMessage_ForwardsToOrchestrator(t *testing.T) {
 	agentRepo := memory.NewAgentRepository()
 	chatRepo := memory.NewChatRepository()
 	orch := &fakeOrchestrator{}
-	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch, nil, nil)
+	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch, nil)
 
 	created, err := svc.Create(context.Background(), chat.CreateParams{})
 	if err != nil {
@@ -62,8 +62,9 @@ func TestSendMessage_ForwardsToOrchestrator(t *testing.T) {
 		t.Fatalf("expected message %q, got %q", "hello", orch.lastInput.Message)
 	}
 
-	if orch.lastInput.VMID != "vm-1" {
-		t.Fatalf("expected vm_id %q, got %q", "vm-1", orch.lastInput.VMID)
+	// Verify the chat ID was forwarded correctly (VM selection is now LLM-driven).
+	if orch.lastInput.ChatID != created.ID {
+		t.Fatalf("expected chat id %q, got %q", created.ID, orch.lastInput.ChatID)
 	}
 
 	updated, err := svc.Get(context.Background(), created.ID)
@@ -87,7 +88,7 @@ func TestSendOrCreate_AutoCreatesWhenNoID(t *testing.T) {
 	agentRepo := memory.NewAgentRepository()
 	chatRepo := memory.NewChatRepository()
 	orch := &fakeOrchestrator{}
-	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch, nil, nil)
+	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch, nil)
 
 	c, err := svc.SendOrCreate(context.Background(), "", "hello", chat.CreateParams{})
 	if err != nil {
@@ -109,7 +110,7 @@ func TestSendOrCreate_UsesExistingWhenIDProvided(t *testing.T) {
 	agentRepo := memory.NewAgentRepository()
 	chatRepo := memory.NewChatRepository()
 	orch := &fakeOrchestrator{}
-	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch, nil, nil)
+	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch, nil)
 
 	created, err := svc.Create(context.Background(), chat.CreateParams{})
 	if err != nil {
@@ -130,7 +131,7 @@ func TestSubscribeRuntimeEvents_ReceivesPublishedEvents(t *testing.T) {
 	agentRepo := memory.NewAgentRepository()
 	chatRepo := memory.NewChatRepository()
 	orch := &fakeOrchestrator{}
-	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch, nil, nil)
+	svc := New(chatRepo, memory.NewRuntimeEventRepository(), agentRepo, orch, nil)
 
 	created, err := svc.Create(context.Background(), chat.CreateParams{})
 	if err != nil {

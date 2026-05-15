@@ -1,0 +1,589 @@
+openapi: 3.0.3
+info:
+  title: SpaceTrek API
+  version: 1.0.0
+  description: API documentation for the SpaceTrek project.
+servers:
+  - url: /api/v1
+    description: API v1
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - bearerAuth: []
+
+paths:
+  # Auth Endpoints
+  /auth/register:
+    post:
+      summary: Register a new user
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, email, password]
+              properties:
+                username:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '201':
+          description: User registered successfully
+
+  /auth/login:
+    post:
+      summary: Login
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Login successful
+
+  /auth/refresh:
+    post:
+      summary: Refresh token
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Token refreshed
+
+  /auth/logout:
+    post:
+      summary: Logout user
+      tags: [Auth]
+      responses:
+        '200':
+          description: Logged out successfully
+
+  /auth/me:
+    get:
+      summary: Get current user
+      tags: [Auth]
+      responses:
+        '200':
+          description: User retrieved
+
+  /auth/profile:
+    put:
+      summary: Update user profile
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                email:
+                  type: string
+                  format: email
+      responses:
+        '200':
+          description: Profile updated
+
+  /auth/password:
+    put:
+      summary: Change password
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password:
+                  type: string
+                new_password:
+                  type: string
+      responses:
+        '200':
+          description: Password changed successfully
+
+  # Agent Endpoints
+  /agents:
+    get:
+      summary: List agents
+      tags: [Agents]
+      parameters:
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Agents retrieved
+    post:
+      summary: Create a new agent
+      tags: [Agents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                model:
+                  type: string
+                system_prompt:
+                  type: string
+      responses:
+        '201':
+          description: Agent created
+
+  /agents/{id}:
+    get:
+      summary: Get an agent by ID
+      tags: [Agents]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent retrieved
+    put:
+      summary: Update an agent
+      tags: [Agents]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                model:
+                  type: string
+                system_prompt:
+                  type: string
+      responses:
+        '200':
+          description: Agent updated
+    delete:
+      summary: Delete an agent
+      tags: [Agents]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Agent deleted
+
+  # Chat Endpoints
+  /chat:
+    get:
+      summary: List conversations
+      tags: [Chat]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Conversations retrieved
+    post:
+      summary: Send a message / create conversation
+      tags: [Chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                conversation_id:
+                  type: string
+                message:
+                  type: string
+                agent_id:
+                  type: string
+                model:
+                  type: string
+                system_prompt:
+                  type: string
+      responses:
+        '202':
+          description: Message accepted for processing
+
+  /chat/{id}:
+    get:
+      summary: Get a chat by ID
+      tags: [Chat]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Chat retrieved
+    delete:
+      summary: Close a chat
+      tags: [Chat]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Chat closed
+
+  /chat/{id}/messages:
+    get:
+      summary: List messages in a chat
+      tags: [Chat]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Messages retrieved
+
+  /chat/{id}/stream:
+    get:
+      summary: Stream chat events via SSE
+      tags: [Chat]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Event stream
+
+  # VM Endpoints
+  /vm:
+    post:
+      summary: Create a new VM
+      tags: [VM]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [environment_id]
+              properties:
+                environment_id:
+                  type: string
+                conversation_id:
+                  type: string
+                provider:
+                  type: string
+                workspace_size_gb:
+                  type: integer
+                vcpu:
+                  type: integer
+                memory_mb:
+                  type: integer
+                disk_mb:
+                  type: integer
+      responses:
+        '201':
+          description: VM created
+
+  /vm/leases:
+    get:
+      summary: List active VM leases
+      tags: [VM]
+      parameters:
+        - name: chat_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Active VM leases
+
+  /vm/runtimes:
+    get:
+      summary: List running runtimes
+      tags: [VM]
+      responses:
+        '200':
+          description: Running runtimes
+
+  /vm/runtimes/stream:
+    get:
+      summary: Stream running runtimes via SSE
+      tags: [VM]
+      responses:
+        '200':
+          description: Event stream
+
+  /vm/resume:
+    post:
+      summary: Resume a VM
+      tags: [VM]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chat_id]
+              properties:
+                chat_id:
+                  type: string
+      responses:
+        '200':
+          description: VM resumed
+
+  /vm/{id}:
+    get:
+      summary: Get VM by ID
+      tags: [VM]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: VM retrieved
+    delete:
+      summary: Stop a VM
+      tags: [VM]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: VM stopped
+
+  /vm/{id}/destroy:
+    delete:
+      summary: Destroy a VM
+      tags: [VM]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: VM destroyed
+
+  /vm/{id}/metrics:
+    get:
+      summary: Get VM metrics
+      tags: [VM]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: VM metrics
+
+  /vm/{id}/metrics/history:
+    get:
+      summary: Get VM metrics history
+      tags: [VM]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: from
+          in: query
+          schema:
+            type: string
+        - name: to
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: VM metrics history
+
+  /vm/{id}/stream:
+    get:
+      summary: Stream runtime events for a VM via SSE
+      tags: [VM]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Event stream
+
+  /vm/{id}/assign:
+    post:
+      summary: Assign VM to a chat
+      tags: [VM]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chat_id]
+              properties:
+                chat_id:
+                  type: string
+      responses:
+        '200':
+          description: VM assigned
+
+  /vm/{id}/unassign:
+    post:
+      summary: Unassign VM
+      tags: [VM]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: VM unassigned
+
+  /vm/{id}/execute:
+    post:
+      summary: Execute a command on a VM
+      tags: [VM]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [command]
+              properties:
+                command:
+                  type: string
+      responses:
+        '200':
+          description: Command executed
+
+  /vm/{id}/snapshot:
+    post:
+      summary: Create a VM snapshot
+      tags: [VM]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: Snapshot created

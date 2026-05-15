@@ -15,16 +15,25 @@ type PriorTurn struct {
 	ToolResult tool.Result
 }
 
+// AvailableVM describes a VM the LLM can choose to resume.
+type AvailableVM struct {
+	VMID           string `json:"vm_id"`
+	Environment    string `json:"environment"`
+	EnvDescription string `json:"env_description"`
+	Status         string `json:"status"`
+	HasSnapshot    bool   `json:"has_snapshot"`
+}
+
 // PlanRequest is passed to planner implementations to choose tools.
 type PlanRequest struct {
-	ChatID           string
-	AgentID          string
-	UserID           string
-	Message          string
-	VMID             string
-	EnvironmentHint  string
-	History          []chat.Message
-	PriorTurns       []PriorTurn
+	ChatID          string
+	AgentID         string
+	UserID          string
+	Message         string
+	AvailableVMs    []AvailableVM
+	EnvironmentHint string
+	History         []chat.Message
+	PriorTurns      []PriorTurn
 }
 
 // ToolPlanStep is one planned tool call.

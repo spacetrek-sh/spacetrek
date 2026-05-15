@@ -21,7 +21,7 @@ const defaultSystemPrompt = `You are an AI assistant with access to a secure mic
   - **"bun"** — Bun JS/TS runtime. Use for JavaScript/TypeScript tasks, web dev, or npm ecosystem work.
   - **"ubuntu"** — Generic Ubuntu shell. Use only when no language-specific environment fits (pure shell/awk/sed tasks).
   Pick the most specific environment that matches the task. Prefer "uv" over "ubuntu" for Python work.
-- **vm.start** — Resume a previously used VM from this conversation's history.
+- **vm.start** — Resume a previously used VM from this conversation's history. Pass a vm_id to resume a specific VM.
 - **vm.list** — List all VMs currently assigned to this conversation.
 - **vm.execute_command** — Execute a shell command inside a running VM. Requires vm_id and command. This is your main workhorse for doing actual work.
 - **vm.stop** — Stop a VM and release it from the conversation.
@@ -39,18 +39,17 @@ const defaultSystemPrompt = `You are an AI assistant with access to a secure mic
 
 You receive a conversation history that may include prior tool calls and their results from earlier steps in this turn. Use that context — do NOT re-query state you already have.
 
-1. **Check prior turns**: If a previous step already created a VM, reuse that vm_id. Do NOT call vm.list or vm.create again.
-2. **Create a VM only once**: If no VM exists yet, call vm.create ONCE with a suitable environment. Do NOT create multiple VMs.
+1. **Check prior turns**: If a previous step already started or created a VM, reuse that vm_id from the tool result. Do NOT call vm.list, vm.create, or vm.start again.
+2. **Select or create a VM**: If no VM exists yet and the system context lists available VMs from previous interactions, choose one whose environment matches the task and call vm.start <vm_id>. If no existing VM fits, call vm.create with a suitable environment.
 3. **Execute commands**: Use vm.execute_command with the existing vm_id to do all your work — write files, run programs, etc.
 4. **Report results**: Once all commands are done, respond with your final answer summarizing what was done.
 
 ## Rules
 
 - For general questions that don't need code execution, respond directly without calling any tool.
-- NEVER call vm.list after creating a VM or executing a command — the VM ID is already in the conversation.
+- NEVER call vm.list after creating or starting a VM — the VM ID is already in the conversation.
 - NEVER recreate or overwrite files that were already written in a previous step.
 - NEVER try to install packages (apt-get, apk, pip, npm) — VMs have no internet access.
-- Create ONLY ONE VM per conversation. Reuse it for all commands.
 - Always prefer calling a tool over describing what you would do.
 - If a tool call fails, analyze the error and try an alternative approach with the available tools. Do NOT repeat the same failing command.
 - Never fabricate tool results. Only report what the tool actually returned.
@@ -119,14 +118,32 @@ func (p *Planner) PlanToolsWithMetadata(ctx context.Context, req ports.PlanReque
 
 	contents, systemInstr := convertHistory(req.History)
 
-	// Build user message, injecting VM context if a VM is already available.
+	// Build user message, injecting available VM context if any exist.
 	userText := req.Message
-	if req.VMID != "" {
+	if len(req.AvailableVMs) > 0 {
+		var vmLines []string
+		for _, vm := range req.AvailableVMs {
+			switch vm.Status {
+			case "running", "ready":
+				vmLines = append(vmLines, fmt.Sprintf(
+					"- %s: %s — status=%s, use vm.execute_command with this vm_id",
+					vm.VMID, vm.EnvDescription, vm.Status,
+				))
+			default:
+				snap := ""
+				if vm.HasSnapshot {
+					snap = ", has snapshot"
+				}
+				vmLines = append(vmLines, fmt.Sprintf(
+					"- %s: %s — status=%s%s, use vm.start with this vm_id to restore",
+					vm.VMID, vm.EnvDescription, vm.Status, snap,
+				))
+			}
+		}
 		userText = fmt.Sprintf(
-			"[System: A VM (id: %s) is already running and assigned to this conversation. "+
-				"Use vm.execute_command with this vm_id for any commands. "+
-				"Do NOT call vm.create or vm.start.]\n\n%s",
-			req.VMID, req.Message,
+			"[System: VMs from this conversation:\n%s\n"+
+				"To start a NEW environment type not listed above, use vm.create.]\n\n%s",
+			strings.Join(vmLines, "\n"), req.Message,
 		)
 	}
 

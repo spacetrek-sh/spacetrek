@@ -19,6 +19,7 @@ import (
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/snapshot"
 	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 	"github.com/spacetrek-sh/spacetrek/src/core/ports"
+	fcutil "github.com/spacetrek-sh/spacetrek/src/infrastructure/vm/firecracker"
 )
 
 const (
@@ -38,6 +39,7 @@ type Service struct {
 	repo          vmdomain.Repository
 	metricsRepo   vmdomain.MetricsHistoryRepository
 	snapRepo      snapshot.Repository
+	snapMetricsRepo snapshot.MetricsRepository
 	backend       vmdomain.Backend // VM provider (Firecracker, etc.)
 	envRepo       EnvironmentRepository
 	snapshotStore ports.SnapshotStore // nil = local-only mode
@@ -132,7 +134,7 @@ type EnvironmentRepository interface {
 }
 
 // NewService creates a new VM service.
-func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRepository, backend vmdomain.Backend, envRepo EnvironmentRepository, snapRepo snapshot.Repository, snapshotStore ports.SnapshotStore, idleTimeout time.Duration, autoSnapshot bool, resumeGrace time.Duration, networkCfg NetworkConfig, ipAllocator *IPAllocator) *Service {
+func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRepository, backend vmdomain.Backend, envRepo EnvironmentRepository, snapRepo snapshot.Repository, snapMetricsRepo snapshot.MetricsRepository, snapshotStore ports.SnapshotStore, idleTimeout time.Duration, autoSnapshot bool, resumeGrace time.Duration, networkCfg NetworkConfig, ipAllocator *IPAllocator) *Service {
 	if idleTimeout <= 0 {
 		idleTimeout = 5 * time.Minute
 	}
@@ -141,13 +143,14 @@ func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRep
 	}
 
 	return &Service{
-		repo:          repo,
-		metricsRepo:   metricsRepo,
-		snapRepo:      snapRepo,
-		backend:       backend,
-		envRepo:       envRepo,
-		snapshotStore: snapshotStore,
-		ipAllocator:   ipAllocator,
+		repo:            repo,
+		metricsRepo:     metricsRepo,
+		snapRepo:        snapRepo,
+		snapMetricsRepo: snapMetricsRepo,
+		backend:         backend,
+		envRepo:         envRepo,
+		snapshotStore:   snapshotStore,
+		ipAllocator:     ipAllocator,
 		networkCfg:    networkCfg,
 		idleTimeout:   idleTimeout,
 		autoSnapshot:  autoSnapshot,
@@ -465,6 +468,7 @@ func (s *Service) Create(ctx context.Context, envID, conversationID string, prov
 		MemoryMB:        memoryMB,
 		DiskMB:          diskMB,
 	})
+	vm.DiffSnapshotsEnabled = env.DiffSnapshots
 
 	// Persist VM to database
 	if err := s.repo.Create(ctx, vm); err != nil {
@@ -496,6 +500,7 @@ func (s *Service) Create(ctx context.Context, envID, conversationID string, prov
 		
 		Runtime: vmdomain.DefaultRuntimeConfig(),
 	}
+	spec.Runtime.EnableDiffSnapshots = env.DiffSnapshots
 
 	// Allocate IP and enable networking if configured.
 	if s.ipAllocator != nil {
@@ -689,6 +694,12 @@ func (s *Service) ListPreviousLeasesForChat(ctx context.Context, chatID string) 
 	return s.repo.ListPreviousLeasesForChat(ctx, chatID)
 }
 
+// GetByEnvironmentAndChatID finds the most recent non-terminated VM with the given
+// environment that was previously leased to the chat.
+func (s *Service) GetByEnvironmentAndChatID(ctx context.Context, envID, chatID string) (*vmdomain.VM, error) {
+	return s.repo.GetByEnvironmentAndChatID(ctx, envID, chatID)
+}
+
 // Unassign releases a VM from its current chat.
 func (s *Service) Unassign(ctx context.Context, vmID string) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
@@ -779,6 +790,8 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	if err := s.teardownWorkspace(ctx, vm, id); err != nil {
 		logger.WarnContext(ctx, "workspace teardown failed before destroy, proceeding", "vm_id", id, "error", err)
 	}
+
+	_ = s.deleteAllSnapshots(ctx, id)
 
 	// Destroy via backend
 	if err := s.backend.Destroy(ctx, id); err != nil {
@@ -1026,6 +1039,23 @@ func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Sn
 		return nil, exception.NotFound("environment", vm.EnvironmentID)
 	}
 
+	// Determine snapshot type: incremental if a full snapshot exists and diff snapshots enabled.
+	snapType := snapshot.TypeFull
+	var parentID *string
+	diffEnabled := vm.DiffSnapshotsEnabled
+
+	if diffEnabled {
+		existingFull, fullErr := s.snapRepo.GetLatestFull(ctx, vmID)
+		if fullErr == nil && existingFull != nil {
+			snapType = snapshot.TypeIncremental
+			parentID = &existingFull.ID
+			logger.InfoContext(ctx, "incremental snapshot: found base full snapshot", "vm_id", vmID, "base_snapshot_id", existingFull.ID)
+		} else {
+			// First snapshot is always full, subsequent ones will be incremental.
+			logger.InfoContext(ctx, "no existing full snapshot, creating initial full snapshot", "vm_id", vmID)
+		}
+	}
+
 	// Build metadata capturing the VM spec at snapshot time.
 	guestCID := uint32(0)
 	if vm.GuestCID != nil {
@@ -1041,30 +1071,84 @@ func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Sn
 		GuestCID:      guestCID,
 		GuestPort:     guestPort,
 		RootfsPath:    filepath.Join("/var/lib/firecracker/vms", vm.ID, "rootfs.ext4"),
+		DiffSnapshots: diffEnabled,
+		BaseImagePath: env.ImagePath,
+	}
+	if parentID != nil {
+		meta.BaseSnapshotID = *parentID
 	}
 	metaJSON, _ := json.Marshal(meta)
 
 	// Call backend to create the snapshot.
-	snapDir, sizeBytes, err := s.backend.CreateSnapshot(ctx, vmID)
+	snapResult, err := s.backend.CreateSnapshot(ctx, vmID)
 	if err != nil {
 		logger.ErrorContext(ctx, "backend snapshot failed", "vm_id", vmID, "error", err)
 		return nil, exception.Internal(err)
 	}
 
+	snapDir := snapResult.SnapshotDir
+	sizeBytes := snapResult.MemoryBytes + snapResult.CowBytes // rough total for record
+
 	snap := snapshot.New(snapshot.CreateParams{
-		VMID:         vmID,
-		Type:         snapshot.TypeFull,
-		SnapshotPath: snapDir,
-		SizeBytes:    sizeBytes,
-		Metadata:     metaJSON,
+		VMID:             vmID,
+		ParentSnapshotID: parentID,
+		Type:             snapType,
+		SnapshotPath:     snapDir,
+		SizeBytes:        sizeBytes,
+		Metadata:         metaJSON,
 	})
 
 	// Upload snapshot files to object storage if configured.
 	if s.snapshotStore != nil {
 		s3Prefix := fmt.Sprintf("snapshots/%s/%s", vmID, snap.ID)
-		files := []ports.SnapshotFile{
-			{Key: s3Prefix + "/memory", LocalPath: snapDir + "/memory"},
-			{Key: s3Prefix + "/state", LocalPath: snapDir + "/state"},
+
+		// Compress snapshot files with zstd before upload.
+		// This collapses sparse file zero-holes (CoW) and compresses
+		// memory data, dramatically reducing S3 transfer and storage.
+		snapshotFiles := []string{"memory", "state", "cow"}
+		var files []ports.SnapshotFile
+		for _, name := range snapshotFiles {
+			localPath := filepath.Join(snapDir, name)
+			if _, err := os.Stat(localPath); err != nil {
+				continue // file doesn't exist (e.g. cow when dm-snapshot is off)
+			}
+
+			// For incremental snapshots, extract sparse regions from the
+			// memory file BEFORE compression destroys sparseness.
+			if name == "memory" && snapType == snapshot.TypeIncremental {
+				regions, extractErr := fcutil.ExtractSparseRegions(localPath)
+				if extractErr != nil {
+					logger.WarnContext(ctx, "failed to extract sparse regions for manifest",
+						"file", name, "error", extractErr)
+				} else if len(regions) > 0 {
+					manifestPath := localPath + ".manifest"
+					if writeErr := fcutil.WriteManifest(manifestPath, regions); writeErr != nil {
+						logger.WarnContext(ctx, "failed to write manifest", "file", name, "error", writeErr)
+					} else {
+						files = append(files, ports.SnapshotFile{
+							Key:       s3Prefix + "/memory.manifest",
+							LocalPath: manifestPath,
+						})
+						logger.InfoContext(ctx, "created memory manifest for incremental snapshot",
+							"snapshot_id", snap.ID, "regions", len(regions))
+					}
+				}
+			}
+
+			zstPath := localPath + ".zst"
+			if _, compErr := fcutil.CompressFileZstd(localPath, zstPath); compErr != nil {
+				logger.WarnContext(ctx, "failed to compress snapshot file, uploading raw",
+					"file", name, "error", compErr)
+				files = append(files, ports.SnapshotFile{
+					Key:       s3Prefix + "/" + name,
+					LocalPath: localPath,
+				})
+			} else {
+				files = append(files, ports.SnapshotFile{
+					Key:       s3Prefix + "/" + name + ".zst",
+					LocalPath: zstPath,
+				})
+			}
 		}
 		if uploaded, uploadErr := s.snapshotStore.UploadFiles(ctx, files); uploadErr != nil {
 			logger.WarnContext(ctx, "failed to upload snapshot to storage, keeping local files", "snapshot_id", snap.ID, "error", uploadErr)
@@ -1079,6 +1163,19 @@ func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Sn
 	if err := s.snapRepo.Create(ctx, snap); err != nil {
 		logger.ErrorContext(ctx, "failed to persist snapshot record", "snapshot_id", snap.ID, "vm_id", vmID, "error", err)
 		return nil, err
+	}
+
+	metrics := &snapshot.SnapshotMetrics{
+		SnapshotID:      snap.ID,
+		VMID:            vmID,
+		Type:            snapType,
+		PauseDurationMs: snapResult.PauseDurationMs,
+		MemoryBytes:     snapResult.MemoryBytes,
+		CowBytes:        snapResult.CowBytes,
+		CreatedAt:       time.Now().UTC(),
+	}
+	if err := s.snapMetricsRepo.Insert(ctx, metrics); err != nil {
+		logger.WarnContext(ctx, "failed to persist snapshot metrics", "vm_id", vmID, "error", err)
 	}
 
 	logger.InfoContext(ctx, "VM snapshot created", "vm_id", vmID, "snapshot_id", snap.ID, "size_bytes", sizeBytes)
@@ -1106,6 +1203,28 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 	meta, err := snap.ParseMetadata()
 	if err != nil {
 		return nil, exception.Internal(fmt.Errorf("failed to parse snapshot metadata: %w", err))
+	}
+
+	// If the latest snapshot is incremental, resolve the chain to find the
+	// base full snapshot for memory merging. Chain depth is capped at 1.
+	var baseSnap *snapshot.Snapshot
+	if snap.IsIncremental() && snap.ParentSnapshotID != nil {
+		baseSnap, err = s.snapRepo.GetByID(ctx, *snap.ParentSnapshotID)
+		if err != nil {
+			logger.WarnContext(ctx, "failed to resolve parent snapshot for chain merge, falling back to new VM",
+				"vm_id", vmID, "parent_snapshot_id", *snap.ParentSnapshotID, "error", err)
+			return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+				vm.WorkspaceSizeGB, nil, nil, nil)
+		}
+		// Cap chain depth at 1: parent must be a full snapshot.
+		if baseSnap != nil && baseSnap.IsIncremental() {
+			logger.WarnContext(ctx, "parent is also incremental, chain too deep; falling back to new VM",
+				"vm_id", vmID)
+			return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+				vm.WorkspaceSizeGB, nil, nil, nil)
+		}
+		logger.InfoContext(ctx, "resolved snapshot chain for restore",
+			"vm_id", vmID, "base_snapshot_id", baseSnap.ID, "incremental_snapshot_id", snap.ID)
 	}
 
 	conversationID := strings.TrimSpace(vm.ConversationID)
@@ -1146,7 +1265,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 	// Reuse the VM's existing IP for networking after restore.
 	if vm.IPAddress != nil && *vm.IPAddress != "" && s.ipAllocator != nil {
 		// Verify no other active VM holds this IP.
-		allocated, checkErr := s.repo.GetAllocatedIPs(ctx)
+		allocated, checkErr := s.repo.GetAllocatedIPsExclude(ctx, vmID)
 		if checkErr == nil {
 			for _, usedIP := range allocated {
 				if usedIP == *vm.IPAddress {
@@ -1163,34 +1282,154 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 		spec.Runtime.EnableNetworking = true
 	}
 
+	resumeStart := time.Now().UTC()
+	var downloadMs, restoreMs, agentReadyMs int64
 	// Restore the VM from snapshot.
 	// If object storage is configured, download snapshot files to a local temp dir first.
 	restoreDir := snap.SnapshotPath
+	restoreStart := time.Now().UTC()
 	if s.snapshotStore != nil {
 		tmpDir := filepath.Join("/var/lib/firecracker/vms", vmID, "snapshots", "restore-"+time.Now().UTC().Format("2006-01-02T15-04-05"))
-		files := []ports.SnapshotFile{
-			{Key: snap.MemFilePath(), LocalPath: tmpDir + "/memory"},
-			{Key: snap.StateFilePath(), LocalPath: tmpDir + "/state"},
+
+		// Download snapshot files, trying compressed (.zst) first for
+		// backward compatibility with older uncompressed snapshots.
+		type dlEntry struct {
+			name       string
+			compressed bool
+		}
+		entries := []dlEntry{{name: "memory"}, {name: "state"}}
+		if meta.DiffSnapshots {
+			entries = append(entries, dlEntry{name: "cow"})
+		}
+		// For incremental snapshots, also download the memory manifest.
+		if snap.IsIncremental() && baseSnap != nil {
+			entries = append(entries, dlEntry{name: "memory.manifest"})
+		}
+		for i := range entries {
+			zstKey := snap.SnapshotPath + "/" + entries[i].name + ".zst"
+			if exists, _ := s.snapshotStore.ObjectExists(ctx, zstKey); exists {
+				entries[i].compressed = true
+			}
+		}
+
+		var files []ports.SnapshotFile
+		for _, e := range entries {
+			if e.compressed {
+				files = append(files, ports.SnapshotFile{
+					Key:       snap.SnapshotPath + "/" + e.name + ".zst",
+					LocalPath: filepath.Join(tmpDir, e.name+".zst"),
+				})
+			} else {
+				files = append(files, ports.SnapshotFile{
+					Key:       snap.SnapshotPath + "/" + e.name,
+					LocalPath: filepath.Join(tmpDir, e.name),
+				})
+			}
 		}
 		if err := s.snapshotStore.DownloadFiles(ctx, files); err != nil {
 			return nil, exception.Internal(fmt.Errorf("failed to download snapshot from storage: %w", err))
 		}
+		downloadMs = time.Since(restoreStart).Milliseconds()
+
+		// Decompress .zst files after download. Cow goes to VM dir, not tmpDir.
+		for _, e := range entries {
+			if e.compressed {
+				zstPath := filepath.Join(tmpDir, e.name+".zst")
+				rawPath := filepath.Join(tmpDir, e.name)
+				if e.name == "cow" {
+					rawPath = filepath.Join("/var/lib/firecracker/vms", vmID, "cow.img")
+				}
+				if err := fcutil.DecompressFileZstd(zstPath, rawPath); err != nil {
+					os.RemoveAll(tmpDir)
+					return nil, exception.Internal(fmt.Errorf("failed to decompress %s: %w", e.name, err))
+				}
+				_ = os.Remove(zstPath)
+			} else if e.name == "cow" {
+				src := filepath.Join(tmpDir, "cow")
+				dst := filepath.Join("/var/lib/firecracker/vms", vmID, "cow.img")
+				if err := os.Rename(src, dst); err != nil {
+					return nil, exception.Internal(fmt.Errorf("failed to move cow to vm dir: %w", err))
+				}
+			}
+		}
+
+		// If incremental, download base memory and merge dirty regions.
+		if snap.IsIncremental() && baseSnap != nil {
+			baseMemoryDir := filepath.Join(tmpDir, "base")
+			if err := os.MkdirAll(baseMemoryDir, 0755); err != nil {
+				return nil, exception.Internal(fmt.Errorf("create base snapshot dir: %w", err))
+			}
+			baseZstKey := baseSnap.SnapshotPath + "/memory.zst"
+			baseRawKey := baseSnap.SnapshotPath + "/memory"
+			baseZstLocal := filepath.Join(baseMemoryDir, "memory.zst")
+			baseRawLocal := filepath.Join(baseMemoryDir, "memory")
+			if exists, _ := s.snapshotStore.ObjectExists(ctx, baseZstKey); exists {
+				if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+					{Key: baseZstKey, LocalPath: baseZstLocal},
+				}); err != nil {
+					return nil, exception.Internal(fmt.Errorf("download base memory: %w", err))
+				}
+				if err := fcutil.DecompressFileZstd(baseZstLocal, baseRawLocal); err != nil {
+					return nil, exception.Internal(fmt.Errorf("decompress base memory: %w", err))
+				}
+				_ = os.Remove(baseZstLocal)
+			} else {
+				if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+					{Key: baseRawKey, LocalPath: baseRawLocal},
+				}); err != nil {
+					return nil, exception.Internal(fmt.Errorf("download base memory (raw): %w", err))
+				}
+			}
+			manifestPath := filepath.Join(tmpDir, "memory.manifest")
+			manifest, manifestErr := fcutil.ReadManifest(manifestPath)
+			if manifestErr != nil {
+				logger.WarnContext(ctx, "failed to read memory manifest, cannot merge chain; falling back to new VM",
+					"error", manifestErr)
+				return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+					vm.WorkspaceSizeGB, nil, nil, nil)
+			}
+			diffMemoryPath := filepath.Join(tmpDir, "memory")
+			mergedPath := filepath.Join(tmpDir, "memory.merged")
+			logger.InfoContext(ctx, "merging incremental memory onto base",
+				"vm_id", vmID, "regions", len(manifest))
+			if mergeErr := fcutil.MergeDiffMemory(baseRawLocal, diffMemoryPath, mergedPath, manifest); mergeErr != nil {
+				logger.WarnContext(ctx, "failed to merge diff memory; falling back to new VM",
+					"error", mergeErr)
+				return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+					vm.WorkspaceSizeGB, nil, nil, nil)
+			}
+			if renameErr := os.Rename(mergedPath, diffMemoryPath); renameErr != nil {
+				return nil, exception.Internal(fmt.Errorf("rename merged memory: %w", renameErr))
+			}
+			spec.RestoreAsFull = true
+			logger.InfoContext(ctx, "memory chain merge complete", "vm_id", vmID)
+		}
+
 		defer os.RemoveAll(tmpDir)
 		restoreDir = tmpDir
 		logger.InfoContext(ctx, "downloaded snapshot from storage", "snapshot_id", snap.ID, "local_dir", tmpDir)
 	}
 
+	// Enable diff snapshots on restore if the snapshot was taken with CoW.
+	if meta.DiffSnapshots {
+		spec.Runtime.EnableDiffSnapshots = true
+	}
+
+	restoreBackendStart := time.Now().UTC()
 	backendID, err := s.backend.RestoreFromSnapshot(ctx, spec, restoreDir)
 	if err != nil {
 		logger.ErrorContext(ctx, "failed to restore VM from snapshot", "vm_id", vmID, "snapshot_id", snap.ID, "error", err)
 		return nil, exception.Internal(err)
 	}
+	restoreMs = time.Since(restoreBackendStart).Milliseconds()
 
+	agentStart := time.Now().UTC()
 	if err := s.ensureWorkspaceMounted(ctx, backendID); err != nil {
 		logger.ErrorContext(ctx, "workspace mount failed after restore", "vm_id", vmID, "error", err)
 		_ = s.backend.StopPreserving(ctx, backendID)
 		return nil, err
 	}
+	agentReadyMs = time.Since(agentStart).Milliseconds()
 
 	// Update runtime metadata from the restored VM.
 	vm.SetRuntimeMetadata(backendID, "", 0, "running")
@@ -1203,6 +1442,13 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 	vm.MarkResumed()
 	s.refreshIdleDeadline(vm)
 
+	// Persist status to DB before assigning so AssignToChatIfAvailable
+	// sees the correct status instead of the pre-snapshot value.
+	if err := s.repo.Update(ctx, vm); err != nil {
+		logger.ErrorContext(ctx, "failed to update restored VM", "vm_id", vmID, "error", err)
+		return nil, err
+	}
+
 	// Assign to chat and create lease (single transactional operation).
 	assignedVM, err := s.repo.AssignToChatIfAvailable(ctx, vmID, chatID, vm.IdleDeadlineAt)
 	if err != nil {
@@ -1210,10 +1456,20 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 		return nil, err
 	}
 
-	// Persist runtime metadata updates.
-	if err := s.repo.Update(ctx, vm); err != nil {
-		logger.ErrorContext(ctx, "failed to update restored VM", "vm_id", vmID, "error", err)
-		return nil, err
+	// Record resume metrics.
+	if s.snapMetricsRepo != nil {
+		totalMs := time.Since(resumeStart).Milliseconds()
+		_ = s.snapMetricsRepo.Insert(ctx, &snapshot.SnapshotMetrics{
+			SnapshotID:        snap.ID,
+			VMID:              vmID,
+			Type:              snap.Type,
+			DownloadDurationMs: downloadMs,
+			RestoreDurationMs: restoreMs,
+			AgentReadyMs:      agentReadyMs,
+			TotalResumeMs:     totalMs,
+			GuestRAMMB:        meta.MemoryMB,
+			CreatedAt:         time.Now().UTC(),
+		})
 	}
 
 	logger.InfoContext(ctx, "VM restored from snapshot", "vm_id", vmID, "chat_id", chatID, "snapshot_id", snap.ID)
@@ -1536,4 +1792,55 @@ func workspaceSnapshotKey(conversationID string) string {
 
 func workspaceArchivePath(vmID string) string {
 	return filepath.Join(workspaceBaseDir, vmID, "workspace.tar.gz")
+}
+
+func (s *Service) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	snap, err := s.snapRepo.GetByID(ctx, snapshotID)
+	if err != nil {
+		return err
+	}
+
+	// Simple check for children manually since we don't have ListByParentID
+	snaps, err := s.snapRepo.GetByVMID(ctx, snap.VMID)
+	if err != nil {
+		return err
+	}
+	
+	for _, childSnap := range snaps {
+		if childSnap.ParentSnapshotID != nil && *childSnap.ParentSnapshotID == snapshotID {
+			return exception.BadRequest("cannot delete snapshot because it has children")
+		}
+	}
+
+	if s.snapshotStore != nil {
+		sPrefix := fmt.Sprintf("snapshots/%s/%s", snap.VMID, snap.ID)
+		_ = s.snapshotStore.DeletePrefix(ctx, sPrefix)
+	}
+	
+	// Assume backend snapshot cleanup is handled or unnecessary if files are removed.
+	
+	return s.snapRepo.Delete(ctx, snapshotID)
+}
+
+func (s *Service) deleteAllSnapshots(ctx context.Context, vmID string) error {
+	if s.snapRepo == nil {
+		return nil
+	}
+	
+	snaps, err := s.snapRepo.GetByVMID(ctx, vmID)
+	if err != nil {
+		return err
+	}
+
+	// Delete in reverse order to respect simple dependencies (incremental after full)
+	for i := len(snaps) - 1; i >= 0; i-- {
+		snap := snaps[i]
+		if s.snapshotStore != nil {
+			sPrefix := fmt.Sprintf("snapshots/%s/%s", vmID, snap.ID)
+			_ = s.snapshotStore.DeletePrefix(ctx, sPrefix)
+		}
+		_ = s.snapRepo.Delete(ctx, snap.ID)
+	}
+
+	return nil
 }

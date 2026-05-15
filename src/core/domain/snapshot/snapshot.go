@@ -27,6 +27,12 @@ type SnapshotMetadata struct {
 	GuestCID      uint32 `json:"guest_cid"`
 	GuestPort     uint32 `json:"guest_port"`
 	RootfsPath    string `json:"rootfs_path"`
+
+	// Incremental snapshot fields (dm-snapshot CoW device)
+	DiffSnapshots  bool   `json:"diff_snapshots"`
+	BaseImagePath  string `json:"base_image_path"`  // Host path to environment base image
+	BaseSnapshotID string `json:"base_snapshot_id"` // Full snapshot this diff is relative to
+	CowDeviceName  string `json:"cow_device_name"`  // /dev/mapper/vm_{id}
 }
 
 // Snapshot represents a VM snapshot for backup/restore.
@@ -89,6 +95,16 @@ func (s *Snapshot) MemFilePath() string {
 // StateFilePath returns the key/path to the state file within the snapshot prefix.
 func (s *Snapshot) StateFilePath() string {
 	return s.SnapshotPath + "/state"
+}
+
+// CowFilePath returns the key/path to the CoW image within the snapshot prefix.
+func (s *Snapshot) CowFilePath() string {
+	return s.SnapshotPath + "/cow"
+}
+
+// ManifestFilePath returns the key/path to the memory manifest within the snapshot prefix.
+func (s *Snapshot) ManifestFilePath() string {
+	return s.SnapshotPath + "/memory.manifest"
 }
 
 // ParseMetadata decodes the JSON metadata into SnapshotMetadata.

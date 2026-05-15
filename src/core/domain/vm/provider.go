@@ -16,12 +16,24 @@ type CreateSpec struct {
 	Resources     environment.ResourceLimits
 	Workspace     WorkspaceConfig
 	Runtime       RuntimeConfig
+	// RestoreAsFull indicates the snapshot memory is a fully merged file, not a diff.
+	// When true, Firecracker loads it as a full snapshot but still enables dirty-page
+	// tracking (TrackDirtyPages) for future diff snapshots.
+	RestoreAsFull bool
 }
 
 // WorkspaceConfig captures persistent workspace provisioning for a VM.
 type WorkspaceConfig struct {
 	ConversationID string
 	SizeGB         int
+}
+
+// SnapshotResult contains metadata about a created snapshot.
+type SnapshotResult struct {
+	SnapshotDir     string
+	MemoryBytes     int64
+	CowBytes        int64
+	PauseDurationMs int64
 }
 
 // Backend defines the interface for VM backend providers.
@@ -50,8 +62,8 @@ type Backend interface {
 	GetMetrics(ctx context.Context, id string) (Metrics, error)
 
 	// CreateSnapshot pauses the VM, creates a full snapshot, and resumes the VM.
-	// Returns the snapshot directory path and combined file size.
-	CreateSnapshot(ctx context.Context, id string) (snapshotDir string, sizeBytes int64, err error)
+	// Returns detailed result about the snapshot files and pause duration.
+	CreateSnapshot(ctx context.Context, id string) (*SnapshotResult, error)
 
 	// RestoreFromSnapshot creates a new VM process from previously taken snapshot files.
 	// The rootfs must already exist at the path from the original CreateSpec.

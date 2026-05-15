@@ -1,6 +1,6 @@
 .PHONY: migrate-up migrate-down migrate-down-one migrate-create migrate-version migrate-force seed-env seed-env-local
 
-DB_URL="postgres://spacetrk:password@db:5432/spacetrk?sslmode=disable"
+DB_URL="postgres://spacetrek:***REMOVED***@psql:5432/spacetrek?sslmode=disable"
 
 migrate-up:
 	@echo "Running migrations up..."

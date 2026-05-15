@@ -18,6 +18,7 @@ import (
 	"time"
 
 	fcsdk "github.com/firecracker-microvm/firecracker-go-sdk"
+	ops "github.com/firecracker-microvm/firecracker-go-sdk/client/operations"
 	models "github.com/firecracker-microvm/firecracker-go-sdk/client/models"
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
@@ -25,11 +26,12 @@ import (
 
 // Provider implements the vmdomain.Backend interface for Firecracker.
 type Provider struct {
-	config Config
-	netMgr *NetworkManager // nil when networking disabled
-	mu     sync.RWMutex
-	vms    map[string]*VMInstance // Track running VMs
-	prev   map[string]cpuSample
+	config   Config
+	netMgr   *NetworkManager // nil when networking disabled
+	dmMgr    *DmSnapshotManager
+	mu       sync.RWMutex
+	vms      map[string]*VMInstance // Track running VMs
+	prev     map[string]cpuSample
 }
 
 type cpuSample struct {
@@ -40,15 +42,16 @@ type cpuSample struct {
 
 // VMInstance represents a running Firecracker VM.
 type VMInstance struct {
-	ID         string
-	SocketPath string
-	VsockPath  string
-	GuestCID   uint32
-	GuestPort  uint32
-	Machine    *fcsdk.Machine
-	Cancel     context.CancelFunc
-	Config     vmdomain.CreateSpec
-	StartedAt  time.Time
+	ID          string
+	SocketPath  string
+	VsockPath   string
+	GuestCID    uint32
+	GuestPort   uint32
+	Machine     *fcsdk.Machine
+	Cancel      context.CancelFunc
+	Config      vmdomain.CreateSpec
+	StartedAt   time.Time
+	HasSnapshot bool // true after at least one snapshot; enables diff memory snapshots
 }
 
 // NewProvider creates a new Firecracker provider.
@@ -80,9 +83,14 @@ func NewProvider(cfg Config) (*Provider, error) {
 		}
 	}
 
+	dmMgr := NewDmSnapshotManager()
+	dmMgr.CleanupOrphans()
+	dmMgr.PreflightCheck()
+
 	return &Provider{
 		config: cfg,
 		netMgr: netMgr,
+		dmMgr:  dmMgr,
 		vms:    make(map[string]*VMInstance),
 		prev:   make(map[string]cpuSample),
 	}, nil
@@ -113,30 +121,43 @@ func (p *Provider) Create(ctx context.Context, spec vmdomain.CreateSpec) (string
 	_ = os.Remove(vsockPath)
 
 	// Clone environment base image to a per-VM writable rootfs for isolation.
-	vmRootfsPath := filepath.Join(vmDir, "rootfs.ext4")
-	cloneMode, cloneFallbackReason, err := cloneRootfs(spec.ImagePath, vmRootfsPath)
-	if err != nil {
-		_ = os.RemoveAll(vmDir)
-		return "", fmt.Errorf("failed to clone rootfs image: %w", err)
-	}
-
-	if cloneFallbackReason != "" {
-		logger.Warn(
-			"Rootfs reflink unavailable, using full copy",
-			"vm_id", vmID,
-			"source_image", spec.ImagePath,
-			"destination_image", vmRootfsPath,
-			"reason", cloneFallbackReason,
-		)
-	}
-	logger.Info("Rootfs clone mode selected", "vm_id", vmID, "clone_mode", cloneMode, "source_image", spec.ImagePath, "destination_image", vmRootfsPath)
-
-	if spec.Resources.DiskMB > 0 {
-		if err := resizeRootfs(vmRootfsPath, spec.Resources.DiskMB); err != nil {
+	// When diff snapshots are enabled, use dm-snapshot CoW device instead of cloning.
+	var vmRootfsPath string
+	if spec.Runtime.EnableDiffSnapshots {
+		cowPath := filepath.Join(vmDir, "cow.img")
+		dmDevPath, err := p.dmMgr.CreateCoWDevice(vmID, spec.ImagePath, cowPath)
+		if err != nil {
 			_ = os.RemoveAll(vmDir)
-			return "", fmt.Errorf("failed to resize rootfs to %d MB: %w", spec.Resources.DiskMB, err)
+			return "", fmt.Errorf("failed to create dm-snapshot device: %w", err)
 		}
-		logger.Info("Rootfs resized", "vm_id", vmID, "disk_mb", spec.Resources.DiskMB)
+		vmRootfsPath = dmDevPath
+		logger.Info("Using dm-snapshot CoW device", "vm_id", vmID, "device", dmDevPath, "base_image", spec.ImagePath)
+	} else {
+		vmRootfsPath = filepath.Join(vmDir, "rootfs.ext4")
+		cloneMode, cloneFallbackReason, err := cloneRootfs(spec.ImagePath, vmRootfsPath)
+		if err != nil {
+			_ = os.RemoveAll(vmDir)
+			return "", fmt.Errorf("failed to clone rootfs image: %w", err)
+		}
+
+		if cloneFallbackReason != "" {
+			logger.Warn(
+				"Rootfs reflink unavailable, using full copy",
+				"vm_id", vmID,
+				"source_image", spec.ImagePath,
+				"destination_image", vmRootfsPath,
+				"reason", cloneFallbackReason,
+			)
+		}
+		logger.Info("Rootfs clone mode selected", "vm_id", vmID, "clone_mode", cloneMode, "source_image", spec.ImagePath, "destination_image", vmRootfsPath)
+
+		if spec.Resources.DiskMB > 0 {
+			if err := resizeRootfs(vmRootfsPath, spec.Resources.DiskMB); err != nil {
+				_ = os.RemoveAll(vmDir)
+				return "", fmt.Errorf("failed to resize rootfs to %d MB: %w", spec.Resources.DiskMB, err)
+			}
+			logger.Info("Rootfs resized", "vm_id", vmID, "disk_mb", spec.Resources.DiskMB)
+		}
 	}
 
 	workspaceSizeGB := spec.Workspace.SizeGB
@@ -158,9 +179,10 @@ func (p *Provider) Create(ctx context.Context, spec vmdomain.CreateSpec) (string
 		KernelArgs:      p.config.KernelArgs,
 		Drives:          drives,
 		MachineCfg: models.MachineConfiguration{
-			VcpuCount:  fcsdk.Int64(int64(spec.Resources.VCPU)),
-			MemSizeMib: fcsdk.Int64(int64(spec.Resources.MemoryMB)),
-			Smt:        fcsdk.Bool(p.config.SMT),
+			VcpuCount:       fcsdk.Int64(int64(spec.Resources.VCPU)),
+			MemSizeMib:      fcsdk.Int64(int64(spec.Resources.MemoryMB)),
+			Smt:             fcsdk.Bool(p.config.SMT),
+			TrackDirtyPages: spec.Runtime.EnableDiffSnapshots,
 		},
 		VMID: vmID,
 	}
@@ -284,7 +306,7 @@ func (p *Provider) Create(ctx context.Context, spec vmdomain.CreateSpec) (string
 	p.mu.Unlock()
 
 	pid, _ := machine.PID()
-	logger.Info("Firecracker VM created", "vm_id", vmID, "pid", pid, "socket", socketPath, "vsock_path", effectiveVsock.HostUDSPath, "guest_cid", effectiveVsock.GuestCID, "guest_port", effectiveVsock.GuestPort, "kernel_args", p.config.KernelArgs, "rootfs_path", vmRootfsPath, "rootfs_clone_mode", cloneMode)
+	logger.Info("Firecracker VM created", "vm_id", vmID, "pid", pid, "socket", socketPath, "vsock_path", effectiveVsock.HostUDSPath, "guest_cid", effectiveVsock.GuestCID, "guest_port", effectiveVsock.GuestPort, "kernel_args", p.config.KernelArgs, "rootfs_path", vmRootfsPath)
 	return vmID, nil
 }
 
@@ -359,9 +381,9 @@ func (p *Provider) Stop(ctx context.Context, id string) error {
 	return nil
 }
 
-// CreateSnapshot pauses the VM, creates a full snapshot, and resumes the VM.
+// CreateSnapshot pauses the VM, creates a snapshot, captures CoW delta if applicable, and resumes.
 // Returns the snapshot directory path and combined file size.
-func (p *Provider) CreateSnapshot(ctx context.Context, id string) (string, int64, error) {
+func (p *Provider) CreateSnapshot(ctx context.Context, id string) (*vmdomain.SnapshotResult, error) {
 	logger := pkglog.FromContext(ctx)
 
 	p.mu.RLock()
@@ -369,51 +391,95 @@ func (p *Provider) CreateSnapshot(ctx context.Context, id string) (string, int64
 	p.mu.RUnlock()
 
 	if !exists {
-		return "", 0, fmt.Errorf("VM not found: %s", id)
+		return nil, fmt.Errorf("VM not found: %s", id)
 	}
 
 	// Create snapshot directory.
 	snapDir := filepath.Join(p.config.VMDir(id), "snapshots", time.Now().UTC().Format("2006-01-02T15-04-05"))
 	if err := os.MkdirAll(snapDir, 0755); err != nil {
-		return "", 0, fmt.Errorf("failed to create snapshot directory: %w", err)
+		return nil, fmt.Errorf("failed to create snapshot directory: %w", err)
 	}
 
 	memFile := filepath.Join(snapDir, "memory")
 	stateFile := filepath.Join(snapDir, "state")
 
+	startPause := time.Now()
 	// Pause the VM — required by Firecracker before creating a snapshot.
 	if err := vmInst.Machine.PauseVM(ctx); err != nil {
 		_ = os.RemoveAll(snapDir)
-		return "", 0, fmt.Errorf("failed to pause VM for snapshot: %w", err)
+		return nil, fmt.Errorf("failed to pause VM for snapshot: %w", err)
 	}
 
+	pauseDuration := time.Since(startPause).Milliseconds()
+
 	// Create the snapshot.
-	if err := vmInst.Machine.CreateSnapshot(ctx, memFile, stateFile); err != nil {
+	// If diff snapshots are enabled, request a Diff snapshot that captures only dirty pages.
+	// This works for the first snapshot as well (captures pages dirtied since boot).
+	var createOpts []fcsdk.CreateSnapshotOpt
+	if vmInst.Config.Runtime.EnableDiffSnapshots {
+		createOpts = append(createOpts, func(p *ops.CreateSnapshotParams) {
+			p.Body.SnapshotType = models.SnapshotCreateParamsSnapshotTypeDiff
+		})
+		logger.Info("using diff memory snapshot", "vm_id", id)
+	}
+	if err := vmInst.Machine.CreateSnapshot(ctx, memFile, stateFile, createOpts...); err != nil {
 		// Attempt to resume the VM even if snapshot failed.
 		if resumeErr := vmInst.Machine.ResumeVM(ctx); resumeErr != nil {
 			logger.Warn("failed to resume VM after snapshot failure", "vm_id", id, "snapshot_error", err, "resume_error", resumeErr)
 		}
 		_ = os.RemoveAll(snapDir)
-		return "", 0, fmt.Errorf("failed to create snapshot: %w", err)
+		return nil, fmt.Errorf("failed to create snapshot: %w", err)
+	}
+	vmInst.HasSnapshot = true
+
+	// Capture CoW delta if dm-snapshot is active for this VM.
+	var cowSize int64
+	var cowSrc string
+	if p.dmMgr != nil {
+		if err := p.dmMgr.SuspendDevice(id); err != nil {
+			logger.Warn("failed to suspend dm device for snapshot", "vm_id", id, "error", err)
+		} else {
+			vmDir := p.config.VMDir(id)
+			cowSrc = filepath.Join(vmDir, "cow.img")
+			cowDst := filepath.Join(snapDir, "cow")
+			if _, err := os.Stat(cowSrc); err == nil {
+				if err := copySparseFile(cowSrc, cowDst); err != nil {
+					logger.Warn("failed to copy cow image for snapshot", "vm_id", id, "error", err)
+				} else if usage, err := actualDiskUsage(cowSrc); err == nil {
+					cowSize = usage
+				}
+			}
+			// Reset CoW while still suspended — reload swaps table in-place.
+			if cowSrc != "" {
+				if err := p.dmMgr.ResetCoW(id, cowSrc); err != nil {
+					logger.Warn("failed to reset cow after snapshot", "vm_id", id, "error", err)
+				}
+			}
+		}
+		if err := p.dmMgr.ResumeDevice(id); err != nil {
+			logger.Warn("failed to resume dm device after snapshot", "vm_id", id, "error", err)
+		}
 	}
 
 	// Resume the VM.
 	if err := vmInst.Machine.ResumeVM(ctx); err != nil {
 		logger.Warn("snapshot created but failed to resume VM", "vm_id", id, "error", err)
-		// Snapshot is still valid, continue.
 	}
 
-	// Compute total size.
-	var totalSize int64
-	if fi, err := os.Stat(memFile); err == nil {
-		totalSize += fi.Size()
-	}
-	if fi, err := os.Stat(stateFile); err == nil {
-		totalSize += fi.Size()
+	// Compute total size using actual disk usage (not logical size).
+	// Diff snapshots produce sparse memory files; fi.Size() would
+	// report the full guest RAM size regardless of actual dirty pages.
+	var memSize int64
+	if usage, err := actualDiskUsage(memFile); err == nil {
+		memSize = usage
 	}
 
-	logger.Info("VM snapshot created", "vm_id", id, "snapshot_dir", snapDir, "size_bytes", totalSize)
-	return snapDir, totalSize, nil
+	return &vmdomain.SnapshotResult{
+		SnapshotDir:     snapDir,
+		MemoryBytes:     memSize,
+		CowBytes:        cowSize,
+		PauseDurationMs: pauseDuration,
+	}, nil
 }
 
 // RestoreFromSnapshot creates a new VM process from previously taken snapshot files.
@@ -429,11 +495,25 @@ func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.Create
 	vmDir := p.config.VMDir(vmID)
 	socketPath := p.config.SocketPath(vmID)
 	vsockPath := p.config.VsockPath(vmID)
-	rootfsPath := filepath.Join(vmDir, "rootfs.ext4")
 
-	// Verify rootfs exists.
-	if _, err := os.Stat(rootfsPath); err != nil {
-		return "", fmt.Errorf("rootfs not found at %s, cannot restore snapshot: %w", rootfsPath, err)
+	var drivePath string
+	if spec.Runtime.EnableDiffSnapshots {
+		// Reconstruct dm-snapshot device from base image + cow delta.
+		cowPath := filepath.Join(vmDir, "cow.img")
+		if _, err := os.Stat(cowPath); err != nil {
+			return "", fmt.Errorf("cow image not found at %s, cannot restore: %w", cowPath, err)
+		}
+		dmDevPath, err := p.dmMgr.ReconstructDevice(vmID, spec.ImagePath, cowPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to reconstruct dm-snapshot device: %w", err)
+		}
+		drivePath = dmDevPath
+		logger.Info("Reconstructed dm-snapshot device for restore", "vm_id", vmID, "device", dmDevPath)
+	} else {
+		drivePath = filepath.Join(vmDir, "rootfs.ext4")
+		if _, err := os.Stat(drivePath); err != nil {
+			return "", fmt.Errorf("rootfs not found at %s, cannot restore snapshot: %w", drivePath, err)
+		}
 	}
 
 	// Verify snapshot files exist.
@@ -459,7 +539,7 @@ func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.Create
 		return "", fmt.Errorf("failed to provision workspace image for restore: %w", err)
 	}
 
-	drives := fcsdk.NewDrivesBuilder(rootfsPath).Build()
+	drives := fcsdk.NewDrivesBuilder(drivePath).Build()
 	drives = append(drives, workspaceDrive(workspacePath))
 
 	// Resolve guest CID — reuse the same CID from the snapshot metadata.
@@ -487,9 +567,10 @@ func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.Create
 		KernelArgs:      p.config.KernelArgs,
 		Drives:          drives,
 		MachineCfg: models.MachineConfiguration{
-			VcpuCount:  fcsdk.Int64(int64(spec.Resources.VCPU)),
-			MemSizeMib: fcsdk.Int64(int64(spec.Resources.MemoryMB)),
-			Smt:        fcsdk.Bool(p.config.SMT),
+			VcpuCount:       fcsdk.Int64(int64(spec.Resources.VCPU)),
+			MemSizeMib:      fcsdk.Int64(int64(spec.Resources.MemoryMB)),
+			Smt:             fcsdk.Bool(p.config.SMT),
+			TrackDirtyPages: spec.Runtime.EnableDiffSnapshots,
 		},
 		VMID: vmID,
 	}
@@ -538,13 +619,9 @@ func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.Create
 		}
 	}
 
-	fcCfg.VsockDevices = []fcsdk.VsockDevice{
-		{
-			ID:   "agent",
-			Path: effectiveVsock.HostUDSPath,
-			CID:  effectiveVsock.GuestCID,
-		},
-	}
+	// In RestoreFromSnapshot, vsock device is already part of the snapshot device model.
+	// We do NOT add it to fcCfg.VsockDevices, otherwise firecracker-go-sdk will try to
+	// PUT /vsock after starting the VM, which Firecracker rejects.
 
 	cmd := fcsdk.VMCommandBuilder{}.
 		WithBin(p.config.BinaryPath).
@@ -554,9 +631,24 @@ func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.Create
 	initCtx, initCancel := context.WithTimeout(context.Background(), time.Duration(p.config.SocketTimeout)*time.Second)
 	defer initCancel()
 
+	// Enable dirty-page tracking when restoring with diff snapshots.
+	// This tells Firecracker to track which memory pages are modified
+	// after loading, so subsequent CreateSnapshot calls with
+	// SnapshotType="Diff" capture only the changed pages.
+	snapshotOpts := []fcsdk.WithSnapshotOpt{
+		func(sc *fcsdk.SnapshotConfig) {
+			sc.ResumeVM = true
+		},
+	}
+	if spec.Runtime.EnableDiffSnapshots && !spec.RestoreAsFull {
+		snapshotOpts = append(snapshotOpts, func(sc *fcsdk.SnapshotConfig) {
+			sc.EnableDiffSnapshots = true
+		})
+		logger.Info("enabling dirty-page tracking for diff snapshots", "vm_id", vmID)
+	}
 	machine, err := fcsdk.NewMachine(initCtx, fcCfg,
 		fcsdk.WithProcessRunner(cmd),
-		fcsdk.WithSnapshot(memFile, stateFile),
+		fcsdk.WithSnapshot(memFile, stateFile, snapshotOpts...),
 	)
 	if err != nil {
 		_ = p.releaseGuestCID(vmID)
@@ -573,15 +665,16 @@ func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.Create
 	// Track the VM.
 	p.mu.Lock()
 	p.vms[vmID] = &VMInstance{
-		ID:         vmID,
-		SocketPath: socketPath,
-		VsockPath:  effectiveVsock.HostUDSPath,
-		GuestCID:   effectiveVsock.GuestCID,
-		GuestPort:  effectiveVsock.GuestPort,
-		Machine:    machine,
-		Cancel:     cancel,
-		Config:     spec,
-		StartedAt:  time.Now(),
+		ID:          vmID,
+		SocketPath:  socketPath,
+		VsockPath:   effectiveVsock.HostUDSPath,
+		GuestCID:    effectiveVsock.GuestCID,
+		GuestPort:   effectiveVsock.GuestPort,
+		Machine:     machine,
+		Cancel:      cancel,
+		Config:      spec,
+		StartedAt:   time.Now(),
+		HasSnapshot: true, // Restored from snapshot — dirty-page tracking is active
 	}
 	p.mu.Unlock()
 
@@ -846,6 +939,11 @@ func (p *Provider) cleanup(ctx context.Context, id string, removeDir bool) error
 		_ = p.netMgr.DestroyTAP(TAPName(id))
 	}
 
+	// Clean up dm-snapshot device if one exists.
+	if p.dmMgr != nil {
+		_ = p.dmMgr.RemoveDevice(id)
+	}
+
 	return nil
 }
 
@@ -976,6 +1074,19 @@ func readProcessIOBytes(pid int) (uint64, uint64, error) {
 		}
 	}
 	return readBytes, writeBytes, nil
+}
+
+// copySparseFile copies a file preserving sparseness using cp --sparse=always.
+// Falls back to copyFile if cp is unavailable.
+func copySparseFile(srcPath, dstPath string) error {
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+		return fmt.Errorf("create destination dir: %w", err)
+	}
+	_ = os.Remove(dstPath)
+	if _, err := exec.Command("cp", "--sparse=always", srcPath, dstPath).CombinedOutput(); err == nil {
+		return nil
+	}
+	return copyFile(srcPath, dstPath)
 }
 
 func copyFile(srcPath, dstPath string) error {

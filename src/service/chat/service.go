@@ -13,6 +13,7 @@ import (
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/agent"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/chat"
 	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
+	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 	orchestratorsvc "github.com/spacetrek-sh/spacetrek/src/service/orchestrator"
 )
 
@@ -27,8 +28,7 @@ type Service struct {
 	runtimes    orchdomain.RuntimeEventRepository
 	agents      agent.Repository
 	orch        Orchestrator
-	vmResolver  VMResolver
-	envHintRes  EnvironmentHintResolver
+	vmCollector AvailableVMCollector
 
 	mu          sync.RWMutex
 	subscribers map[string]map[uint64]chan orchdomain.RuntimeEvent
@@ -38,46 +38,30 @@ type Service struct {
 	eventBufs  map[string][]orchdomain.RuntimeEvent
 }
 
-func New(chats chat.Repository, runtimes orchdomain.RuntimeEventRepository, agents agent.Repository, orch Orchestrator, vmRes VMResolver, envHintRes EnvironmentHintResolver) *Service {
+func New(chats chat.Repository, runtimes orchdomain.RuntimeEventRepository, agents agent.Repository, orch Orchestrator, vmCol AvailableVMCollector) *Service {
 	return &Service{
 		chats:       chats,
 		runtimes:    runtimes,
 		agents:      agents,
 		orch:        orch,
-		vmResolver:  vmRes,
-		envHintRes:  envHintRes,
+		vmCollector: vmCol,
 		subscribers: make(map[string]map[uint64]chan orchdomain.RuntimeEvent),
 		eventBufs:   make(map[string][]orchdomain.RuntimeEvent),
 	}
 }
 
-// resolveVMID attempts to find or resume a VM for the given chat.
-// Returns empty string (no error) if no VM is available or resolver is nil.
-func (s *Service) resolveVMID(ctx context.Context, chatID string) string {
-	if s.vmResolver == nil {
-		return ""
+// collectAvailableVMs gathers VMs the LLM can choose from for the given chat.
+func (s *Service) collectAvailableVMs(ctx context.Context, chatID string) []ports.AvailableVM {
+	if s.vmCollector == nil {
+		return nil
 	}
-	vmID, err := s.vmResolver.ResolveVMForChat(ctx, chatID)
+	vms, err := s.vmCollector.CollectAvailableVMs(ctx, chatID)
 	if err != nil {
 		logger := pkglog.FromContext(ctx)
-		logger.WarnContext(ctx, "failed to resolve VM for chat, proceeding without VM", "chat_id", chatID, "error", err)
-		return ""
+		logger.WarnContext(ctx, "failed to collect available VMs, proceeding without", "chat_id", chatID, "error", err)
+		return nil
 	}
-	return vmID
-}
-
-// resolveEnvironmentHint looks up the environment description for a VM.
-func (s *Service) resolveEnvironmentHint(ctx context.Context, vmID string) string {
-	if s.envHintRes == nil || vmID == "" {
-		return ""
-	}
-	hint, err := s.envHintRes.ResolveEnvironmentHint(ctx, vmID)
-	if err != nil {
-		logger := pkglog.FromContext(ctx)
-		logger.WarnContext(ctx, "failed to resolve environment hint", "vm_id", vmID, "error", err)
-		return ""
-	}
-	return hint
+	return vms
 }
 
 // Create opens a new chat, verifying that the requested agent exists first.
@@ -244,25 +228,19 @@ func (s *Service) SendMessageAsync(ctx context.Context, id, content, vmID string
 
 		bgLogger.DebugContext(bgCtx, "async orchestrator: starting")
 
-		resolvedVMID := vmID
-		if resolvedVMID == "" {
-			resolvedVMID = s.resolveVMID(bgCtx, chatID)
+		availableVMs := s.collectAvailableVMs(bgCtx, chatID)
+		if len(availableVMs) > 0 {
+			bgLogger.DebugContext(bgCtx, "async orchestrator: collected available VMs", "count", len(availableVMs))
 		}
-		if resolvedVMID != "" {
-			bgLogger.DebugContext(bgCtx, "async orchestrator: resolved VM", "vm_id", resolvedVMID)
-		}
-
-		envHint := s.resolveEnvironmentHint(bgCtx, resolvedVMID)
 
 		result, err := s.orch.Process(bgCtx, orchestratorsvc.ProcessInput{
-			ChatID:           chatID,
-			AgentID:          agentID,
-			UserID:           userID,
-			Message:          content,
-			VMID:             resolvedVMID,
-			EnvironmentHint:  envHint,
-			History:          c.Messages,
-			EmitEvent:        emit,
+			ChatID:        chatID,
+			AgentID:       agentID,
+			UserID:        userID,
+			Message:       content,
+			AvailableVMs:  availableVMs,
+			History:       c.Messages,
+			EmitEvent:     emit,
 		})
 
 		if err != nil {
@@ -349,25 +327,19 @@ func (s *Service) SendMessage(ctx context.Context, id, content, vmID string) (*c
 			s.persistEvent(ctx, id, event)
 		}
 
-		resolvedVMID := vmID
-		if resolvedVMID == "" {
-			resolvedVMID = s.resolveVMID(ctx, id)
+		availableVMs := s.collectAvailableVMs(ctx, id)
+		if len(availableVMs) > 0 {
+			logger.DebugContext(ctx, "chat send message: collected available VMs", "count", len(availableVMs))
 		}
-		if resolvedVMID != "" {
-			logger.DebugContext(ctx, "chat send message: resolved VM", "vm_id", resolvedVMID)
-		}
-
-		envHint := s.resolveEnvironmentHint(ctx, resolvedVMID)
 
 		result, err := s.orch.Process(ctx, orchestratorsvc.ProcessInput{
-			ChatID:           id,
-			AgentID:          c.AgentID,
-			UserID:           c.UserID,
-			Message:          content,
-			VMID:             resolvedVMID,
-			EnvironmentHint:  envHint,
-			History:          c.Messages,
-			EmitEvent:        emit,
+			ChatID:        id,
+			AgentID:       c.AgentID,
+			UserID:        c.UserID,
+			Message:       content,
+			AvailableVMs:  availableVMs,
+			History:       c.Messages,
+			EmitEvent:     emit,
 		})
 		if err != nil {
 			logger.ErrorContext(ctx, "orchestrator process failed", "chat_id", id, "error", err)

@@ -16,14 +16,14 @@ import (
 
 // ProcessInput is one runtime turn passed to the orchestrator.
 type ProcessInput struct {
-	ChatID           string
-	AgentID          string
-	UserID           string
-	Message          string
-	VMID             string
-	EnvironmentHint  string
-	History          []chat.Message
-	EmitEvent        func(event orchdomain.RuntimeEvent)
+	ChatID          string
+	AgentID         string
+	UserID          string
+	Message         string
+	AvailableVMs    []ports.AvailableVM
+	EnvironmentHint string
+	History         []chat.Message
+	EmitEvent       func(event orchdomain.RuntimeEvent)
 }
 
 // ProcessResult is the orchestrator output for one user turn.
@@ -140,7 +140,7 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 			AgentID:         input.AgentID,
 			UserID:          input.UserID,
 			Message:         input.Message,
-			VMID:            input.VMID,
+			AvailableVMs:    input.AvailableVMs,
 			EnvironmentHint: input.EnvironmentHint,
 			History:         input.History,
 			PriorTurns:      priorTurns,
@@ -201,6 +201,15 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		})
 
 		logger.DebugContext(ctx, "react step executed", "chat_id", input.ChatID, "step", step, "tool", next.Name, "ok", result.OK)
+
+		// Extract environment hint from vm.start/vm.create tool results.
+		if result.OK && (next.Name == "vm.start" || next.Name == "vm.create") {
+			if payload, ok := result.Payload.(map[string]any); ok {
+				if desc, ok := payload["env_description"].(string); ok && desc != "" {
+					input.EnvironmentHint = desc
+				}
+			}
+		}
 
 		observation := ""
 		if payload, ok := result.Payload.(map[string]any); ok {
