@@ -172,6 +172,21 @@ func (r *VMRepository) GetActiveByUserID(_ context.Context, userID string) ([]*v
 	return out, nil
 }
 
+func (r *VMRepository) GetAllByUserID(_ context.Context, _ string) ([]*vmdomain.VM, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Memory repo doesn't store user_id on chats; return all VMs.
+	// Acceptable for tests — production uses the postgres implementation.
+	out := make([]*vmdomain.VM, 0, len(r.vms))
+	for _, vm := range r.vms {
+		cp := *vm
+		out = append(out, &cp)
+	}
+
+	return out, nil
+}
+
 func (r *VMRepository) GetByEnvironmentAndChatID(_ context.Context, envID, chatID string) (*vmdomain.VM, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

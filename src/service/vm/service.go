@@ -715,9 +715,9 @@ func (s *Service) ListCachedFleetSnapshot(ctx context.Context, userID, role stri
 	var vms []*vmdomain.VM
 	var err error
 	if role == "admin" {
-		vms, err = s.repo.GetActiveVMs(ctx)
+		vms, err = s.repo.List(ctx)
 	} else {
-		vms, err = s.repo.GetActiveByUserID(ctx, userID)
+		vms, err = s.repo.GetAllByUserID(ctx, userID)
 	}
 	if err != nil {
 		return nil, err

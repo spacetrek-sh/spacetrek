@@ -21,6 +21,7 @@ type Repository interface {
 	GetByChatID(ctx context.Context, chatID string) (*VM, error)
 	GetActiveVMs(ctx context.Context) ([]*VM, error)
 	GetActiveByUserID(ctx context.Context, userID string) ([]*VM, error)
+	GetAllByUserID(ctx context.Context, userID string) ([]*VM, error)
 
 	// Environment-scoped queries
 	GetByEnvironmentAndChatID(ctx context.Context, envID, chatID string) (*VM, error)
