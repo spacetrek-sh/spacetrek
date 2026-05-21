@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spacetrek-sh/spacetrek/pkg/exception"
@@ -48,6 +50,11 @@ type Service struct {
 	idleTimeout   time.Duration
 	autoSnapshot  bool
 	resumeGrace   time.Duration
+
+	// metricsCache holds the latest collected metrics per VM.
+	// Written by collectAndPersistMetrics, read by SSE handlers via GetCachedMetrics.
+	metricsMu    sync.RWMutex
+	metricsCache map[string]vmdomain.Metrics
 }
 
 // NetworkConfig carries network parameters from app config to the VM service.
@@ -155,6 +162,7 @@ func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRep
 		idleTimeout:   idleTimeout,
 		autoSnapshot:  autoSnapshot,
 		resumeGrace:   resumeGrace,
+		metricsCache:  make(map[string]vmdomain.Metrics),
 	}
 }
 
@@ -403,12 +411,21 @@ func (s *Service) collectAndPersistMetrics(ctx context.Context) {
 		return
 	}
 
+	freshCache := make(map[string]vmdomain.Metrics, len(vms))
+
 	for _, vm := range vms {
 		metrics, metricsErr := s.GetMetrics(ctx, vm.ID)
 		if metricsErr != nil {
 			logger.DebugContext(ctx, "VM metrics collector failed to get metrics", "vm_id", vm.ID, "error", metricsErr)
+			s.metricsMu.RLock()
+			if old, ok := s.metricsCache[vm.ID]; ok {
+				freshCache[vm.ID] = old
+			}
+			s.metricsMu.RUnlock()
 			continue
 		}
+
+		freshCache[vm.ID] = metrics
 
 		point := vmdomain.MetricsPoint{
 			VMID:                 vm.ID,
@@ -431,6 +448,10 @@ func (s *Service) collectAndPersistMetrics(ctx context.Context) {
 			logger.WarnContext(ctx, "VM metrics collector failed to persist sample", "vm_id", vm.ID, "error", insertErr)
 		}
 	}
+
+	s.metricsMu.Lock()
+	s.metricsCache = freshCache
+	s.metricsMu.Unlock()
 }
 
 // Create provisions a new VM instance for the given environment.
@@ -668,6 +689,48 @@ func (s *Service) ListRunningRuntimesByUser(ctx context.Context, userID string) 
 		out = append(out, refreshed)
 	}
 
+	return out, nil
+}
+
+// FleetEntry is a VM paired with its latest cached metrics.
+type FleetEntry struct {
+	VM      *vmdomain.VM
+	Metrics vmdomain.Metrics
+}
+
+// GetCachedMetrics returns the most recently collected metrics for a VM
+// without hitting the backend. Returns the zero Metrics and false if no
+// cached data is available.
+func (s *Service) GetCachedMetrics(id string) (vmdomain.Metrics, bool) {
+	s.metricsMu.RLock()
+	m, ok := s.metricsCache[id]
+	s.metricsMu.RUnlock()
+	return m, ok
+}
+
+// ListCachedFleetSnapshot returns active VMs with their cached metrics.
+// Uses a single DB query and reads from the metrics cache, avoiding
+// per-VM backend calls.
+func (s *Service) ListCachedFleetSnapshot(ctx context.Context, userID, role string) ([]FleetEntry, error) {
+	var vms []*vmdomain.VM
+	var err error
+	if role == "admin" {
+		vms, err = s.repo.GetActiveVMs(ctx)
+	} else {
+		vms, err = s.repo.GetActiveByUserID(ctx, userID)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	s.metricsMu.RLock()
+	defer s.metricsMu.RUnlock()
+
+	out := make([]FleetEntry, 0, len(vms))
+	for _, vm := range vms {
+		metrics, _ := s.metricsCache[vm.ID]
+		out = append(out, FleetEntry{VM: vm, Metrics: metrics})
+	}
 	return out, nil
 }
 
@@ -1469,7 +1532,8 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 			}
 		}
 
-		// If incremental, download base memory and merge dirty regions.
+		// If incremental, download base memory and merge dirty regions,
+		// and download the base snapshot's cow for disk chain reconstruction.
 		if snap.IsIncremental() && baseSnap != nil {
 			baseMemoryDir := filepath.Join(tmpDir, "base")
 			if err := os.MkdirAll(baseMemoryDir, 0755); err != nil {
@@ -1519,6 +1583,45 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 			}
 			spec.RestoreAsFull = true
 			logger.InfoContext(ctx, "memory chain merge complete", "vm_id", vmID)
+
+			// Download the base (full) snapshot's cow file for disk chain
+			// reconstruction. The incremental cow is already at cow.img;
+			// rename it to cow_incr.img so we can place the base cow at
+			// cow_full.img without conflict.
+			vmDir := filepath.Join("/var/lib/firecracker/vms", vmID)
+			cowIncrPath := filepath.Join(vmDir, "cow_incr.img")
+			cowCurrentPath := filepath.Join(vmDir, "cow.img")
+			if _, statErr := os.Stat(cowCurrentPath); statErr == nil {
+				if renameErr := os.Rename(cowCurrentPath, cowIncrPath); renameErr != nil {
+					return nil, exception.Internal(fmt.Errorf("rename incremental cow: %w", renameErr))
+				}
+			}
+
+			cowFullPath := filepath.Join(vmDir, "cow_full.img")
+			baseCowZstKey := baseSnap.SnapshotPath + "/cow.zst"
+			baseCowRawKey := baseSnap.SnapshotPath + "/cow"
+			baseCowZstLocal := filepath.Join(baseMemoryDir, "cow.zst")
+			if exists, _ := s.snapshotStore.ObjectExists(ctx, baseCowZstKey); exists {
+				if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+					{Key: baseCowZstKey, LocalPath: baseCowZstLocal},
+				}); err != nil {
+					return nil, exception.Internal(fmt.Errorf("download base cow: %w", err))
+				}
+				if err := fcutil.DecompressFileZstd(baseCowZstLocal, cowFullPath); err != nil {
+					return nil, exception.Internal(fmt.Errorf("decompress base cow: %w", err))
+				}
+				_ = os.Remove(baseCowZstLocal)
+			} else {
+				if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+					{Key: baseCowRawKey, LocalPath: cowFullPath},
+				}); err != nil {
+					return nil, exception.Internal(fmt.Errorf("download base cow (raw): %w", err))
+				}
+			}
+
+			spec.CowChainPaths = []string{cowFullPath, cowIncrPath}
+			logger.InfoContext(ctx, "cow chain prepared for restore",
+				"vm_id", vmID, "full_cow", cowFullPath, "incr_cow", cowIncrPath)
 		}
 
 		defer os.RemoveAll(tmpDir)
@@ -1700,28 +1803,129 @@ func (s *Service) Shutdown(ctx context.Context) {
 }
 
 func (s *Service) ensureWorkspaceMounted(ctx context.Context, runtimeID string) error {
+	logger := pkglog.FromContext(ctx)
+	logger.InfoContext(ctx, "ensureWorkspaceMounted: starting", "runtime_id", runtimeID)
+
 	if err := s.waitForExecuteReadiness(ctx, runtimeID); err != nil {
+		logger.ErrorContext(ctx, "ensureWorkspaceMounted: guest agent not ready", "runtime_id", runtimeID, "error", err)
 		return err
 	}
 
-	// The readiness check already confirmed vsock connectivity with a /bin/true probe,
-	// so the guest agent is listening. A single mount attempt is sufficient.
+	// If a workspace archive was downloaded from S3, extract it into the
+	// ext4 image on the HOST BEFORE the guest mounts it. This avoids:
+	// 1) The old base64-in-shell-argument approach that broke for large archives
+	// 2) Dual-mounting the same ext4 from two kernels (host + guest) which
+	//    causes filesystem corruption.
+	archivePath := workspaceArchivePath(runtimeID)
+	archiveInfo, statErr := os.Stat(archivePath)
+	if statErr == nil {
+		if err := s.extractWorkspaceArchiveOnHost(ctx, runtimeID, archivePath, archiveInfo.Size()); err != nil {
+			return err
+		}
+	} else {
+		logger.InfoContext(ctx, "ensureWorkspaceMounted: no workspace archive found, skipping extraction",
+			"runtime_id", runtimeID, "archive_path", archivePath)
+	}
+
+	// Now mount the workspace inside the guest. The readiness check already
+	// confirmed vsock connectivity with a /bin/true probe, so the guest
+	// agent is listening. A single mount attempt is sufficient.
 	mountCmd := fmt.Sprintf("mkdir -p %s && if ! mountpoint -q %s; then mount -L workspace %s || mount /dev/vdb %s; fi", workspaceMountPath, workspaceMountPath, workspaceMountPath, workspaceMountPath)
 	if _, _, exitCode, err := s.backend.Execute(ctx, runtimeID, []string{"/bin/sh", "-c", mountCmd}); err != nil {
+		logger.ErrorContext(ctx, "ensureWorkspaceMounted: guest mount command failed",
+			"runtime_id", runtimeID, "exit_code", exitCode, "error", err)
 		return fmt.Errorf("mount workspace: %w (exit_code=%d)", err, exitCode)
 	}
+	logger.InfoContext(ctx, "ensureWorkspaceMounted: workspace mounted in guest", "runtime_id", runtimeID)
 
-	// If a workspace archive was downloaded from S3, extract it into the mounted workspace.
-	archivePath := workspaceArchivePath(runtimeID)
-	if data, err := os.ReadFile(archivePath); err == nil {
-		encoded := base64.StdEncoding.EncodeToString(data)
-		extractCmd := fmt.Sprintf("printf '%%s' '%s' | base64 -d | tar xzf - -C %s", encoded, workspaceMountPath)
-		if err := s.executeGuestShellWithRetry(ctx, runtimeID, extractCmd, 2); err != nil {
-			return fmt.Errorf("extract workspace archive: %w", err)
-		}
+	return nil
+}
+
+// extractWorkspaceArchiveOnHost loop-mounts the workspace ext4 image on the
+// host, extracts the tar.gz archive into it, then unmounts. This must be
+// called BEFORE the guest mounts the same image to avoid dual-mount corruption.
+func (s *Service) extractWorkspaceArchiveOnHost(ctx context.Context, runtimeID, archivePath string, archiveSize int64) error {
+	logger := pkglog.FromContext(ctx)
+
+	logger.InfoContext(ctx, "extractWorkspaceArchiveOnHost: workspace archive found",
+		"runtime_id", runtimeID, "archive_path", archivePath, "archive_size_bytes", archiveSize)
+
+	if archiveSize == 0 {
+		logger.WarnContext(ctx, "extractWorkspaceArchiveOnHost: workspace archive is empty, skipping extraction",
+			"runtime_id", runtimeID, "archive_path", archivePath)
 		_ = os.Remove(archivePath)
+		return nil
 	}
 
+	imagePath := workspaceImagePath(runtimeID)
+	imageInfo, err := os.Stat(imagePath)
+	if err != nil {
+		logger.ErrorContext(ctx, "extractWorkspaceArchiveOnHost: workspace ext4 image not found",
+			"runtime_id", runtimeID, "image_path", imagePath, "error", err)
+		return fmt.Errorf("workspace image not found for host-side extraction: %w", err)
+	}
+	logger.InfoContext(ctx, "extractWorkspaceArchiveOnHost: ext4 image found",
+		"runtime_id", runtimeID, "image_path", imagePath, "image_size_bytes", imageInfo.Size())
+
+	hostMountDir := filepath.Join(workspaceBaseDir, runtimeID, "host_mnt")
+	if err := os.MkdirAll(hostMountDir, 0755); err != nil {
+		logger.ErrorContext(ctx, "extractWorkspaceArchiveOnHost: failed to create host mount dir",
+			"runtime_id", runtimeID, "mount_dir", hostMountDir, "error", err)
+		return fmt.Errorf("create host mount dir: %w", err)
+	}
+	defer os.Remove(hostMountDir)
+
+	extractStart := time.Now()
+
+	// Loop-mount the ext4 workspace image on the host.
+	mountOut, err := exec.CommandContext(ctx, "mount", "-o", "loop", imagePath, hostMountDir).CombinedOutput()
+	if err != nil {
+		logger.ErrorContext(ctx, "extractWorkspaceArchiveOnHost: host loop-mount failed",
+			"runtime_id", runtimeID, "image_path", imagePath, "mount_dir", hostMountDir,
+			"output", string(mountOut), "error", err)
+		return fmt.Errorf("host loop-mount workspace image: %w (output: %s)", err, string(mountOut))
+	}
+	logger.InfoContext(ctx, "extractWorkspaceArchiveOnHost: host loop-mount succeeded",
+		"runtime_id", runtimeID, "image_path", imagePath, "mount_dir", hostMountDir)
+
+	// Always unmount on the host side when done.
+	defer func() {
+		syncOut, syncErr := exec.CommandContext(ctx, "sync").CombinedOutput()
+		if syncErr != nil {
+			logger.WarnContext(ctx, "extractWorkspaceArchiveOnHost: sync failed",
+				"runtime_id", runtimeID, "output", string(syncOut), "error", syncErr)
+		}
+		umountOut, umountErr := exec.CommandContext(ctx, "umount", hostMountDir).CombinedOutput()
+		if umountErr != nil {
+			logger.WarnContext(ctx, "extractWorkspaceArchiveOnHost: host umount failed, trying lazy umount",
+				"runtime_id", runtimeID, "mount_dir", hostMountDir,
+				"output", string(umountOut), "error", umountErr)
+			lazyOut, lazyErr := exec.CommandContext(ctx, "umount", "-l", hostMountDir).CombinedOutput()
+			if lazyErr != nil {
+				logger.ErrorContext(ctx, "extractWorkspaceArchiveOnHost: host lazy umount also failed",
+					"runtime_id", runtimeID, "output", string(lazyOut), "error", lazyErr)
+			}
+		} else {
+			logger.InfoContext(ctx, "extractWorkspaceArchiveOnHost: host umount succeeded", "runtime_id", runtimeID)
+		}
+	}()
+
+	// Extract the tar.gz archive directly into the loop-mounted workspace.
+	tarOut, err := exec.CommandContext(ctx, "tar", "xzf", archivePath, "-C", hostMountDir).CombinedOutput()
+	if err != nil {
+		logger.ErrorContext(ctx, "extractWorkspaceArchiveOnHost: tar extraction failed",
+			"runtime_id", runtimeID, "archive_path", archivePath,
+			"archive_size_bytes", archiveSize, "mount_dir", hostMountDir,
+			"output", string(tarOut), "error", err)
+		return fmt.Errorf("extract workspace archive on host: %w (output: %s)", err, string(tarOut))
+	}
+
+	extractDuration := time.Since(extractStart)
+	logger.InfoContext(ctx, "extractWorkspaceArchiveOnHost: workspace archive extracted successfully",
+		"runtime_id", runtimeID, "archive_size_bytes", archiveSize,
+		"extract_duration_ms", extractDuration.Milliseconds())
+
+	_ = os.Remove(archivePath)
 	return nil
 }
 

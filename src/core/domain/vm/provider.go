@@ -20,6 +20,12 @@ type CreateSpec struct {
 	// When true, Firecracker loads it as a full snapshot but still enables dirty-page
 	// tracking (TrackDirtyPages) for future diff snapshots.
 	RestoreAsFull bool
+
+	// CowChainPaths holds the ordered list of cow files forming the snapshot
+	// chain (full cow first, then each incremental cow). When non-empty,
+	// the provider creates stacked dm-snapshot devices to reconstruct the
+	// complete accumulated disk state at restore time.
+	CowChainPaths []string
 }
 
 // WorkspaceConfig captures persistent workspace provisioning for a VM.

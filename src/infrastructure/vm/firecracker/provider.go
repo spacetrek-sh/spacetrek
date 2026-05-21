@@ -498,17 +498,32 @@ func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.Create
 
 	var drivePath string
 	if spec.Runtime.EnableDiffSnapshots {
-		// Reconstruct dm-snapshot device from base image + cow delta.
-		cowPath := filepath.Join(vmDir, "cow.img")
-		if _, err := os.Stat(cowPath); err != nil {
-			return "", fmt.Errorf("cow image not found at %s, cannot restore: %w", cowPath, err)
+		if len(spec.CowChainPaths) > 1 {
+			// Incremental restore — stack all cow files in the chain
+			// to reconstruct the complete accumulated disk state.
+			dmDevPath, err := p.dmMgr.ReconstructChainDevice(vmID, spec.ImagePath, spec.CowChainPaths)
+			if err != nil {
+				return "", fmt.Errorf("failed to reconstruct dm-snapshot chain device: %w", err)
+			}
+			drivePath = dmDevPath
+			logger.Info("Reconstructed dm-snapshot chain device for restore",
+				"vm_id", vmID, "device", dmDevPath, "layers", len(spec.CowChainPaths))
+		} else {
+			// Single cow file (full snapshot restore).
+			cowPath := filepath.Join(vmDir, "cow.img")
+			if len(spec.CowChainPaths) == 1 {
+				cowPath = spec.CowChainPaths[0]
+			}
+			if _, err := os.Stat(cowPath); err != nil {
+				return "", fmt.Errorf("cow image not found at %s, cannot restore: %w", cowPath, err)
+			}
+			dmDevPath, err := p.dmMgr.ReconstructDevice(vmID, spec.ImagePath, cowPath)
+			if err != nil {
+				return "", fmt.Errorf("failed to reconstruct dm-snapshot device: %w", err)
+			}
+			drivePath = dmDevPath
+			logger.Info("Reconstructed dm-snapshot device for restore", "vm_id", vmID, "device", dmDevPath)
 		}
-		dmDevPath, err := p.dmMgr.ReconstructDevice(vmID, spec.ImagePath, cowPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to reconstruct dm-snapshot device: %w", err)
-		}
-		drivePath = dmDevPath
-		logger.Info("Reconstructed dm-snapshot device for restore", "vm_id", vmID, "device", dmDevPath)
 	} else {
 		drivePath = filepath.Join(vmDir, "rootfs.ext4")
 		if _, err := os.Stat(drivePath); err != nil {

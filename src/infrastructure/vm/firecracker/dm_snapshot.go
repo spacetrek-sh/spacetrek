@@ -16,10 +16,18 @@ type baseLoopEntry struct {
 	refCount int
 }
 
+type layerInfo struct {
+	dmName     string // device-mapper name for this layer
+	cowLoopDev string // loop device backing the cow file
+}
+
 type vmDeviceInfo struct {
 	dmPath        string
 	baseImagePath string
 	cowLoopDev    string
+	// layers tracks intermediate dm-snapshot devices created by
+	// ReconstructChainDevice. They are ordered bottom-up (layer0 first).
+	layers []layerInfo
 }
 
 // DmSnapshotManager manages dm-snapshot devices for incremental disk snapshots.
@@ -88,6 +96,119 @@ func (d *DmSnapshotManager) CreateCoWDevice(vmID, baseImagePath, cowImagePath st
 
 func (d *DmSnapshotManager) ReconstructDevice(vmID, baseImagePath, cowImagePath string) (string, error) {
 	return d.createCowDevice(vmID, baseImagePath, cowImagePath, true)
+}
+
+// ReconstructChainDevice creates stacked dm-snapshot devices to replay
+// a cow chain. cowPaths must be ordered oldest-first (e.g. full cow,
+// then incremental cow). Each cow is layered on top of the previous
+// device, producing the complete accumulated disk state.
+//
+// Devices created:
+//   layer 0:  base_image + cowPaths[0]  →  /dev/mapper/vm_{id}_layer0
+//   layer 1:  layer0     + cowPaths[1]  →  /dev/mapper/vm_{id}_layer1
+//   ...
+//   layer N-1 (final): renamed to /dev/mapper/vm_{id}
+//
+// The final device path is returned.
+func (d *DmSnapshotManager) ReconstructChainDevice(vmID, baseImagePath string, cowPaths []string) (string, error) {
+	if len(cowPaths) == 0 {
+		return "", fmt.Errorf("cow chain is empty")
+	}
+	// Single cow — delegate to the simple path.
+	if len(cowPaths) == 1 {
+		return d.ReconstructDevice(vmID, baseImagePath, cowPaths[0])
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// If a device already exists for this VM, return it.
+	if info, ok := d.activeDevices[vmID]; ok {
+		if _, err := os.Stat(info.dmPath); err == nil {
+			return info.dmPath, nil
+		}
+		delete(d.activeDevices, vmID)
+	}
+
+	// Set up read-only loop device for the base image.
+	baseLoopDev, err := d.setupOriginLocked(baseImagePath)
+	if err != nil {
+		return "", fmt.Errorf("setup origin for chain device: %w", err)
+	}
+
+	baseInfo, err := os.Stat(baseImagePath)
+	if err != nil {
+		return "", fmt.Errorf("stat base image %s: %w", baseImagePath, err)
+	}
+	sectors := baseInfo.Size() / 512
+
+	var layers []layerInfo
+	// originDev is the "base" device for the current layer. For the first
+	// layer this is the base image loop device; for subsequent layers it
+	// is the previous dm-snapshot device path.
+	originDev := baseLoopDev
+
+	for i, cowPath := range cowPaths {
+		// Attach cow file to a loop device.
+		out, err := exec.Command("losetup", "--find", "--show", cowPath).CombinedOutput()
+		if err != nil {
+			d.cleanupChainLayers(layers)
+			return "", fmt.Errorf("losetup cow[%d] %s: %w (%s)", i, cowPath, err, string(out))
+		}
+		cowLoopDev := strings.TrimSpace(string(out))
+
+		// Determine device-mapper name for this layer.
+		var dmName string
+		if i == len(cowPaths)-1 {
+			// Final layer uses the canonical VM device name.
+			dmName = dmNameForVM(vmID)
+		} else {
+			dmName = fmt.Sprintf("%s_layer%d", dmNameForVM(vmID), i)
+		}
+
+		table := fmt.Sprintf("0 %d snapshot %s %s P 8", sectors, originDev, cowLoopDev)
+		out, err = exec.Command("dmsetup", "create", dmName, "--table", table).CombinedOutput()
+		if err != nil {
+			_ = exec.Command("losetup", "--detach", cowLoopDev).Run()
+			d.cleanupChainLayers(layers)
+			return "", fmt.Errorf("dmsetup create %s (layer %d): %w (%s)", dmName, i, err, string(out))
+		}
+		_ = exec.Command("dmsetup", "mknodes").Run()
+
+		layers = append(layers, layerInfo{
+			dmName:     dmName,
+			cowLoopDev: cowLoopDev,
+		})
+
+		// Next layer stacks on top of this device.
+		originDev = "/dev/mapper/" + dmName
+	}
+
+	devicePath := "/dev/mapper/" + dmNameForVM(vmID)
+	d.activeDevices[vmID] = &vmDeviceInfo{
+		dmPath:        devicePath,
+		baseImagePath: baseImagePath,
+		cowLoopDev:    layers[len(layers)-1].cowLoopDev,
+		layers:        layers[:len(layers)-1], // exclude final — it IS the main device
+	}
+
+	slog.Info("dm-snapshot chain device created",
+		"vm_id", vmID,
+		"layers", len(cowPaths),
+		"device", devicePath)
+
+	return devicePath, nil
+}
+
+// cleanupChainLayers tears down intermediate layers in reverse order.
+// Used during error recovery in ReconstructChainDevice.
+func (d *DmSnapshotManager) cleanupChainLayers(layers []layerInfo) {
+	for i := len(layers) - 1; i >= 0; i-- {
+		_ = exec.Command("dmsetup", "remove", "--force", layers[i].dmName).Run()
+		if layers[i].cowLoopDev != "" {
+			_ = exec.Command("losetup", "--detach", layers[i].cowLoopDev).Run()
+		}
+	}
 }
 
 func (d *DmSnapshotManager) createCowDevice(vmID, baseImagePath, cowImagePath string, reuseExistingCow bool) (string, error) {
@@ -183,7 +304,7 @@ func (d *DmSnapshotManager) RemoveDevice(vmID string) error {
 
 	dmName := dmNameForVM(vmID)
 
-	// Remove dm device.
+	// Remove the main (top-level) dm device first.
 	if out, err := exec.Command("dmsetup", "remove", "--force", dmName).CombinedOutput(); err != nil {
 		_ = out
 	}
@@ -193,9 +314,18 @@ func (d *DmSnapshotManager) RemoveDevice(vmID string) error {
 		return nil
 	}
 
-	// Detach cow loop device.
+	// Detach the top-level cow loop device.
 	if info.cowLoopDev != "" {
 		_ = exec.Command("losetup", "--detach", info.cowLoopDev).Run()
+	}
+
+	// Tear down intermediate chain layers in reverse order.
+	for i := len(info.layers) - 1; i >= 0; i-- {
+		layer := info.layers[i]
+		_ = exec.Command("dmsetup", "remove", "--force", layer.dmName).Run()
+		if layer.cowLoopDev != "" {
+			_ = exec.Command("losetup", "--detach", layer.cowLoopDev).Run()
+		}
 	}
 
 	delete(d.activeDevices, vmID)

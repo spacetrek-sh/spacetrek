@@ -3,7 +3,6 @@ package vm
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -254,7 +253,7 @@ func (h *Handler) ListRuntimes(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]runtimeSnapshotResponse, 0, len(runtimes))
 	for _, vm := range runtimes {
-		metrics, _ := h.vmservice.GetMetrics(ctx, vm.ID)
+		metrics, _ := h.vmservice.GetCachedMetrics(vm.ID)
 		out = append(out, toRuntimeSnapshotResponse(vm, metrics))
 	}
 
@@ -273,24 +272,37 @@ func (h *Handler) StreamRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.DebugContext(ctx, "VM runtime stream opened", "vm_id", id)
-	prepareSSE(w)
+	httputil.PrepareSSE(w)
 	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-heartbeat.C:
+			if err := httputil.WriteSSEHeartbeat(w); err != nil {
+				return
+			}
+			_ = rc.Flush()
 		case <-ticker.C:
 			vm, err := h.vmservice.GetRuntimeSnapshot(ctx, id)
 			if err != nil {
-				writeSSEEvent(w, "error", map[string]string{"error": err.Error()})
+				if writeErr := httputil.WriteSSEEvent(w, "error", map[string]string{"error": err.Error()}); writeErr != nil {
+					return
+				}
 				_ = rc.Flush()
 				continue
 			}
-			metrics, _ := h.vmservice.GetMetrics(ctx, vm.ID)
-			writeSSEEvent(w, "runtime", toRuntimeSnapshotResponse(vm, metrics))
+			metrics, _ := h.vmservice.GetCachedMetrics(vm.ID)
+			if err := httputil.WriteSSEEvent(w, "runtime", toRuntimeSnapshotResponse(vm, metrics)); err != nil {
+				return
+			}
 			_ = rc.Flush()
 		}
 	}
@@ -302,30 +314,42 @@ func (h *Handler) StreamRuntimes(w http.ResponseWriter, r *http.Request) {
 	logger := pkglog.FromContext(ctx)
 
 	logger.DebugContext(ctx, "VM runtimes stream opened")
-	prepareSSE(w)
+	httputil.PrepareSSE(w)
 	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-heartbeat.C:
+			if err := httputil.WriteSSEHeartbeat(w); err != nil {
+				return
+			}
+			_ = rc.Flush()
 		case <-ticker.C:
-			runtimes, err := h.vmservice.ListRunningRuntimes(ctx)
+			entries, err := h.vmservice.ListCachedFleetSnapshot(ctx, "", "admin")
 			if err != nil {
-				writeSSEEvent(w, "error", map[string]string{"error": err.Error()})
+				if writeErr := httputil.WriteSSEEvent(w, "error", map[string]string{"error": err.Error()}); writeErr != nil {
+					return
+				}
 				_ = rc.Flush()
 				continue
 			}
 
-			out := make([]runtimeSnapshotResponse, 0, len(runtimes))
-			for _, vm := range runtimes {
-				metrics, _ := h.vmservice.GetMetrics(ctx, vm.ID)
-				out = append(out, toRuntimeSnapshotResponse(vm, metrics))
+			out := make([]runtimeSnapshotResponse, 0, len(entries))
+			for _, entry := range entries {
+				out = append(out, toRuntimeSnapshotResponse(entry.VM, entry.Metrics))
 			}
 
-			writeSSEEvent(w, "runtimes", out)
+			if err := httputil.WriteSSEEvent(w, "runtimes", out); err != nil {
+				return
+			}
 			_ = rc.Flush()
 		}
 	}
@@ -342,42 +366,44 @@ func (h *Handler) StreamFleet(w http.ResponseWriter, r *http.Request) {
 	role := middleware.GetUserRole(ctx)
 	logger.DebugContext(ctx, "VM fleet stream opened", "user_id", userID, "role", role)
 
-	prepareSSE(w)
+	httputil.PrepareSSE(w)
 	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			logger.DebugContext(ctx, "VM fleet stream closed")
 			return
-		case <-ticker.C:
-			var runtimes []*vmdomain.VM
-			var err error
-
-			if role == "admin" {
-				runtimes, err = h.vmservice.ListRunningRuntimes(ctx)
-			} else {
-				runtimes, err = h.vmservice.ListRunningRuntimesByUser(ctx, userID)
+		case <-heartbeat.C:
+			if err := httputil.WriteSSEHeartbeat(w); err != nil {
+				return
 			}
+			_ = rc.Flush()
+		case <-ticker.C:
+			entries, err := h.vmservice.ListCachedFleetSnapshot(ctx, userID, role)
 			if err != nil {
 				logger.WarnContext(ctx, "fleet stream: failed to list runtimes", "error", err)
-				writeSSEEvent(w, "error", map[string]string{"error": err.Error()})
+				if writeErr := httputil.WriteSSEEvent(w, "error", map[string]string{"error": err.Error()}); writeErr != nil {
+					return
+				}
 				_ = rc.Flush()
 				continue
 			}
 
-			out := make([]fleetVMResponse, 0, len(runtimes))
-			for _, vm := range runtimes {
-				metrics, metricsErr := h.vmservice.GetMetrics(ctx, vm.ID)
-				if metricsErr != nil {
-					logger.DebugContext(ctx, "fleet stream: metrics fetch skipped", "vm_id", vm.ID, "error", metricsErr)
-				}
-				out = append(out, toFleetVMResponse(vm, metrics))
+			out := make([]fleetVMResponse, 0, len(entries))
+			for _, entry := range entries {
+				out = append(out, toFleetVMResponse(entry.VM, entry.Metrics))
 			}
 
-			writeSSEEvent(w, "fleet", out)
+			if err := httputil.WriteSSEEvent(w, "fleet", out); err != nil {
+				return
+			}
 			_ = rc.Flush()
 		}
 	}
@@ -394,10 +420,14 @@ func (h *Handler) StreamActivity(w http.ResponseWriter, r *http.Request) {
 	role := middleware.GetUserRole(ctx)
 	logger.DebugContext(ctx, "VM activity stream opened", "user_id", userID, "role", role)
 
-	prepareSSE(w)
+	httputil.PrepareSSE(w)
 	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 
 	var lastSeen time.Time
 
@@ -406,6 +436,11 @@ func (h *Handler) StreamActivity(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			logger.DebugContext(ctx, "VM activity stream closed")
 			return
+		case <-heartbeat.C:
+			if err := httputil.WriteSSEHeartbeat(w); err != nil {
+				return
+			}
+			_ = rc.Flush()
 		case <-ticker.C:
 			if h.runtimes == nil {
 				continue
@@ -414,7 +449,9 @@ func (h *Handler) StreamActivity(w http.ResponseWriter, r *http.Request) {
 			events, err := h.runtimes.ListRecent(ctx, 100)
 			if err != nil {
 				logger.WarnContext(ctx, "activity stream: failed to list recent events", "error", err)
-				writeSSEEvent(w, "error", map[string]string{"error": err.Error()})
+				if writeErr := httputil.WriteSSEEvent(w, "error", map[string]string{"error": err.Error()}); writeErr != nil {
+					return
+				}
 				_ = rc.Flush()
 				continue
 			}
@@ -433,7 +470,9 @@ func (h *Handler) StreamActivity(w http.ResponseWriter, r *http.Request) {
 				for i, j := 0, len(newEvents)-1; i < j; i, j = i+1, j-1 {
 					newEvents[i], newEvents[j] = newEvents[j], newEvents[i]
 				}
-				writeSSEEvent(w, "activity", newEvents)
+				if err := httputil.WriteSSEEvent(w, "activity", newEvents); err != nil {
+					return
+				}
 				_ = rc.Flush()
 			}
 		}
@@ -854,26 +893,6 @@ func formatDuration(d time.Duration) string {
 	h := int(d.Hours())
 	m = m - h*60
 	return fmt.Sprintf("%dh %dm", h, m)
-}
-
-func prepareSSE(w http.ResponseWriter) {
-
-	header := w.Header()
-	header.Set("Content-Type", "text/event-stream")
-	header.Set("Cache-Control", "no-cache")
-	header.Set("Connection", "keep-alive")
-	header.Set("X-Accel-Buffering", "no")
-
-	_ = http.NewResponseController(w).Flush()
-}
-
-func writeSSEEvent(w http.ResponseWriter, event string, payload any) {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	_, _ = w.Write([]byte("event: " + event + "\n"))
-	_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
 }
 
 func parseHistoryTime(raw string) (*time.Time, error) {
