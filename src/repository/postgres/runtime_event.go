@@ -129,6 +129,34 @@ func (r *runtimeEventRepository) ListByChatID(ctx context.Context, params orchdo
 	}, nil
 }
 
+func (r *runtimeEventRepository) ListRecent(ctx context.Context, limit int) ([]*orchdomain.PersistedRuntimeEvent, error) {
+	logger := pkglog.FromContext(ctx)
+
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+
+	query := `
+		SELECT id, chat_id, trace_id, type, step, data, command, result, error, token_usage, metadata, created_at
+		FROM runtime_events
+		ORDER BY created_at DESC
+		LIMIT $1
+	`
+
+	rows := make([]runtimeEventRow, 0, limit)
+	if err := r.db.SelectContext(ctx, &rows, query, limit); err != nil {
+		logger.ErrorContext(ctx, "postgres: list recent runtime events failed", "error", err)
+		return nil, exception.Internal(fmt.Errorf("list recent runtime events: %w", err))
+	}
+
+	items := make([]*orchdomain.PersistedRuntimeEvent, len(rows))
+	for i, row := range rows {
+		items[i] = mapRuntimeEventRow(row)
+	}
+
+	return items, nil
+}
+
 func mapRuntimeEventRow(row runtimeEventRow) *orchdomain.PersistedRuntimeEvent {
 	e := &orchdomain.PersistedRuntimeEvent{
 		ID:      row.ID,

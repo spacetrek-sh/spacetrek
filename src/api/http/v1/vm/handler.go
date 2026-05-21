@@ -4,6 +4,7 @@ package vm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/spacetrek-sh/spacetrek/pkg/exception"
 	httputil "github.com/spacetrek-sh/spacetrek/pkg/http"
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/environment"
 	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 	"github.com/spacetrek-sh/spacetrek/src/middleware"
@@ -25,6 +27,12 @@ type Handler struct {
 	vmservice  *vmservice.Service
 	jwtManager *jwt.Manager
 	envRepo    EnvironmentRepository
+	runtimes   RuntimeEventRepository
+}
+
+// RuntimeEventRepository defines the interface for querying runtime events.
+type RuntimeEventRepository interface {
+	ListRecent(ctx context.Context, limit int) ([]*orchdomain.PersistedRuntimeEvent, error)
 }
 
 // EnvironmentRepository defines the interface for fetching environment details.
@@ -33,11 +41,12 @@ type EnvironmentRepository interface {
 }
 
 // NewHandler creates a new VM handler.
-func NewHandler(vmSvc *vmservice.Service, jwtMgr *jwt.Manager, envRepo EnvironmentRepository) *Handler {
+func NewHandler(vmSvc *vmservice.Service, jwtMgr *jwt.Manager, envRepo EnvironmentRepository, runtimes RuntimeEventRepository) *Handler {
 	return &Handler{
 		vmservice:  vmSvc,
 		jwtManager: jwtMgr,
 		envRepo:    envRepo,
+		runtimes:   runtimes,
 	}
 }
 
@@ -53,6 +62,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Get("/leases", h.ListLeases)
 			r.Get("/runtimes", h.ListRuntimes)
 			r.Get("/runtimes/stream", h.StreamRuntimes)
+			r.Get("/fleet/stream", h.StreamFleet)
+			r.Get("/activity/stream", h.StreamActivity)
 			r.Get("/{id}/metrics", h.GetMetrics)
 			r.Get("/{id}/metrics/history", h.GetMetricsHistory)
 			r.Get("/{id}/stream", h.StreamRuntime)
@@ -311,6 +322,94 @@ func (h *Handler) StreamRuntimes(w http.ResponseWriter, r *http.Request) {
 
 			writeSSEEvent(w, "runtimes", out)
 			_ = rc.Flush()
+		}
+	}
+}
+
+// StreamFleet handles GET /api/v1/vm/fleet/stream with Server-Sent Events.
+// Emits frontend-friendly fleet snapshots every 2 seconds.
+func (h *Handler) StreamFleet(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
+	logger.DebugContext(ctx, "VM fleet stream opened")
+	prepareSSE(w)
+	rc := http.NewResponseController(w)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runtimes, err := h.vmservice.ListRunningRuntimes(ctx)
+			if err != nil {
+				writeSSEEvent(w, "error", map[string]string{"error": err.Error()})
+				_ = rc.Flush()
+				continue
+			}
+
+			out := make([]fleetVMResponse, 0, len(runtimes))
+			for _, vm := range runtimes {
+				metrics, _ := h.vmservice.GetMetrics(ctx, vm.ID)
+				out = append(out, toFleetVMResponse(vm, metrics))
+			}
+
+			writeSSEEvent(w, "fleet", out)
+			_ = rc.Flush()
+		}
+	}
+}
+
+// StreamActivity handles GET /api/v1/vm/activity/stream with Server-Sent Events.
+// Emits recent runtime events every 2 seconds, tracking the last-seen timestamp
+// to only push new events.
+func (h *Handler) StreamActivity(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
+	logger.DebugContext(ctx, "VM activity stream opened")
+	prepareSSE(w)
+	rc := http.NewResponseController(w)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	var lastSeen time.Time
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if h.runtimes == nil {
+				continue
+			}
+
+			events, err := h.runtimes.ListRecent(ctx, 100)
+			if err != nil {
+				writeSSEEvent(w, "error", map[string]string{"error": err.Error()})
+				_ = rc.Flush()
+				continue
+			}
+
+			var newEvents []activityEventResponse
+			for i := len(events) - 1; i >= 0; i-- {
+				e := events[i]
+				if !e.CreatedAt.After(lastSeen) {
+					continue
+				}
+				newEvents = append(newEvents, toActivityEvent(e))
+			}
+
+			if len(newEvents) > 0 {
+				lastSeen = events[0].CreatedAt
+				for i, j := 0, len(newEvents)-1; i < j; i, j = i+1, j-1 {
+					newEvents[i], newEvents[j] = newEvents[j], newEvents[i]
+				}
+				writeSSEEvent(w, "activity", newEvents)
+				_ = rc.Flush()
+			}
 		}
 	}
 }
@@ -653,6 +752,82 @@ func toRuntimeSnapshotResponse(vm *vmdomain.VM, metrics vmdomain.Metrics) runtim
 		NetworkBytesReceived: metrics.NetworkBytesReceived,
 		CollectedAt:          metrics.CollectedAt,
 	}
+}
+
+func toFleetVMResponse(vm *vmdomain.VM, metrics vmdomain.Metrics) fleetVMResponse {
+	ip := ""
+	if vm.IPAddress != nil {
+		ip = *vm.IPAddress
+	}
+	return fleetVMResponse{
+		ID:      vm.ID,
+		Uptime:  formatDuration(time.Since(vm.CreatedAt)),
+		Mem:     fmt.Sprintf("%d / %dmb", metrics.MemoryUsedMB, metrics.MemoryLimitMB),
+		MemPct:  metrics.MemoryPercent,
+		CPU:     fmt.Sprintf("%.0f%%", metrics.CPUUsagePercent),
+		Disk:    fmt.Sprintf("%dmb / %dmb", metrics.DiskUsedMB, metrics.DiskLimitMB),
+		DiskPct: metrics.DiskPercent,
+		Status:  string(vm.Status),
+		IP:      ip,
+		Created: vm.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+}
+
+func toActivityEvent(e *orchdomain.PersistedRuntimeEvent) activityEventResponse {
+	vmID := ""
+	if e.Metadata != nil {
+		if v, ok := e.Metadata["vm_id"].(string); ok {
+			vmID = v
+		}
+	}
+
+	msg := e.Data
+	if e.Command != "" {
+		msg = e.Command
+	}
+	if e.Error != "" {
+		msg = e.Error
+	}
+
+	return activityEventResponse{
+		Time: e.CreatedAt.Format("15:04:05"),
+		Type: mapActivityType(e.Type, e.Data),
+		VM:   vmID,
+		Msg:  msg,
+	}
+}
+
+func mapActivityType(t orchdomain.RuntimeEventType, data string) string {
+	switch t {
+	case orchdomain.EventToolCall:
+		switch data {
+		case "vm.write_file", "vm.edit_file":
+			return "write"
+		case "vm.create", "vm.start":
+			return "boot"
+		default:
+			return "exec"
+		}
+	case orchdomain.EventError:
+		return "error"
+	default:
+		return string(t)
+	}
+}
+
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	m := int(d.Minutes())
+	s := int(d.Seconds()) - m*60
+	if d < time.Hour {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	h := int(d.Hours())
+	m = m - h*60
+	return fmt.Sprintf("%dh %dm", h, m)
 }
 
 func prepareSSE(w http.ResponseWriter) {

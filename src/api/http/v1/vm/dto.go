@@ -161,3 +161,26 @@ type vmSnapshotResponse struct {
 type resumeVMRequest struct {
 	ChatID string `json:"chat_id" validate:"required"`
 }
+
+// fleetVMResponse is a single VM in the fleet SSE stream.
+type fleetVMResponse struct {
+	ID      string  `json:"id"`
+	Agent   string  `json:"agent,omitempty"`
+	Uptime  string  `json:"uptime"`
+	Mem     string  `json:"mem"`
+	MemPct  float64 `json:"memPct"`
+	CPU     string  `json:"cpu"`
+	Disk    string  `json:"disk"`
+	DiskPct float64 `json:"diskPct"`
+	Status  string  `json:"status"`
+	IP      string  `json:"ip,omitempty"`
+	Created string  `json:"created"`
+}
+
+// activityEventResponse is a single event in the activity SSE stream.
+type activityEventResponse struct {
+	Time string `json:"time"`
+	Type string `json:"type"`
+	VM   string `json:"vm"`
+	Msg  string `json:"msg"`
+}

@@ -233,14 +233,16 @@ func (s *Service) SendMessageAsync(ctx context.Context, id, content, vmID string
 			bgLogger.DebugContext(bgCtx, "async orchestrator: collected available VMs", "count", len(availableVMs))
 		}
 
+
 		result, err := s.orch.Process(bgCtx, orchestratorsvc.ProcessInput{
-			ChatID:        chatID,
-			AgentID:       agentID,
-			UserID:        userID,
-			Message:       content,
-			AvailableVMs:  availableVMs,
-			History:       c.Messages,
-			EmitEvent:     emit,
+			ChatID:          chatID,
+			AgentID:         agentID,
+			UserID:          userID,
+			Message:         content,
+			AvailableVMs:    availableVMs,
+			EnvironmentHint: "",
+			History:         c.Messages,
+			EmitEvent:       emit,
 		})
 
 		if err != nil {
@@ -332,14 +334,16 @@ func (s *Service) SendMessage(ctx context.Context, id, content, vmID string) (*c
 			logger.DebugContext(ctx, "chat send message: collected available VMs", "count", len(availableVMs))
 		}
 
+
 		result, err := s.orch.Process(ctx, orchestratorsvc.ProcessInput{
-			ChatID:        id,
-			AgentID:       c.AgentID,
-			UserID:        c.UserID,
-			Message:       content,
-			AvailableVMs:  availableVMs,
-			History:       c.Messages,
-			EmitEvent:     emit,
+			ChatID:          id,
+			AgentID:         c.AgentID,
+			UserID:          c.UserID,
+			Message:         content,
+			AvailableVMs:    availableVMs,
+			EnvironmentHint: "",
+			History:         c.Messages,
+			EmitEvent:       emit,
 		})
 		if err != nil {
 			logger.ErrorContext(ctx, "orchestrator process failed", "chat_id", id, "error", err)

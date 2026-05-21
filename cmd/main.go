@@ -215,7 +215,7 @@ func main() {
 	agentHandler := agenthttp.NewHandler(agentService, jwtManager)
 	chatHandler := chathttp.NewHandler(chatService, jwtManager)
 	authHandler := authhttp.NewHandler(userService, authService, jwtManager)
-	vmHandler := vmhttp.NewHandler(vmService, jwtManager, environmentRepo)
+	vmHandler := vmhttp.NewHandler(vmService, jwtManager, environmentRepo, runtimeEventRepo)
 
 	// ── HTTP Server ───────────────────────────────────────────────────────
 	srv := apihttp.New(apihttp.Config{
