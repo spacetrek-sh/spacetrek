@@ -71,6 +71,15 @@ type Backend interface {
 
 	// StopPreserving stops the VM process but preserves rootfs and snapshot files on disk.
 	StopPreserving(ctx context.Context, id string) error
+
+	// ReadFile reads a file from the guest VM, returning content in cat -n format.
+	ReadFile(ctx context.Context, id string, path string, offset, limit int) (string, error)
+
+	// WriteFile writes content to a file in the guest VM, creating it if needed.
+	WriteFile(ctx context.Context, id string, path string, content string, mode int) error
+
+	// EditFile performs a surgical string replacement on a file in the guest VM.
+	EditFile(ctx context.Context, id string, path string, oldString, newString string, replaceAll bool) error
 }
 
 // RuntimeStatus represents the actual runtime status of a VM from the provider.

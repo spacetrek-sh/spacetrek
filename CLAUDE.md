@@ -125,6 +125,8 @@ All routes are under `/api/v1` (except `/health`).
 | VM | GET | `/vm/leases` | Admin | List active leases by chat |
 | VM | GET | `/vm/runtimes` | Admin | List running VMs with metrics |
 | VM | GET | `/vm/runtimes/stream` | Admin | SSE stream of all runtimes |
+| VM | GET | `/vm/fleet/stream` | Admin | SSE fleet metrics (frontend-shaped) |
+| VM | GET | `/vm/activity/stream` | Admin | SSE global activity event feed |
 | VM | GET | `/vm/{id}` | Admin | Get VM details |
 | VM | DELETE | `/vm/{id}` | Admin | Stop VM |
 | VM | DELETE | `/vm/{id}/destroy` | Admin | Destroy VM |

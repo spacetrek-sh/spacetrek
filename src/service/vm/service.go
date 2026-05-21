@@ -897,6 +897,97 @@ func (s *Service) ExecuteCommand(ctx context.Context, id, command string) (strin
 
 }
 
+// ReadFile reads a file from the guest VM, returning content in cat -n format.
+func (s *Service) ReadFile(ctx context.Context, id, path string, offset, limit int) (string, error) {
+	logger := pkglog.FromContext(ctx)
+
+	vm, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return "", err
+	}
+
+	if !vm.Status.IsActive() {
+		return "", exception.BadRequest("VM is not active")
+	}
+
+	if err := s.waitForExecuteReadiness(ctx, id); err != nil {
+		return "", err
+	}
+
+	content, err := s.backend.ReadFile(ctx, id, path, offset, limit)
+	if err != nil {
+		logger.ErrorContext(ctx, "read file failed", "vm_id", id, "path", path, "error", err)
+		return "", exception.Internal(err)
+	}
+
+	s.refreshIdleDeadline(vm)
+	if err := s.repo.Update(ctx, vm); err != nil {
+		logger.WarnContext(ctx, "failed to refresh VM idle deadline after read file", "vm_id", id, "error", err)
+	}
+
+	return content, nil
+}
+
+// WriteFile writes content to a file in the guest VM.
+func (s *Service) WriteFile(ctx context.Context, id, path, content string, mode int) error {
+	logger := pkglog.FromContext(ctx)
+
+	vm, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	if !vm.Status.IsActive() {
+		return exception.BadRequest("VM is not active")
+	}
+
+	if err := s.waitForExecuteReadiness(ctx, id); err != nil {
+		return err
+	}
+
+	if err := s.backend.WriteFile(ctx, id, path, content, mode); err != nil {
+		logger.ErrorContext(ctx, "write file failed", "vm_id", id, "path", path, "error", err)
+		return exception.Internal(err)
+	}
+
+	s.refreshIdleDeadline(vm)
+	if err := s.repo.Update(ctx, vm); err != nil {
+		logger.WarnContext(ctx, "failed to refresh VM idle deadline after write file", "vm_id", id, "error", err)
+	}
+
+	return nil
+}
+
+// EditFile performs a surgical string replacement on a file in the guest VM.
+func (s *Service) EditFile(ctx context.Context, id, path, oldString, newString string, replaceAll bool) error {
+	logger := pkglog.FromContext(ctx)
+
+	vm, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	if !vm.Status.IsActive() {
+		return exception.BadRequest("VM is not active")
+	}
+
+	if err := s.waitForExecuteReadiness(ctx, id); err != nil {
+		return err
+	}
+
+	if err := s.backend.EditFile(ctx, id, path, oldString, newString, replaceAll); err != nil {
+		logger.ErrorContext(ctx, "edit file failed", "vm_id", id, "path", path, "error", err)
+		return exception.Internal(err)
+	}
+
+	s.refreshIdleDeadline(vm)
+	if err := s.repo.Update(ctx, vm); err != nil {
+		logger.WarnContext(ctx, "failed to refresh VM idle deadline after edit file", "vm_id", id, "error", err)
+	}
+
+	return nil
+}
+
 func (s *Service) waitForExecuteReadiness(ctx context.Context, vmID string) error {
 	logger := pkglog.FromContext(ctx)
 

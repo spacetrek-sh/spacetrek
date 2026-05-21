@@ -1213,6 +1213,42 @@ func reflinkClone(srcPath, dstPath string) error {
 
 func (p *Provider) executeViaVsock(ctx context.Context, vm *VMInstance, cmd []string) (string, string, int, error) {
 	timeout, stdoutLimit, stderrLimit := p.resolveExecLimits(vm)
+
+	req := RPCRequest{
+		ProtocolVersion:  execProtocolVersion,
+		RequestID:        strconv.FormatInt(time.Now().UnixNano(), 10),
+		Method:           "",
+		TimeoutMS:        timeout.Milliseconds(),
+		Argv:             cmd,
+		StdoutLimitBytes: stdoutLimit,
+		StderrLimitBytes: stderrLimit,
+	}
+
+	resp, err := p.rpcViaVsock(ctx, vm, req, stdoutLimit+stderrLimit+256*1024)
+	if err != nil {
+		return resp.Stdout, resp.Stderr, resp.ExitCode, err
+	}
+
+	if resp.StdoutTruncated || resp.StderrTruncated {
+		return resp.Stdout, resp.Stderr, resp.ExitCode, fmt.Errorf("command output exceeded configured limits")
+	}
+
+	if resp.ExitCode != 0 {
+		return resp.Stdout, resp.Stderr, resp.ExitCode, fmt.Errorf("command exited with code %d", resp.ExitCode)
+	}
+
+	return resp.Stdout, resp.Stderr, resp.ExitCode, nil
+}
+
+func (p *Provider) rpcViaVsock(ctx context.Context, vm *VMInstance, req RPCRequest, maxResponsePayload int) (execResponse, error) {
+	timeout := p.config.DefaultExecTimeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	if req.TimeoutMS > 0 {
+		timeout = time.Duration(req.TimeoutMS) * time.Millisecond
+	}
+
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -1220,9 +1256,9 @@ func (p *Provider) executeViaVsock(ctx context.Context, vm *VMInstance, cmd []st
 	conn, err := dialer.DialContext(execCtx, "unix", vm.VsockPath)
 	if err != nil {
 		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-			return "", "", -1, fmt.Errorf("connect guest agent timeout: %w", execCtx.Err())
+			return execResponse{}, fmt.Errorf("connect guest agent timeout: %w", execCtx.Err())
 		}
-		return "", "", -1, fmt.Errorf("connect guest agent: %w", err)
+		return execResponse{}, fmt.Errorf("connect guest agent: %w", err)
 	}
 	defer conn.Close()
 
@@ -1231,26 +1267,15 @@ func (p *Provider) executeViaVsock(ctx context.Context, vm *VMInstance, cmd []st
 	}
 
 	if _, err := io.WriteString(conn, fmt.Sprintf("CONNECT %d\n", vm.GuestPort)); err != nil {
-		return "", "", -1, fmt.Errorf("open guest vsock stream: %w", err)
+		return execResponse{}, fmt.Errorf("open guest vsock stream: %w", err)
 	}
 
 	ackReader := bufio.NewReader(conn)
 
-	requestID := strconv.FormatInt(time.Now().UnixNano(), 10)
-	request := execRequest{
-		ProtocolVersion:  execProtocolVersion,
-		RequestID:        requestID,
-		Argv:             cmd,
-		TimeoutMS:        timeout.Milliseconds(),
-		StdoutLimitBytes: stdoutLimit,
-		StderrLimitBytes: stderrLimit,
+	if err := writeFramedJSON(conn, req, 12*1024*1024); err != nil {
+		return execResponse{}, fmt.Errorf("send rpc request: %w", err)
 	}
 
-	if err := writeFramedJSON(conn, request, 1024*1024); err != nil {
-		return "", "", -1, fmt.Errorf("send execute request: %w", err)
-	}
-
-	maxResponsePayload := stdoutLimit + stderrLimit + 256*1024
 	if maxResponsePayload < 1024*1024 {
 		maxResponsePayload = 1024 * 1024
 	}
@@ -1258,16 +1283,16 @@ func (p *Provider) executeViaVsock(ctx context.Context, vm *VMInstance, cmd []st
 	var response execResponse
 	if err := p.readVsockExecResponse(ackReader, maxResponsePayload, &response); err != nil {
 		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-			return "", "", -1, fmt.Errorf("execute command timeout: %w", execCtx.Err())
+			return execResponse{}, fmt.Errorf("rpc timeout: %w", execCtx.Err())
 		}
-		return "", "", -1, fmt.Errorf("read execute response: %w", err)
+		return execResponse{}, fmt.Errorf("read rpc response: %w", err)
 	}
 
 	if response.ProtocolVersion != execProtocolVersion {
-		return response.Stdout, response.Stderr, response.ExitCode, fmt.Errorf("unsupported protocol version %d", response.ProtocolVersion)
+		return response, fmt.Errorf("unsupported protocol version %d", response.ProtocolVersion)
 	}
-	if response.RequestID != requestID {
-		return response.Stdout, response.Stderr, response.ExitCode, fmt.Errorf("mismatched response request id")
+	if response.RequestID != req.RequestID {
+		return response, fmt.Errorf("mismatched response request id")
 	}
 
 	if response.Status == ExecProtocolStatusError {
@@ -1276,20 +1301,95 @@ func (p *Provider) executeViaVsock(ctx context.Context, vm *VMInstance, cmd []st
 			errorCode = ExecProtocolErrorInternal
 		}
 		if response.ErrorMessage == "" {
-			response.ErrorMessage = "guest agent execution failed"
+			response.ErrorMessage = "guest agent rpc failed"
 		}
-		return response.Stdout, response.Stderr, response.ExitCode, fmt.Errorf("guest agent error (%s): %s", errorCode, response.ErrorMessage)
+		return response, fmt.Errorf("guest agent error (%s): %s", errorCode, response.ErrorMessage)
 	}
 
-	if response.StdoutTruncated || response.StderrTruncated {
-		return response.Stdout, response.Stderr, response.ExitCode, fmt.Errorf("command output exceeded configured limits")
+	return response, nil
+}
+
+// ReadFile reads a file from the guest VM via the vsock agent.
+func (p *Provider) ReadFile(ctx context.Context, id string, path string, offset, limit int) (string, error) {
+	p.mu.RLock()
+	vm, exists := p.vms[id]
+	p.mu.RUnlock()
+
+	if !exists {
+		return "", fmt.Errorf("VM not found: %s", id)
+	}
+	if vm.GuestCID == 0 || vm.GuestPort == 0 || vm.VsockPath == "" {
+		return "", fmt.Errorf("vsock command channel is not configured for VM %s", id)
 	}
 
-	if response.ExitCode != 0 {
-		return response.Stdout, response.Stderr, response.ExitCode, fmt.Errorf("command exited with code %d", response.ExitCode)
+	req := RPCRequest{
+		ProtocolVersion: execProtocolVersion,
+		RequestID:       strconv.FormatInt(time.Now().UnixNano(), 10),
+		Method:          "read_file",
+		Path:            path,
+		Offset:          offset,
+		Limit:           limit,
 	}
 
-	return response.Stdout, response.Stderr, response.ExitCode, nil
+	resp, err := p.rpcViaVsock(ctx, vm, req, 12*1024*1024)
+	if err != nil {
+		return resp.Stdout, err
+	}
+
+	return resp.Stdout, nil
+}
+
+// WriteFile writes content to a file in the guest VM via the vsock agent.
+func (p *Provider) WriteFile(ctx context.Context, id string, path string, content string, mode int) error {
+	p.mu.RLock()
+	vm, exists := p.vms[id]
+	p.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("VM not found: %s", id)
+	}
+	if vm.GuestCID == 0 || vm.GuestPort == 0 || vm.VsockPath == "" {
+		return fmt.Errorf("vsock command channel is not configured for VM %s", id)
+	}
+
+	req := RPCRequest{
+		ProtocolVersion: execProtocolVersion,
+		RequestID:       strconv.FormatInt(time.Now().UnixNano(), 10),
+		Method:          "write_file",
+		Path:            path,
+		Content:         content,
+		Mode:            mode,
+	}
+
+	_, err := p.rpcViaVsock(ctx, vm, req, 256*1024)
+	return err
+}
+
+// EditFile performs a surgical string replacement on a file in the guest VM.
+func (p *Provider) EditFile(ctx context.Context, id string, path string, oldString, newString string, replaceAll bool) error {
+	p.mu.RLock()
+	vm, exists := p.vms[id]
+	p.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("VM not found: %s", id)
+	}
+	if vm.GuestCID == 0 || vm.GuestPort == 0 || vm.VsockPath == "" {
+		return fmt.Errorf("vsock command channel is not configured for VM %s", id)
+	}
+
+	req := RPCRequest{
+		ProtocolVersion: execProtocolVersion,
+		RequestID:       strconv.FormatInt(time.Now().UnixNano(), 10),
+		Method:          "edit_file",
+		Path:            path,
+		OldString:       oldString,
+		NewString:       newString,
+		ReplaceAll:      replaceAll,
+	}
+
+	_, err := p.rpcViaVsock(ctx, vm, req, 256*1024)
+	return err
 }
 
 func (p *Provider) readVsockExecResponse(reader *bufio.Reader, maxResponsePayload int, out *execResponse) error {

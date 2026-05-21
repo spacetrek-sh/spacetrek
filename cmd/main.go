@@ -165,6 +165,9 @@ func main() {
 	orchTools.Register(toolsvc.NewVMListTool(vmService))
 	orchTools.Register(toolsvc.NewVMStopTool(vmService))
 	orchTools.Register(toolsvc.NewVMSnapshotTool(vmService))
+	orchTools.Register(toolsvc.NewVMReadFileTool(vmService))
+	orchTools.Register(toolsvc.NewVMWriteFileTool(vmService))
+	orchTools.Register(toolsvc.NewVMEditFileTool(vmService))
 
 	var planner ports.ToolPlanner
 	if cfg.LLM.DefaultProvider == "gemini" && cfg.LLM.Gemini.APIKey != "" {
@@ -202,7 +205,7 @@ func main() {
 		planner,
 		orchTools,
 		orchestratorsvc.NewMemoryStateStore(),
-		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot"}, cfg.Security.MaxTaskDuration, maxReactSteps),
+		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot", "vm.read_file", "vm.write_file", "vm.edit_file"}, cfg.Security.MaxTaskDuration, maxReactSteps),
 	)
 	runtimeEventRepo := postgresrepo.NewRuntimeEventRepository(db)
 	vmCollector := chatsvc.NewAvailableVMCollector(vmService, environmentRepo)
@@ -212,7 +215,7 @@ func main() {
 	agentHandler := agenthttp.NewHandler(agentService, jwtManager)
 	chatHandler := chathttp.NewHandler(chatService, jwtManager)
 	authHandler := authhttp.NewHandler(userService, authService, jwtManager)
-	vmHandler := vmhttp.NewHandler(vmService, jwtManager, environmentRepo)
+	vmHandler := vmhttp.NewHandler(vmService, jwtManager, environmentRepo, runtimeEventRepo)
 
 	// ── HTTP Server ───────────────────────────────────────────────────────
 	srv := apihttp.New(apihttp.Config{
@@ -295,6 +298,18 @@ func (b unavailableBackend) RestoreFromSnapshot(context.Context, vmdomain.Create
 }
 
 func (b unavailableBackend) StopPreserving(context.Context, string) error {
+	return b.err()
+}
+
+func (b unavailableBackend) ReadFile(context.Context, string, string, int, int) (string, error) {
+	return "", b.err()
+}
+
+func (b unavailableBackend) WriteFile(context.Context, string, string, string, int) error {
+	return b.err()
+}
+
+func (b unavailableBackend) EditFile(context.Context, string, string, string, string, bool) error {
 	return b.err()
 }
 

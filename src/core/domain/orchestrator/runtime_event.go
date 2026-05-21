@@ -38,4 +38,5 @@ type ListRuntimeEventsResult struct {
 type RuntimeEventRepository interface {
 	Insert(ctx context.Context, event *PersistedRuntimeEvent) error
 	ListByChatID(ctx context.Context, params ListRuntimeEventsParams) (*ListRuntimeEventsResult, error)
+	ListRecent(ctx context.Context, limit int) ([]*PersistedRuntimeEvent, error)
 }

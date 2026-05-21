@@ -75,3 +75,39 @@ func (r *RuntimeEventRepository) ListByChatID(_ context.Context, params orchdoma
 		NextCursor: nextCursor,
 	}, nil
 }
+
+func (r *RuntimeEventRepository) ListRecent(_ context.Context, limit int) ([]*orchdomain.PersistedRuntimeEvent, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+
+	var all []*orchdomain.PersistedRuntimeEvent
+	for _, events := range r.events {
+		for _, e := range events {
+			all = append(all, e)
+		}
+	}
+
+	// Sort descending by created_at.
+	for i := 0; i < len(all)-1; i++ {
+		for j := i + 1; j < len(all); j++ {
+			if all[i].CreatedAt.Before(all[j].CreatedAt) {
+				all[i], all[j] = all[j], all[i]
+			}
+		}
+	}
+
+	if len(all) > limit {
+		all = all[:limit]
+	}
+
+	items := make([]*orchdomain.PersistedRuntimeEvent, len(all))
+	for i, e := range all {
+		cp := *e
+		items[i] = &cp
+	}
+	return items, nil
+}

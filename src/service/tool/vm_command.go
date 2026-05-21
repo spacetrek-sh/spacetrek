@@ -100,4 +100,34 @@ func readStringArg(args map[string]any, key string) (string, bool) {
 	return text, true
 }
 
+func readIntArg(args map[string]any, key string) (int, bool) {
+	if args == nil {
+		return 0, false
+	}
+	value, exists := args[key]
+	if !exists {
+		return 0, false
+	}
+	switch v := value.(type) {
+	case float64:
+		return int(v), true
+	case int:
+		return v, true
+	default:
+		return 0, false
+	}
+}
+
+func readBoolArg(args map[string]any, key string) (bool, bool) {
+	if args == nil {
+		return false, false
+	}
+	value, exists := args[key]
+	if !exists {
+		return false, false
+	}
+	b, ok := value.(bool)
+	return b, ok
+}
+
 var _ tool.Tool = (*VMCommandTool)(nil)

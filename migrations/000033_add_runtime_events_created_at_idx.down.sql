@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_runtime_events_created_at_desc;
