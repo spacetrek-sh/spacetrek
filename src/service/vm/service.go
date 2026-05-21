@@ -646,6 +646,31 @@ func (s *Service) ListRunningRuntimes(ctx context.Context) ([]*vmdomain.VM, erro
 	return out, nil
 }
 
+// ListRunningRuntimesByUser returns running VMs that belong to the given user's chats.
+func (s *Service) ListRunningRuntimesByUser(ctx context.Context, userID string) ([]*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
+
+	vms, err := s.repo.GetActiveByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]*vmdomain.VM, 0, len(vms))
+	for _, vm := range vms {
+		refreshed, refreshErr := s.GetRuntimeSnapshot(ctx, vm.ID)
+		if refreshErr != nil {
+			logger.WarnContext(ctx, "ListRunningRuntimesByUser: failed to snapshot VM", "vm_id", vm.ID, "error", refreshErr)
+			continue
+		}
+		if refreshed.RuntimeState == nil || strings.ToLower(*refreshed.RuntimeState) != "running" {
+			continue
+		}
+		out = append(out, refreshed)
+	}
+
+	return out, nil
+}
+
 // GetAvailable retrieves an available VM from the pool for the given provider.
 func (s *Service) GetAvailable(ctx context.Context, provider vmdomain.Provider) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)

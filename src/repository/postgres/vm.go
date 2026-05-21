@@ -334,6 +334,43 @@ func (r *vmRepository) GetActiveVMs(ctx context.Context) ([]*vmdomain.VM, error)
 	return out, nil
 }
 
+func (r *vmRepository) GetActiveByUserID(ctx context.Context, userID string) ([]*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
+	query := `
+		SELECT DISTINCT ON (vm.id)
+		       vm.id, vm.environment_id, vm.provider, vm.status,
+		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source,
+		       vm.last_heartbeat_at, vm.idle_deadline_at,
+		       vm.vcpu, vm.memory_mb, vm.disk_mb,
+		       vm.ip_address, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at,
+		       vm.conversation_id, vm.workspace_size_gb, vm.diff_snapshots_enabled
+		FROM vm_instances vm
+		JOIN vm_leases l ON l.vm_id = vm.id
+		JOIN chats c ON c.id = l.chat_id
+		WHERE c.user_id = $1
+		  AND vm.status IN ('ready', 'running', 'idle')
+		  AND l.released_at IS NULL
+		ORDER BY vm.id, vm.created_at DESC
+	`
+
+	rows := make([]vmRow, 0)
+	if err := r.db.SelectContext(ctx, &rows, query, userID); err != nil {
+		logger.ErrorContext(ctx, "postgres: get active vms by user failed", "user_id", userID, "error", err)
+		return nil, exception.Internal(fmt.Errorf("get active vms by user: %w", err))
+	}
+
+	out := make([]*vmdomain.VM, 0, len(rows))
+	for _, row := range rows {
+		vm, err := mapVMRow(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, vm)
+	}
+
+	return out, nil
+}
+
 func (r *vmRepository) GetByEnvironmentAndChatID(ctx context.Context, envID, chatID string) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 	query := `

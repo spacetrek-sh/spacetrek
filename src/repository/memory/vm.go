@@ -153,6 +153,25 @@ func (r *VMRepository) GetActiveVMs(_ context.Context) ([]*vmdomain.VM, error) {
 	return out, nil
 }
 
+func (r *VMRepository) GetActiveByUserID(_ context.Context, userID string) ([]*vmdomain.VM, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Collect VM IDs that have active leases for this user's chats.
+	// Since the memory repo doesn't store user_id on chats, return all active VMs.
+	// This is acceptable for tests — production uses the postgres implementation.
+	out := make([]*vmdomain.VM, 0)
+	for _, vm := range r.vms {
+		if !vm.Status.IsActive() {
+			continue
+		}
+		cp := *vm
+		out = append(out, &cp)
+	}
+
+	return out, nil
+}
+
 func (r *VMRepository) GetByEnvironmentAndChatID(_ context.Context, envID, chatID string) (*vmdomain.VM, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

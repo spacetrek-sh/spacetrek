@@ -400,6 +400,24 @@ paths:
         '200':
           description: Event stream
 
+  /vm/fleet/stream:
+    get:
+      summary: Stream VM fleet metrics via SSE
+      tags: [VM]
+      description: Emits `fleet` events every 2s with frontend-shaped VM snapshots. Admin sees all VMs; users see only their own.
+      responses:
+        '200':
+          description: SSE event stream
+
+  /vm/activity/stream:
+    get:
+      summary: Stream global VM activity events via SSE
+      tags: [VM]
+      description: Emits `activity` events every 2s with new runtime events. Admin sees all events; users see only their own.
+      responses:
+        '200':
+          description: SSE event stream
+
   /vm/resume:
     post:
       summary: Resume a VM

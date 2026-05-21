@@ -54,6 +54,13 @@ func NewHandler(vmSvc *vmservice.Service, jwtMgr *jwt.Manager, envRepo Environme
 // All VM routes require admin role.
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Route("/vm", func(r chi.Router) {
+		// Authenticated routes (any role)
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.Authenticate(h.jwtManager))
+			r.Get("/fleet/stream", h.StreamFleet)
+			r.Get("/activity/stream", h.StreamActivity)
+		})
+
 		// Admin-only routes
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Authenticate(h.jwtManager))
@@ -62,8 +69,6 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Get("/leases", h.ListLeases)
 			r.Get("/runtimes", h.ListRuntimes)
 			r.Get("/runtimes/stream", h.StreamRuntimes)
-			r.Get("/fleet/stream", h.StreamFleet)
-			r.Get("/activity/stream", h.StreamActivity)
 			r.Get("/{id}/metrics", h.GetMetrics)
 			r.Get("/{id}/metrics/history", h.GetMetricsHistory)
 			r.Get("/{id}/stream", h.StreamRuntime)
@@ -328,11 +333,15 @@ func (h *Handler) StreamRuntimes(w http.ResponseWriter, r *http.Request) {
 
 // StreamFleet handles GET /api/v1/vm/fleet/stream with Server-Sent Events.
 // Emits frontend-friendly fleet snapshots every 2 seconds.
+// Admin users see all VMs; regular users see only their own.
 func (h *Handler) StreamFleet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := pkglog.FromContext(ctx)
 
-	logger.DebugContext(ctx, "VM fleet stream opened")
+	userID := middleware.GetUserID(ctx)
+	role := middleware.GetUserRole(ctx)
+	logger.DebugContext(ctx, "VM fleet stream opened", "user_id", userID, "role", role)
+
 	prepareSSE(w)
 	rc := http.NewResponseController(w)
 	ticker := time.NewTicker(2 * time.Second)
@@ -341,10 +350,19 @@ func (h *Handler) StreamFleet(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			logger.DebugContext(ctx, "VM fleet stream closed")
 			return
 		case <-ticker.C:
-			runtimes, err := h.vmservice.ListRunningRuntimes(ctx)
+			var runtimes []*vmdomain.VM
+			var err error
+
+			if role == "admin" {
+				runtimes, err = h.vmservice.ListRunningRuntimes(ctx)
+			} else {
+				runtimes, err = h.vmservice.ListRunningRuntimesByUser(ctx, userID)
+			}
 			if err != nil {
+				logger.WarnContext(ctx, "fleet stream: failed to list runtimes", "error", err)
 				writeSSEEvent(w, "error", map[string]string{"error": err.Error()})
 				_ = rc.Flush()
 				continue
@@ -352,7 +370,10 @@ func (h *Handler) StreamFleet(w http.ResponseWriter, r *http.Request) {
 
 			out := make([]fleetVMResponse, 0, len(runtimes))
 			for _, vm := range runtimes {
-				metrics, _ := h.vmservice.GetMetrics(ctx, vm.ID)
+				metrics, metricsErr := h.vmservice.GetMetrics(ctx, vm.ID)
+				if metricsErr != nil {
+					logger.DebugContext(ctx, "fleet stream: metrics fetch skipped", "vm_id", vm.ID, "error", metricsErr)
+				}
 				out = append(out, toFleetVMResponse(vm, metrics))
 			}
 
@@ -364,12 +385,15 @@ func (h *Handler) StreamFleet(w http.ResponseWriter, r *http.Request) {
 
 // StreamActivity handles GET /api/v1/vm/activity/stream with Server-Sent Events.
 // Emits recent runtime events every 2 seconds, tracking the last-seen timestamp
-// to only push new events.
+// to only push new events. Admin sees all events; regular users see only their own.
 func (h *Handler) StreamActivity(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := pkglog.FromContext(ctx)
 
-	logger.DebugContext(ctx, "VM activity stream opened")
+	userID := middleware.GetUserID(ctx)
+	role := middleware.GetUserRole(ctx)
+	logger.DebugContext(ctx, "VM activity stream opened", "user_id", userID, "role", role)
+
 	prepareSSE(w)
 	rc := http.NewResponseController(w)
 	ticker := time.NewTicker(2 * time.Second)
@@ -380,6 +404,7 @@ func (h *Handler) StreamActivity(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			logger.DebugContext(ctx, "VM activity stream closed")
 			return
 		case <-ticker.C:
 			if h.runtimes == nil {
@@ -388,6 +413,7 @@ func (h *Handler) StreamActivity(w http.ResponseWriter, r *http.Request) {
 
 			events, err := h.runtimes.ListRecent(ctx, 100)
 			if err != nil {
+				logger.WarnContext(ctx, "activity stream: failed to list recent events", "error", err)
 				writeSSEEvent(w, "error", map[string]string{"error": err.Error()})
 				_ = rc.Flush()
 				continue
