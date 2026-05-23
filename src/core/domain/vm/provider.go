@@ -26,6 +26,12 @@ type CreateSpec struct {
 	// the provider creates stacked dm-snapshot devices to reconstruct the
 	// complete accumulated disk state at restore time.
 	CowChainPaths []string
+
+	// DiskImagePath is a self-contained full disk image from a flattened snapshot.
+	// When set, the provider uses this as the rootfs base with a fresh CoW on top,
+	// bypassing CoW chain reconstruction entirely. This is the new snapshot format
+	// produced after the flatten fix — each snapshot is independently restorable.
+	DiskImagePath string
 }
 
 // WorkspaceConfig captures persistent workspace provisioning for a VM.

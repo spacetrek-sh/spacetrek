@@ -245,6 +245,7 @@ func main() {
 	go vmService.StartIdleReaper(pkglog.WithLogger(ctx, logger), time.Minute)
 	go vmService.StartRuntimeReconciler(pkglog.WithLogger(ctx, logger), 30*time.Second)
 	go vmService.StartMetricsCollector(pkglog.WithLogger(ctx, logger), 10*time.Second)
+	go vmService.StartSnapshotGC(pkglog.WithLogger(ctx, logger), 24*time.Hour)
 
 	<-ctx.Done()
 	logger.Info("shutting down...")

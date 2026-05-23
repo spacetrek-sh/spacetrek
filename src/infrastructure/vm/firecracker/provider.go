@@ -432,32 +432,47 @@ func (p *Provider) CreateSnapshot(ctx context.Context, id string) (*vmdomain.Sna
 	}
 	vmInst.HasSnapshot = true
 
-	// Capture CoW delta if dm-snapshot is active for this VM.
+	// Capture full disk state through the dm device if dm-snapshot is active.
+	// This produces a self-contained "disk" file instead of just the delta CoW,
+	// so every snapshot is independently restorable regardless of GC.
 	var cowSize int64
 	var cowSrc string
 	if p.dmMgr != nil {
+		devPath := p.dmMgr.DevicePath(id)
+		diskDst := filepath.Join(snapDir, "disk")
+		vmDir := p.config.VMDir(id)
+		cowSrc = filepath.Join(vmDir, "cow.img")
+
+		// Read full disk state through the dm device BEFORE suspending it.
+		// Since the VM is currently paused (via CreateSnapshot above), the filesystem
+		// is quiescent and safe to read without dm-level suspension. Reading a suspended
+		// dm device causes a deadlock.
+		size, sizeErr := blockDeviceSize(devPath)
+		if sizeErr != nil {
+			_ = os.RemoveAll(snapDir)
+			return nil, fmt.Errorf("failed to get dm device size for full disk capture: %w", sizeErr)
+		}
+		if flattenErr := flattenDmDevice(devPath, diskDst, size); flattenErr != nil {
+			_ = os.RemoveAll(snapDir)
+			return nil, fmt.Errorf("failed to capture full disk state: %w", flattenErr)
+		}
+		if usage, err := actualDiskUsage(diskDst); err == nil {
+			cowSize = usage
+		}
+
+		// Now suspend the dm device to safely reset the CoW tracking.
 		if err := p.dmMgr.SuspendDevice(id); err != nil {
-			logger.Warn("failed to suspend dm device for snapshot", "vm_id", id, "error", err)
+			logger.Warn("failed to suspend dm device for cow reset", "vm_id", id, "error", err)
 		} else {
-			vmDir := p.config.VMDir(id)
-			cowSrc = filepath.Join(vmDir, "cow.img")
-			cowDst := filepath.Join(snapDir, "cow")
-			if _, err := os.Stat(cowSrc); err == nil {
-				if err := copySparseFile(cowSrc, cowDst); err != nil {
-					logger.Warn("failed to copy cow image for snapshot", "vm_id", id, "error", err)
-				} else if usage, err := actualDiskUsage(cowSrc); err == nil {
-					cowSize = usage
-				}
-			}
 			// Reset CoW while still suspended — reload swaps table in-place.
 			if cowSrc != "" {
 				if err := p.dmMgr.ResetCoW(id, cowSrc); err != nil {
 					logger.Warn("failed to reset cow after snapshot", "vm_id", id, "error", err)
 				}
 			}
-		}
-		if err := p.dmMgr.ResumeDevice(id); err != nil {
-			logger.Warn("failed to resume dm device after snapshot", "vm_id", id, "error", err)
+			if err := p.dmMgr.ResumeDevice(id); err != nil {
+				logger.Warn("failed to resume dm device after cow reset", "vm_id", id, "error", err)
+			}
 		}
 	}
 
@@ -497,7 +512,19 @@ func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.Create
 	vsockPath := p.config.VsockPath(vmID)
 
 	var drivePath string
-	if spec.Runtime.EnableDiffSnapshots {
+	if spec.DiskImagePath != "" {
+		// New format: self-contained full disk image from a flattened snapshot.
+		// Set up single-layer dm-snapshot with the disk image as read-only base
+		// + fresh CoW. No chain reconstruction needed.
+		cowPath := filepath.Join(vmDir, "cow.img")
+		dmDevPath, err := p.dmMgr.CreateCoWDevice(vmID, spec.DiskImagePath, cowPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to create dm device from disk image: %w", err)
+		}
+		drivePath = dmDevPath
+		logger.Info("Created dm-snapshot from full disk image",
+			"vm_id", vmID, "device", dmDevPath)
+	} else if spec.Runtime.EnableDiffSnapshots {
 		if len(spec.CowChainPaths) > 1 {
 			// Incremental restore — stack all cow files in the chain
 			// to reconstruct the complete accumulated disk state.
@@ -505,9 +532,20 @@ func (p *Provider) RestoreFromSnapshot(ctx context.Context, spec vmdomain.Create
 			if err != nil {
 				return "", fmt.Errorf("failed to reconstruct dm-snapshot chain device: %w", err)
 			}
-			drivePath = dmDevPath
 			logger.Info("Reconstructed dm-snapshot chain device for restore",
 				"vm_id", vmID, "device", dmDevPath, "layers", len(spec.CowChainPaths))
+
+			// Flatten the multi-layer chain into a single self-contained device.
+			// After this, the VM has no dependency on old CoW files and GC can
+			// safely delete old snapshots.
+			mergedPath := filepath.Join(vmDir, "merged.img")
+			flatDevPath, _, err := p.dmMgr.FlattenChainDevice(vmID, mergedPath)
+			if err != nil {
+				return "", fmt.Errorf("failed to flatten dm chain: %w", err)
+			}
+			drivePath = flatDevPath
+			logger.Info("Flattened dm-snapshot chain into single-layer device",
+				"vm_id", vmID, "device", flatDevPath)
 		} else {
 			// Single cow file (full snapshot restore).
 			cowPath := filepath.Join(vmDir, "cow.img")

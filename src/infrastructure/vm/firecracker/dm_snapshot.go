@@ -200,6 +200,75 @@ func (d *DmSnapshotManager) ReconstructChainDevice(vmID, baseImagePath string, c
 	return devicePath, nil
 }
 
+// FlattenChainDevice flattens a multi-layer dm-snapshot chain into a single-layer
+// device. It:
+//  1. Sparse-copies the full stacked device view into mergedPath
+//  2. Tears down the multi-layer dm device and loop devices
+//  3. Sets up a new single-layer dm-snapshot: mergedPath (ro) + fresh CoW
+//
+// The merged image is a raw disk image, NOT a dm-snapshot CoW format file.
+// It is loop-attached read-only via setupOriginLocked (which uses losetup --read-only)
+// to prevent dm-snapshot writes from corrupting it. A fresh empty CoW file captures
+// all new writes.
+//
+// After this call, the VM's disk state is fully self-contained — no dependency
+// on old CoW chain layers. Safe for GC to delete old snapshots.
+//
+// Returns the new device path (e.g. /dev/mapper/vm_<id>) and the path to the
+// fresh CoW file.
+func (d *DmSnapshotManager) FlattenChainDevice(vmID, mergedPath string) (dmPath string, cowPath string, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	info, ok := d.activeDevices[vmID]
+	if !ok {
+		return "", "", fmt.Errorf("no active dm device for vm %s", vmID)
+	}
+
+	stackedDevPath := info.dmPath
+
+	// 1. Get the logical size of the stacked device.
+	size, err := blockDeviceSize(stackedDevPath)
+	if err != nil {
+		return "", "", fmt.Errorf("get stacked device size: %w", err)
+	}
+
+	// 2. Sparse-copy the resolved disk view into merged.img.
+	if err := flattenDmDevice(stackedDevPath, mergedPath, size); err != nil {
+		return "", "", fmt.Errorf("flatten dm chain: %w", err)
+	}
+
+	// 3. Tear down the multi-layer device (dm remove + loop detach + refcount).
+	d.removeDeviceLocked(vmID)
+
+	// 4. Set up single-layer dm-snapshot: merged.img (read-only base) + fresh CoW.
+	//    setupOriginLocked attaches mergedPath with losetup --read-only, which is
+	//    critical — without it, writes would corrupt merged.img directly.
+	freshCowPath := filepath.Join(filepath.Dir(mergedPath), "cow.img")
+	devPath, err := d.createCowDeviceLocked(vmID, mergedPath, freshCowPath, false)
+	if err != nil {
+		return "", "", fmt.Errorf("create flattened dm device: %w", err)
+	}
+
+	slog.Info("dm-snapshot chain flattened into single-layer device",
+		"vm_id", vmID, "device", devPath, "merged", mergedPath)
+
+	return devPath, freshCowPath, nil
+}
+
+// DevicePath returns the /dev/mapper path for a VM's active dm-snapshot device.
+// Returns empty string if no device is active for the VM.
+func (d *DmSnapshotManager) DevicePath(vmID string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	info, ok := d.activeDevices[vmID]
+	if !ok {
+		return ""
+	}
+	return info.dmPath
+}
+
 // cleanupChainLayers tears down intermediate layers in reverse order.
 // Used during error recovery in ReconstructChainDevice.
 func (d *DmSnapshotManager) cleanupChainLayers(layers []layerInfo) {
@@ -214,7 +283,12 @@ func (d *DmSnapshotManager) cleanupChainLayers(layers []layerInfo) {
 func (d *DmSnapshotManager) createCowDevice(vmID, baseImagePath, cowImagePath string, reuseExistingCow bool) (string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.createCowDeviceLocked(vmID, baseImagePath, cowImagePath, reuseExistingCow)
+}
 
+// createCowDeviceLocked is the inner implementation of createCowDevice.
+// Must be called with d.mu held.
+func (d *DmSnapshotManager) createCowDeviceLocked(vmID, baseImagePath, cowImagePath string, reuseExistingCow bool) (string, error) {
 	if info, ok := d.activeDevices[vmID]; ok {
 		if _, err := os.Stat(info.dmPath); err == nil {
 			return info.dmPath, nil
@@ -301,7 +375,13 @@ func (d *DmSnapshotManager) ResumeDevice(vmID string) error {
 func (d *DmSnapshotManager) RemoveDevice(vmID string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.removeDeviceLocked(vmID)
+	return nil
+}
 
+// removeDeviceLocked is the inner implementation of RemoveDevice.
+// Must be called with d.mu held. Used by both RemoveDevice and FlattenChainDevice.
+func (d *DmSnapshotManager) removeDeviceLocked(vmID string) {
 	dmName := dmNameForVM(vmID)
 
 	// Remove the main (top-level) dm device first.
@@ -311,7 +391,7 @@ func (d *DmSnapshotManager) RemoveDevice(vmID string) error {
 
 	info, ok := d.activeDevices[vmID]
 	if !ok {
-		return nil
+		return
 	}
 
 	// Detach the top-level cow loop device.
@@ -338,7 +418,6 @@ func (d *DmSnapshotManager) RemoveDevice(vmID string) error {
 			delete(d.baseLoopDevs, info.baseImagePath)
 		}
 	}
-	return nil
 }
 
 // CleanupOrphans removes stale dm devices left from a previous crash.

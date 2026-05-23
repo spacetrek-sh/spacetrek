@@ -318,6 +318,56 @@ func (s *Service) reconcileRuntimeStates(ctx context.Context) {
 	}
 }
 
+// StartSnapshotGC runs a periodic background job that deletes snapshots
+// belonging to terminated VMs (orphan safety net).
+func (s *Service) StartSnapshotGC(ctx context.Context, interval time.Duration) {
+	logger := pkglog.FromContext(ctx)
+	if s.snapRepo == nil {
+		logger.InfoContext(ctx, "snapshot GC skipped: no snapshot repository configured")
+		return
+	}
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	logger.InfoContext(ctx, "snapshot GC started", "interval", interval.String())
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.InfoContext(ctx, "snapshot GC stopped")
+			return
+		case <-ticker.C:
+			s.gcOrphanedSnapshots(ctx)
+		}
+	}
+}
+
+func (s *Service) gcOrphanedSnapshots(ctx context.Context) {
+	logger := pkglog.FromContext(ctx)
+
+	orphans, err := s.snapRepo.ListOrphaned(ctx, time.Hour)
+	if err != nil {
+		logger.WarnContext(ctx, "snapshot GC: failed to list orphaned snapshots", "error", err)
+		return
+	}
+
+	if len(orphans) == 0 {
+		return
+	}
+
+	logger.InfoContext(ctx, "snapshot GC: cleaning orphaned snapshots", "count", len(orphans))
+	for _, snap := range orphans {
+		if err := s.DeleteSnapshot(ctx, snap.ID); err != nil {
+			logger.WarnContext(ctx, "snapshot GC: failed to delete orphaned snapshot",
+				"snapshot_id", snap.ID, "vm_id", snap.VMID, "error", err)
+		}
+	}
+}
+
 func (s *Service) reapIdleVMs(ctx context.Context) {
 	logger := pkglog.FromContext(ctx)
 	now := time.Now().UTC()
@@ -1284,7 +1334,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Sn
 		// Compress snapshot files with zstd before upload.
 		// This collapses sparse file zero-holes (CoW) and compresses
 		// memory data, dramatically reducing S3 transfer and storage.
-		snapshotFiles := []string{"memory", "state", "cow"}
+		snapshotFiles := []string{"memory", "state", "disk"}
 		var files []ports.SnapshotFile
 		for _, name := range snapshotFiles {
 			localPath := filepath.Join(snapDir, name)
@@ -1358,6 +1408,27 @@ func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Sn
 	}
 
 	logger.InfoContext(ctx, "VM snapshot created", "vm_id", vmID, "snapshot_id", snap.ID, "size_bytes", sizeBytes)
+
+	// GC: delete all previous snapshots for this VM, keep only the latest.
+	go func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		previous, err := s.snapRepo.GetByVMID(cleanupCtx, vmID)
+		if err != nil {
+			return
+		}
+		for _, old := range previous {
+			if old.ID == snap.ID {
+				continue
+			}
+			if err := s.DeleteSnapshot(cleanupCtx, old.ID); err != nil {
+				logger.WarnContext(cleanupCtx, "snapshot GC: failed to delete old snapshot",
+					"snapshot_id", old.ID, "error", err)
+			}
+		}
+	}()
+
 	return snap, nil
 }
 
@@ -1477,8 +1548,23 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 			compressed bool
 		}
 		entries := []dlEntry{{name: "memory"}, {name: "state"}}
+
+		// Check for new-format full disk image first, fall back to CoW delta.
+		// The new format (disk.zst) is self-contained — no chain reconstruction needed.
+		var hasDiskImage bool
 		if meta.DiffSnapshots {
-			entries = append(entries, dlEntry{name: "cow"})
+			diskZstKey := snap.SnapshotPath + "/disk.zst"
+			diskRawKey := snap.SnapshotPath + "/disk"
+			if exists, _ := s.snapshotStore.ObjectExists(ctx, diskZstKey); exists {
+				entries = append(entries, dlEntry{name: "disk"})
+				hasDiskImage = true
+			} else if exists, _ := s.snapshotStore.ObjectExists(ctx, diskRawKey); exists {
+				entries = append(entries, dlEntry{name: "disk"})
+				hasDiskImage = true
+			} else {
+				// Legacy format: CoW delta only.
+				entries = append(entries, dlEntry{name: "cow"})
+			}
 		}
 		// For incremental snapshots, also download the memory manifest.
 		if snap.IsIncremental() && baseSnap != nil {
@@ -1510,13 +1596,17 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 		}
 		downloadMs = time.Since(restoreStart).Milliseconds()
 
-		// Decompress .zst files after download. Cow goes to VM dir, not tmpDir.
+		// Decompress .zst files after download.
+		// Disk and cow go to VM dir, not tmpDir.
+		vmDir := filepath.Join("/var/lib/firecracker/vms", vmID)
 		for _, e := range entries {
 			if e.compressed {
 				zstPath := filepath.Join(tmpDir, e.name+".zst")
 				rawPath := filepath.Join(tmpDir, e.name)
 				if e.name == "cow" {
-					rawPath = filepath.Join("/var/lib/firecracker/vms", vmID, "cow.img")
+					rawPath = filepath.Join(vmDir, "cow.img")
+				} else if e.name == "disk" {
+					rawPath = filepath.Join(vmDir, "disk.img")
 				}
 				if err := fcutil.DecompressFileZstd(zstPath, rawPath); err != nil {
 					os.RemoveAll(tmpDir)
@@ -1525,16 +1615,35 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 				_ = os.Remove(zstPath)
 			} else if e.name == "cow" {
 				src := filepath.Join(tmpDir, "cow")
-				dst := filepath.Join("/var/lib/firecracker/vms", vmID, "cow.img")
+				dst := filepath.Join(vmDir, "cow.img")
 				if err := os.Rename(src, dst); err != nil {
 					return nil, exception.Internal(fmt.Errorf("failed to move cow to vm dir: %w", err))
+				}
+			} else if e.name == "disk" {
+				src := filepath.Join(tmpDir, "disk")
+				dst := filepath.Join(vmDir, "disk.img")
+				if err := os.Rename(src, dst); err != nil {
+					return nil, exception.Internal(fmt.Errorf("failed to move disk image to vm dir: %w", err))
 				}
 			}
 		}
 
-		// If incremental, download base memory and merge dirty regions,
-		// and download the base snapshot's cow for disk chain reconstruction.
+		// Handle disk image vs CoW chain for restore.
+		// Disk and memory are independent: disk can use the self-contained
+		// disk.img while memory still needs incremental merging.
+		if hasDiskImage {
+			// New format: self-contained full disk image.
+			// Set DiskImagePath so the provider uses it directly with a fresh CoW.
+			spec.DiskImagePath = filepath.Join(vmDir, "disk.img")
+			spec.Runtime.EnableDiffSnapshots = true
+			logger.InfoContext(ctx, "using full disk image for restore (no chain reconstruction)",
+				"vm_id", vmID, "disk_image", spec.DiskImagePath)
+		}
+
+		// Incremental memory merge: regardless of disk format, an incremental
+		// snapshot has only diff memory pages that must be merged onto the base.
 		if snap.IsIncremental() && baseSnap != nil {
+			// Download base memory and merge diff regions onto it.
 			baseMemoryDir := filepath.Join(tmpDir, "base")
 			if err := os.MkdirAll(baseMemoryDir, 0755); err != nil {
 				return nil, exception.Internal(fmt.Errorf("create base snapshot dir: %w", err))
@@ -1543,21 +1652,29 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 			baseRawKey := baseSnap.SnapshotPath + "/memory"
 			baseZstLocal := filepath.Join(baseMemoryDir, "memory.zst")
 			baseRawLocal := filepath.Join(baseMemoryDir, "memory")
+			baseDownloaded := false
 			if exists, _ := s.snapshotStore.ObjectExists(ctx, baseZstKey); exists {
 				if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
 					{Key: baseZstKey, LocalPath: baseZstLocal},
 				}); err != nil {
-					return nil, exception.Internal(fmt.Errorf("download base memory: %w", err))
+					logger.WarnContext(ctx, "download base memory.zst failed, base S3 files may have been GC'd",
+						"vm_id", vmID, "error", err)
+				} else if err := fcutil.DecompressFileZstd(baseZstLocal, baseRawLocal); err != nil {
+					logger.WarnContext(ctx, "decompress base memory failed",
+						"vm_id", vmID, "error", err)
+				} else {
+					_ = os.Remove(baseZstLocal)
+					baseDownloaded = true
 				}
-				if err := fcutil.DecompressFileZstd(baseZstLocal, baseRawLocal); err != nil {
-					return nil, exception.Internal(fmt.Errorf("decompress base memory: %w", err))
-				}
-				_ = os.Remove(baseZstLocal)
-			} else {
+			}
+			if !baseDownloaded {
 				if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
 					{Key: baseRawKey, LocalPath: baseRawLocal},
 				}); err != nil {
-					return nil, exception.Internal(fmt.Errorf("download base memory (raw): %w", err))
+					logger.WarnContext(ctx, "base snapshot memory missing from storage (GC race); falling back to new VM",
+						"vm_id", vmID, "base_snapshot_id", baseSnap.ID, "error", err)
+					return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+						vm.WorkspaceSizeGB, nil, nil, nil)
 				}
 			}
 			manifestPath := filepath.Join(tmpDir, "memory.manifest")
@@ -1584,44 +1701,42 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 			spec.RestoreAsFull = true
 			logger.InfoContext(ctx, "memory chain merge complete", "vm_id", vmID)
 
-			// Download the base (full) snapshot's cow file for disk chain
-			// reconstruction. The incremental cow is already at cow.img;
-			// rename it to cow_incr.img so we can place the base cow at
-			// cow_full.img without conflict.
-			vmDir := filepath.Join("/var/lib/firecracker/vms", vmID)
-			cowIncrPath := filepath.Join(vmDir, "cow_incr.img")
-			cowCurrentPath := filepath.Join(vmDir, "cow.img")
-			if _, statErr := os.Stat(cowCurrentPath); statErr == nil {
-				if renameErr := os.Rename(cowCurrentPath, cowIncrPath); renameErr != nil {
-					return nil, exception.Internal(fmt.Errorf("rename incremental cow: %w", renameErr))
+			// For legacy format (no disk.img), also reconstruct the CoW chain.
+			if !hasDiskImage {
+				cowIncrPath := filepath.Join(vmDir, "cow_incr.img")
+				cowCurrentPath := filepath.Join(vmDir, "cow.img")
+				if _, statErr := os.Stat(cowCurrentPath); statErr == nil {
+					if renameErr := os.Rename(cowCurrentPath, cowIncrPath); renameErr != nil {
+						return nil, exception.Internal(fmt.Errorf("rename incremental cow: %w", renameErr))
+					}
 				}
-			}
 
-			cowFullPath := filepath.Join(vmDir, "cow_full.img")
-			baseCowZstKey := baseSnap.SnapshotPath + "/cow.zst"
-			baseCowRawKey := baseSnap.SnapshotPath + "/cow"
-			baseCowZstLocal := filepath.Join(baseMemoryDir, "cow.zst")
-			if exists, _ := s.snapshotStore.ObjectExists(ctx, baseCowZstKey); exists {
-				if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
-					{Key: baseCowZstKey, LocalPath: baseCowZstLocal},
-				}); err != nil {
-					return nil, exception.Internal(fmt.Errorf("download base cow: %w", err))
+				cowFullPath := filepath.Join(vmDir, "cow_full.img")
+				baseCowZstKey := baseSnap.SnapshotPath + "/cow.zst"
+				baseCowRawKey := baseSnap.SnapshotPath + "/cow"
+				baseCowZstLocal := filepath.Join(baseMemoryDir, "cow.zst")
+				if exists, _ := s.snapshotStore.ObjectExists(ctx, baseCowZstKey); exists {
+					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+						{Key: baseCowZstKey, LocalPath: baseCowZstLocal},
+					}); err != nil {
+						return nil, exception.Internal(fmt.Errorf("download base cow: %w", err))
+					}
+					if err := fcutil.DecompressFileZstd(baseCowZstLocal, cowFullPath); err != nil {
+						return nil, exception.Internal(fmt.Errorf("decompress base cow: %w", err))
+					}
+					_ = os.Remove(baseCowZstLocal)
+				} else {
+					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+						{Key: baseCowRawKey, LocalPath: cowFullPath},
+					}); err != nil {
+						return nil, exception.Internal(fmt.Errorf("download base cow (raw): %w", err))
+					}
 				}
-				if err := fcutil.DecompressFileZstd(baseCowZstLocal, cowFullPath); err != nil {
-					return nil, exception.Internal(fmt.Errorf("decompress base cow: %w", err))
-				}
-				_ = os.Remove(baseCowZstLocal)
-			} else {
-				if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
-					{Key: baseCowRawKey, LocalPath: cowFullPath},
-				}); err != nil {
-					return nil, exception.Internal(fmt.Errorf("download base cow (raw): %w", err))
-				}
-			}
 
-			spec.CowChainPaths = []string{cowFullPath, cowIncrPath}
-			logger.InfoContext(ctx, "cow chain prepared for restore",
-				"vm_id", vmID, "full_cow", cowFullPath, "incr_cow", cowIncrPath)
+				spec.CowChainPaths = []string{cowFullPath, cowIncrPath}
+				logger.InfoContext(ctx, "cow chain prepared for restore",
+					"vm_id", vmID, "full_cow", cowFullPath, "incr_cow", cowIncrPath)
+			}
 		}
 
 		defer os.RemoveAll(tmpDir)
@@ -1692,6 +1807,17 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 	}
 
 	logger.InfoContext(ctx, "VM restored from snapshot", "vm_id", vmID, "chat_id", chatID, "snapshot_id", snap.ID)
+
+	// GC: delete all snapshots for this VM after successful resume.
+	go func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.deleteAllSnapshots(cleanupCtx, vmID); err != nil {
+			logger.WarnContext(cleanupCtx, "snapshot GC after resume failed",
+				"vm_id", vmID, "error", err)
+		}
+	}()
+
 	return assignedVM, nil
 }
 
@@ -2146,21 +2272,30 @@ func (s *Service) deleteAllSnapshots(ctx context.Context, vmID string) error {
 	if s.snapRepo == nil {
 		return nil
 	}
-	
-	snaps, err := s.snapRepo.GetByVMID(ctx, vmID)
-	if err != nil {
-		return err
-	}
 
-	// Delete in reverse order to respect simple dependencies (incremental after full)
-	for i := len(snaps) - 1; i >= 0; i-- {
-		snap := snaps[i]
-		if s.snapshotStore != nil {
-			sPrefix := fmt.Sprintf("snapshots/%s/%s", vmID, snap.ID)
-			_ = s.snapshotStore.DeletePrefix(ctx, sPrefix)
+	// Re-read the list each iteration so we notice snapshots created
+	// concurrently (e.g. auto-snapshot on stop) that would make a
+	// parent undeletable.  DeleteSnapshot checks for children before
+	// removing S3 files, so a parent with new children is kept intact.
+	for {
+		snaps, err := s.snapRepo.GetByVMID(ctx, vmID)
+		if err != nil {
+			return err
 		}
-		_ = s.snapRepo.Delete(ctx, snap.ID)
-	}
+		if len(snaps) == 0 {
+			return nil
+		}
 
-	return nil
+		deleted := false
+		for i := len(snaps) - 1; i >= 0; i-- {
+			if derr := s.DeleteSnapshot(ctx, snaps[i].ID); derr != nil {
+				continue // has children or other conflict — skip
+			}
+			deleted = true
+		}
+		if !deleted {
+			// Every remaining snapshot has children; nothing more to do.
+			return nil
+		}
+	}
 }

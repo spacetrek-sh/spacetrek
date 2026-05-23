@@ -102,6 +102,13 @@ func (s *Snapshot) CowFilePath() string {
 	return s.SnapshotPath + "/cow"
 }
 
+// DiskFilePath returns the key/path to the full disk image within the snapshot prefix.
+// Used by the new self-contained snapshot format where the entire disk state is
+// captured (not just the CoW delta), making each snapshot independently restorable.
+func (s *Snapshot) DiskFilePath() string {
+	return s.SnapshotPath + "/disk"
+}
+
 // ManifestFilePath returns the key/path to the memory manifest within the snapshot prefix.
 func (s *Snapshot) ManifestFilePath() string {
 	return s.SnapshotPath + "/memory.manifest"
