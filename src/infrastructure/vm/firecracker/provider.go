@@ -383,7 +383,7 @@ func (p *Provider) Stop(ctx context.Context, id string) error {
 
 // CreateSnapshot pauses the VM, creates a snapshot, captures CoW delta if applicable, and resumes.
 // Returns the snapshot directory path and combined file size.
-func (p *Provider) CreateSnapshot(ctx context.Context, id string) (*vmdomain.SnapshotResult, error) {
+func (p *Provider) CreateSnapshot(ctx context.Context, id string, opts vmdomain.SnapshotOptions) (*vmdomain.SnapshotResult, error) {
 	logger := pkglog.FromContext(ctx)
 
 	p.mu.RLock()
@@ -432,43 +432,45 @@ func (p *Provider) CreateSnapshot(ctx context.Context, id string) (*vmdomain.Sna
 	}
 	vmInst.HasSnapshot = true
 
-	// Capture full disk state through the dm device if dm-snapshot is active.
-	// This produces a self-contained "disk" file instead of just the delta CoW,
-	// so every snapshot is independently restorable regardless of GC.
-	var cowSize int64
-	var cowSrc string
+	// Capture disk state through the dm device if dm-snapshot is active.
+	var cowSize, diskSize int64
 	if p.dmMgr != nil {
-		devPath := p.dmMgr.DevicePath(id)
-		diskDst := filepath.Join(snapDir, "disk")
 		vmDir := p.config.VMDir(id)
-		cowSrc = filepath.Join(vmDir, "cow.img")
+		cowSrc := filepath.Join(vmDir, "cow.img")
+		cowDst := filepath.Join(snapDir, "cow")
 
-		// Read full disk state through the dm device BEFORE suspending it.
-		// Since the VM is currently paused (via CreateSnapshot above), the filesystem
-		// is quiescent and safe to read without dm-level suspension. Reading a suspended
-		// dm device causes a deadlock.
-		size, sizeErr := blockDeviceSize(devPath)
-		if sizeErr != nil {
-			_ = os.RemoveAll(snapDir)
-			return nil, fmt.Errorf("failed to get dm device size for full disk capture: %w", sizeErr)
+		if opts.FullDisk {
+			// Full path — flatten the dm device into a self-contained disk image.
+			// Must happen BEFORE suspending the dm device (reading a suspended device deadlocks).
+			devPath := p.dmMgr.DevicePath(id)
+			diskDst := filepath.Join(snapDir, "disk")
+			size, sizeErr := blockDeviceSize(devPath)
+			if sizeErr != nil {
+				_ = os.RemoveAll(snapDir)
+				return nil, fmt.Errorf("failed to get dm device size for full disk capture: %w", sizeErr)
+			}
+			if flattenErr := flattenDmDevice(devPath, diskDst, size); flattenErr != nil {
+				_ = os.RemoveAll(snapDir)
+				return nil, fmt.Errorf("failed to capture full disk state: %w", flattenErr)
+			}
+			if usage, err := actualDiskUsage(diskDst); err == nil {
+				diskSize = usage
+			}
 		}
-		if flattenErr := flattenDmDevice(devPath, diskDst, size); flattenErr != nil {
-			_ = os.RemoveAll(snapDir)
-			return nil, fmt.Errorf("failed to capture full disk state: %w", flattenErr)
-		}
-		if usage, err := actualDiskUsage(diskDst); err == nil {
+
+		// Always copy the cow file (needed for incremental chains even on full snapshots).
+		if err := copySparseFile(cowSrc, cowDst); err != nil {
+			logger.Warn("failed to copy cow for snapshot", "vm_id", id, "error", err)
+		} else if usage, err := actualDiskUsage(cowSrc); err == nil {
 			cowSize = usage
 		}
 
-		// Now suspend the dm device to safely reset the CoW tracking.
+		// Suspend → ResetCoW → Resume (always).
 		if err := p.dmMgr.SuspendDevice(id); err != nil {
 			logger.Warn("failed to suspend dm device for cow reset", "vm_id", id, "error", err)
 		} else {
-			// Reset CoW while still suspended — reload swaps table in-place.
-			if cowSrc != "" {
-				if err := p.dmMgr.ResetCoW(id, cowSrc); err != nil {
-					logger.Warn("failed to reset cow after snapshot", "vm_id", id, "error", err)
-				}
+			if err := p.dmMgr.ResetCoW(id, cowSrc); err != nil {
+				logger.Warn("failed to reset cow after snapshot", "vm_id", id, "error", err)
 			}
 			if err := p.dmMgr.ResumeDevice(id); err != nil {
 				logger.Warn("failed to resume dm device after cow reset", "vm_id", id, "error", err)
@@ -482,8 +484,6 @@ func (p *Provider) CreateSnapshot(ctx context.Context, id string) (*vmdomain.Sna
 	}
 
 	// Compute total size using actual disk usage (not logical size).
-	// Diff snapshots produce sparse memory files; fi.Size() would
-	// report the full guest RAM size regardless of actual dirty pages.
 	var memSize int64
 	if usage, err := actualDiskUsage(memFile); err == nil {
 		memSize = usage
@@ -493,6 +493,7 @@ func (p *Provider) CreateSnapshot(ctx context.Context, id string) (*vmdomain.Sna
 		SnapshotDir:     snapDir,
 		MemoryBytes:     memSize,
 		CowBytes:        cowSize,
+		DiskBytes:       diskSize,
 		PauseDurationMs: pauseDuration,
 	}, nil
 }

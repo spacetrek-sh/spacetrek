@@ -25,6 +25,9 @@ vm:
   max_lifetime: 1h
   auto_snapshot: true
   resume_grace: 2m
+  disk_mode: self_contained   # "full" | "self_contained" | "incremental"
+  max_chain_length: 5
+  max_chain_age_minutes: 120
   firecracker:
     binary_path: firecracker
     kernel_path: /usr/share/firecracker/vmlinux

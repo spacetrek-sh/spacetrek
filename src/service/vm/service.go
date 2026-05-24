@@ -50,6 +50,7 @@ type Service struct {
 	idleTimeout   time.Duration
 	autoSnapshot  bool
 	resumeGrace   time.Duration
+	snapDiskCfg   SnapshotDiskConfig
 
 	// metricsCache holds the latest collected metrics per VM.
 	// Written by collectAndPersistMetrics, read by SSE handlers via GetCachedMetrics.
@@ -63,6 +64,13 @@ type NetworkConfig struct {
 	Subnet     string
 	GatewayIP  string
 	DNSIP      string
+}
+
+// SnapshotDiskConfig controls disk snapshot behavior (full/self_contained/incremental).
+type SnapshotDiskConfig struct {
+	DiskMode           string // "full" | "self_contained" | "incremental"
+	MaxChainLength     int
+	MaxChainAgeMinutes int
 }
 
 // IPAllocator manages IP address allocation from a configured range.
@@ -141,12 +149,21 @@ type EnvironmentRepository interface {
 }
 
 // NewService creates a new VM service.
-func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRepository, backend vmdomain.Backend, envRepo EnvironmentRepository, snapRepo snapshot.Repository, snapMetricsRepo snapshot.MetricsRepository, snapshotStore ports.SnapshotStore, idleTimeout time.Duration, autoSnapshot bool, resumeGrace time.Duration, networkCfg NetworkConfig, ipAllocator *IPAllocator) *Service {
+func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRepository, backend vmdomain.Backend, envRepo EnvironmentRepository, snapRepo snapshot.Repository, snapMetricsRepo snapshot.MetricsRepository, snapshotStore ports.SnapshotStore, idleTimeout time.Duration, autoSnapshot bool, resumeGrace time.Duration, networkCfg NetworkConfig, ipAllocator *IPAllocator, snapDiskCfg SnapshotDiskConfig) *Service {
 	if idleTimeout <= 0 {
 		idleTimeout = 5 * time.Minute
 	}
 	if resumeGrace <= 0 {
 		resumeGrace = 2 * time.Minute
+	}
+	if snapDiskCfg.DiskMode == "" {
+		snapDiskCfg.DiskMode = "self_contained"
+	}
+	if snapDiskCfg.MaxChainLength <= 0 {
+		snapDiskCfg.MaxChainLength = 5
+	}
+	if snapDiskCfg.MaxChainAgeMinutes <= 0 {
+		snapDiskCfg.MaxChainAgeMinutes = 120
 	}
 
 	return &Service{
@@ -162,6 +179,7 @@ func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRep
 		idleTimeout:   idleTimeout,
 		autoSnapshot:  autoSnapshot,
 		resumeGrace:   resumeGrace,
+		snapDiskCfg:   snapDiskCfg,
 		metricsCache:  make(map[string]vmdomain.Metrics),
 	}
 }
@@ -1249,7 +1267,7 @@ func logPreview(text string, limit int) string {
 	return normalized[:limit] + "...(truncated)"
 }
 
-// CreateSnapshot creates a full snapshot of the running VM.
+// CreateSnapshot creates a snapshot of the running VM.
 // The VM remains running after the snapshot is taken.
 func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Snapshot, error) {
 	logger := pkglog.FromContext(ctx)
@@ -1268,21 +1286,28 @@ func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Sn
 		return nil, exception.NotFound("environment", vm.EnvironmentID)
 	}
 
-	// Determine snapshot type: incremental if a full snapshot exists and diff snapshots enabled.
+	// Determine snapshot type: incremental if any previous snapshot exists and diff snapshots enabled.
 	snapType := snapshot.TypeFull
 	var parentID *string
 	diffEnabled := vm.DiffSnapshotsEnabled
 
 	if diffEnabled {
-		existingFull, fullErr := s.snapRepo.GetLatestFull(ctx, vmID)
-		if fullErr == nil && existingFull != nil {
+		previousSnap, prevErr := s.snapRepo.GetLatestByVMID(ctx, vmID)
+		if prevErr == nil && previousSnap != nil {
 			snapType = snapshot.TypeIncremental
-			parentID = &existingFull.ID
-			logger.InfoContext(ctx, "incremental snapshot: found base full snapshot", "vm_id", vmID, "base_snapshot_id", existingFull.ID)
+			parentID = &previousSnap.ID
+			logger.InfoContext(ctx, "incremental snapshot: found previous snapshot",
+				"vm_id", vmID, "parent_snapshot_id", previousSnap.ID)
 		} else {
-			// First snapshot is always full, subsequent ones will be incremental.
-			logger.InfoContext(ctx, "no existing full snapshot, creating initial full snapshot", "vm_id", vmID)
+			logger.InfoContext(ctx, "no existing snapshot, creating initial full snapshot", "vm_id", vmID)
 		}
+	}
+
+	// Decide disk snapshot strategy based on config mode.
+	fullDisk := s.shouldCreateFullDisk(ctx, vmID)
+	diskType := s.snapDiskCfg.DiskMode
+	if s.snapDiskCfg.DiskMode == "incremental" && fullDisk {
+		diskType = "full" // compaction triggered
 	}
 
 	// Build metadata capturing the VM spec at snapshot time.
@@ -1292,31 +1317,39 @@ func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Sn
 	}
 	guestPort := uint32(10789) // default guest agent port
 	meta := snapshot.SnapshotMetadata{
-		EnvironmentID: vm.EnvironmentID,
-		ImagePath:     env.ImagePath,
-		VCPU:          vm.GetVCPU(env.GetVCPU()),
-		MemoryMB:      vm.GetMemoryMB(env.GetMemoryMB()),
-		DiskMB:        vm.GetDiskMB(env.GetDiskMB()),
-		GuestCID:      guestCID,
-		GuestPort:     guestPort,
-		RootfsPath:    filepath.Join("/var/lib/firecracker/vms", vm.ID, "rootfs.ext4"),
-		DiffSnapshots: diffEnabled,
-		BaseImagePath: env.ImagePath,
+		EnvironmentID:   vm.EnvironmentID,
+		ImagePath:       env.ImagePath,
+		VCPU:            vm.GetVCPU(env.GetVCPU()),
+		MemoryMB:        vm.GetMemoryMB(env.GetMemoryMB()),
+		DiskMB:          vm.GetDiskMB(env.GetDiskMB()),
+		GuestCID:        guestCID,
+		GuestPort:       guestPort,
+		RootfsPath:      filepath.Join("/var/lib/firecracker/vms", vm.ID, "rootfs.ext4"),
+		DiffSnapshots:   diffEnabled,
+		BaseImagePath:   env.ImagePath,
+		DiskSnapshotType: diskType,
+		DiskChainLength:  s.resolveChainLength(ctx, vmID, diskType),
 	}
 	if parentID != nil {
-		meta.BaseSnapshotID = *parentID
+		// BaseSnapshotID tracks the chain root (full snapshot) for memory merge.
+		// Walk up to find it, or use the parent if it's a full.
+		if baseFull, fullErr := s.snapRepo.GetLatestFull(ctx, vmID); fullErr == nil && baseFull != nil {
+			meta.BaseSnapshotID = baseFull.ID
+		} else {
+			meta.BaseSnapshotID = *parentID
+		}
 	}
 	metaJSON, _ := json.Marshal(meta)
 
-	// Call backend to create the snapshot.
-	snapResult, err := s.backend.CreateSnapshot(ctx, vmID)
+	// Call backend to create the snapshot with the appropriate disk strategy.
+	snapResult, err := s.backend.CreateSnapshot(ctx, vmID, vmdomain.SnapshotOptions{FullDisk: fullDisk})
 	if err != nil {
 		logger.ErrorContext(ctx, "backend snapshot failed", "vm_id", vmID, "error", err)
 		return nil, exception.Internal(err)
 	}
 
 	snapDir := snapResult.SnapshotDir
-	sizeBytes := snapResult.MemoryBytes + snapResult.CowBytes // rough total for record
+	sizeBytes := snapResult.MemoryBytes + snapResult.CowBytes + snapResult.DiskBytes
 
 	snap := snapshot.New(snapshot.CreateParams{
 		VMID:             vmID,
@@ -1331,15 +1364,20 @@ func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Sn
 	if s.snapshotStore != nil {
 		s3Prefix := fmt.Sprintf("snapshots/%s/%s", vmID, snap.ID)
 
-		// Compress snapshot files with zstd before upload.
-		// This collapses sparse file zero-holes (CoW) and compresses
-		// memory data, dramatically reducing S3 transfer and storage.
-		snapshotFiles := []string{"memory", "state", "disk"}
+		// Choose which disk file to upload based on disk type.
+		snapshotFiles := []string{"memory", "state"}
+		switch diskType {
+		case "full", "self_contained", "":
+			snapshotFiles = append(snapshotFiles, "disk")
+		case "incremental":
+			snapshotFiles = append(snapshotFiles, "cow")
+		}
+
 		var files []ports.SnapshotFile
 		for _, name := range snapshotFiles {
 			localPath := filepath.Join(snapDir, name)
 			if _, err := os.Stat(localPath); err != nil {
-				continue // file doesn't exist (e.g. cow when dm-snapshot is off)
+				continue
 			}
 
 			// For incremental snapshots, extract sparse regions from the
@@ -1385,7 +1423,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Sn
 			_ = os.RemoveAll(snapDir)
 			snap.SnapshotPath = s3Prefix
 			snap.SizeBytes = uploaded
-			logger.InfoContext(ctx, "snapshot uploaded to storage", "snapshot_id", snap.ID, "s3_prefix", s3Prefix, "bytes", uploaded)
+			logger.InfoContext(ctx, "snapshot uploaded to storage", "snapshot_id", snap.ID, "s3_prefix", s3Prefix, "bytes", uploaded, "disk_type", diskType)
 		}
 	}
 
@@ -1401,35 +1439,155 @@ func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Sn
 		PauseDurationMs: snapResult.PauseDurationMs,
 		MemoryBytes:     snapResult.MemoryBytes,
 		CowBytes:        snapResult.CowBytes,
+		DiskBytes:       snapResult.DiskBytes,
 		CreatedAt:       time.Now().UTC(),
 	}
 	if err := s.snapMetricsRepo.Insert(ctx, metrics); err != nil {
 		logger.WarnContext(ctx, "failed to persist snapshot metrics", "vm_id", vmID, "error", err)
 	}
 
-	logger.InfoContext(ctx, "VM snapshot created", "vm_id", vmID, "snapshot_id", snap.ID, "size_bytes", sizeBytes)
+	logger.InfoContext(ctx, "VM snapshot created", "vm_id", vmID, "snapshot_id", snap.ID, "size_bytes", sizeBytes, "disk_type", diskType)
 
-	// GC: delete all previous snapshots for this VM, keep only the latest.
+	// Chain-aware GC.
 	go func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-
-		previous, err := s.snapRepo.GetByVMID(cleanupCtx, vmID)
-		if err != nil {
-			return
-		}
-		for _, old := range previous {
-			if old.ID == snap.ID {
-				continue
-			}
-			if err := s.DeleteSnapshot(cleanupCtx, old.ID); err != nil {
-				logger.WarnContext(cleanupCtx, "snapshot GC: failed to delete old snapshot",
-					"snapshot_id", old.ID, "error", err)
-			}
-		}
+		s.snapshotGC(cleanupCtx, vmID, snap.ID)
 	}()
 
 	return snap, nil
+}
+
+// shouldCreateFullDisk decides whether to flatten the full disk or just copy the cow delta.
+func (s *Service) shouldCreateFullDisk(ctx context.Context, vmID string) bool {
+	switch s.snapDiskCfg.DiskMode {
+	case "full", "self_contained", "":
+		return true
+	case "incremental":
+		// Check chain policy.
+		previous, err := s.snapRepo.GetLatestByVMID(ctx, vmID)
+		if err != nil || previous == nil {
+			return true // no previous snapshot → first → full
+		}
+		meta, err := previous.ParseMetadata()
+		if err != nil || meta == nil {
+			return true
+		}
+		if meta.DiskChainLength+1 >= s.snapDiskCfg.MaxChainLength {
+			return true // next snapshot would exceed max chain depth
+		}
+		age := time.Since(previous.CreatedAt)
+		if age > time.Duration(s.snapDiskCfg.MaxChainAgeMinutes)*time.Minute {
+			return true // chain too old → compact
+		}
+		return false
+	default:
+		return true
+	}
+}
+
+// resolveChainLength returns the disk chain length for the new snapshot.
+func (s *Service) resolveChainLength(ctx context.Context, vmID string, diskType string) int {
+	if diskType != "incremental" {
+		return 0 // full or self_contained → new chain root
+	}
+	previous, err := s.snapRepo.GetLatestByVMID(ctx, vmID)
+	if err != nil || previous == nil {
+		return 0
+	}
+	meta, _ := previous.ParseMetadata()
+	if meta == nil {
+		return 0
+	}
+	return meta.DiskChainLength + 1
+}
+
+// snapshotGC performs chain-aware garbage collection for a VM's snapshots.
+// It keeps the latest snapshot and all its ancestors, deleting everything else.
+func (s *Service) snapshotGC(ctx context.Context, vmID string, latestID string) {
+	logger := pkglog.FromContext(ctx)
+
+	snaps, err := s.snapRepo.GetByVMID(ctx, vmID)
+	if err != nil || len(snaps) <= 1 {
+		return
+	}
+
+	// Find the latest snapshot.
+	var latest *snapshot.Snapshot
+	for _, snap := range snaps {
+		if snap.ID == latestID {
+			latest = snap
+			break
+		}
+	}
+	if latest == nil {
+		return
+	}
+
+	// Collect all ancestors of the latest (protected — chain dependencies).
+	protected := s.collectAncestors(ctx, latest, snaps)
+	protected[latest.ID] = true
+
+	for _, snap := range snaps {
+		if protected[snap.ID] {
+			continue
+		}
+		if err := s.DeleteSnapshot(ctx, snap.ID); err != nil {
+			logger.WarnContext(ctx, "snapshot GC: failed to delete snapshot",
+				"snapshot_id", snap.ID, "error", err)
+		}
+	}
+}
+
+// collectAncestors walks the parent chain from leaf to root, returning
+// the set of snapshot IDs that must be preserved.
+func (s *Service) collectAncestors(ctx context.Context, leaf *snapshot.Snapshot, all []*snapshot.Snapshot) map[string]bool {
+	byID := make(map[string]*snapshot.Snapshot, len(all))
+	for _, snap := range all {
+		byID[snap.ID] = snap
+	}
+
+	ancestors := make(map[string]bool)
+	current := leaf
+	for current != nil && current.ParentSnapshotID != nil {
+		parent, ok := byID[*current.ParentSnapshotID]
+		if !ok {
+			break
+		}
+		ancestors[parent.ID] = true
+		current = parent
+	}
+	return ancestors
+}
+
+// resolveCowChain walks the parent chain from leaf to the true root
+// (type=full snapshot with complete memory), returning the ordered list
+// from root to leaf. Stops at type=full, NOT disk_snapshot_type=full,
+// because compaction snapshots can have full disk but diff memory.
+func (s *Service) resolveCowChain(ctx context.Context, leaf *snapshot.Snapshot) ([]*snapshot.Snapshot, error) {
+	var chain []*snapshot.Snapshot
+	current := leaf
+	for current != nil {
+		chain = append(chain, current)
+		if current.ParentSnapshotID == nil {
+			break
+		}
+		parent, err := s.snapRepo.GetByID(ctx, *current.ParentSnapshotID)
+		if err != nil {
+			return nil, fmt.Errorf("get parent snapshot %s: %w", *current.ParentSnapshotID, err)
+		}
+		// Stop at a true full snapshot (has complete memory dump).
+		if parent.Type == snapshot.TypeFull {
+			chain = append(chain, parent)
+			break
+		}
+		current = parent
+	}
+	// Reverse: root first, leaf last.
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return chain, nil
 }
 
 // ResumeVM restores a VM from its latest snapshot and assigns it to a chat.
@@ -1455,26 +1613,24 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 		return nil, exception.Internal(fmt.Errorf("failed to parse snapshot metadata: %w", err))
 	}
 
-	// If the latest snapshot is incremental, resolve the chain to find the
-	// base full snapshot for memory merging. Chain depth is capped at 1.
+	// If the latest snapshot is incremental, resolve the chain for memory merge.
+	// The chain is also used for incremental disk reconstruction when applicable.
 	var baseSnap *snapshot.Snapshot
+	var diskChain []*snapshot.Snapshot
 	if snap.IsIncremental() && snap.ParentSnapshotID != nil {
-		baseSnap, err = s.snapRepo.GetByID(ctx, *snap.ParentSnapshotID)
-		if err != nil {
-			logger.WarnContext(ctx, "failed to resolve parent snapshot for chain merge, falling back to new VM",
-				"vm_id", vmID, "parent_snapshot_id", *snap.ParentSnapshotID, "error", err)
+		// Always resolve the full chain: memory merge needs all intermediate
+		// diffs even when the disk is self-contained (compaction case).
+		diskChain, err = s.resolveCowChain(ctx, snap)
+		if err != nil || len(diskChain) == 0 {
+			logger.WarnContext(ctx, "failed to resolve cow chain, falling back to new VM",
+				"vm_id", vmID, "error", err)
 			return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
 				vm.WorkspaceSizeGB, nil, nil, nil)
 		}
-		// Cap chain depth at 1: parent must be a full snapshot.
-		if baseSnap != nil && baseSnap.IsIncremental() {
-			logger.WarnContext(ctx, "parent is also incremental, chain too deep; falling back to new VM",
-				"vm_id", vmID)
-			return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
-				vm.WorkspaceSizeGB, nil, nil, nil)
-		}
+		baseSnap = diskChain[0]
 		logger.InfoContext(ctx, "resolved snapshot chain for restore",
-			"vm_id", vmID, "base_snapshot_id", baseSnap.ID, "incremental_snapshot_id", snap.ID)
+			"vm_id", vmID, "chain_depth", len(diskChain),
+			"root_snapshot_id", baseSnap.ID, "disk_type", meta.DiskSnapshotType)
 	}
 
 	conversationID := strings.TrimSpace(vm.ConversationID)
@@ -1553,17 +1709,23 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 		// The new format (disk.zst) is self-contained — no chain reconstruction needed.
 		var hasDiskImage bool
 		if meta.DiffSnapshots {
-			diskZstKey := snap.SnapshotPath + "/disk.zst"
-			diskRawKey := snap.SnapshotPath + "/disk"
-			if exists, _ := s.snapshotStore.ObjectExists(ctx, diskZstKey); exists {
-				entries = append(entries, dlEntry{name: "disk"})
-				hasDiskImage = true
-			} else if exists, _ := s.snapshotStore.ObjectExists(ctx, diskRawKey); exists {
-				entries = append(entries, dlEntry{name: "disk"})
-				hasDiskImage = true
-			} else {
-				// Legacy format: CoW delta only.
+			if meta.DiskSnapshotType == "incremental" && len(diskChain) > 0 {
+				// Incremental disk mode: download cow delta from this snapshot.
+				// The root disk and chain cows are downloaded separately below.
 				entries = append(entries, dlEntry{name: "cow"})
+			} else {
+				diskZstKey := snap.SnapshotPath + "/disk.zst"
+				diskRawKey := snap.SnapshotPath + "/disk"
+				if exists, _ := s.snapshotStore.ObjectExists(ctx, diskZstKey); exists {
+					entries = append(entries, dlEntry{name: "disk"})
+					hasDiskImage = true
+				} else if exists, _ := s.snapshotStore.ObjectExists(ctx, diskRawKey); exists {
+					entries = append(entries, dlEntry{name: "disk"})
+					hasDiskImage = true
+				} else {
+					// Legacy format: CoW delta only.
+					entries = append(entries, dlEntry{name: "cow"})
+				}
 			}
 		}
 		// For incremental snapshots, also download the memory manifest.
@@ -1632,110 +1794,280 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 		// Disk and memory are independent: disk can use the self-contained
 		// disk.img while memory still needs incremental merging.
 		if hasDiskImage {
-			// New format: self-contained full disk image.
-			// Set DiskImagePath so the provider uses it directly with a fresh CoW.
+			// Self-contained full disk image.
 			spec.DiskImagePath = filepath.Join(vmDir, "disk.img")
 			spec.Runtime.EnableDiffSnapshots = true
 			logger.InfoContext(ctx, "using full disk image for restore (no chain reconstruction)",
 				"vm_id", vmID, "disk_image", spec.DiskImagePath)
-		}
-
-		// Incremental memory merge: regardless of disk format, an incremental
-		// snapshot has only diff memory pages that must be merged onto the base.
-		if snap.IsIncremental() && baseSnap != nil {
-			// Download base memory and merge diff regions onto it.
-			baseMemoryDir := filepath.Join(tmpDir, "base")
-			if err := os.MkdirAll(baseMemoryDir, 0755); err != nil {
-				return nil, exception.Internal(fmt.Errorf("create base snapshot dir: %w", err))
-			}
-			baseZstKey := baseSnap.SnapshotPath + "/memory.zst"
-			baseRawKey := baseSnap.SnapshotPath + "/memory"
-			baseZstLocal := filepath.Join(baseMemoryDir, "memory.zst")
-			baseRawLocal := filepath.Join(baseMemoryDir, "memory")
-			baseDownloaded := false
-			if exists, _ := s.snapshotStore.ObjectExists(ctx, baseZstKey); exists {
-				if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
-					{Key: baseZstKey, LocalPath: baseZstLocal},
-				}); err != nil {
-					logger.WarnContext(ctx, "download base memory.zst failed, base S3 files may have been GC'd",
-						"vm_id", vmID, "error", err)
-				} else if err := fcutil.DecompressFileZstd(baseZstLocal, baseRawLocal); err != nil {
-					logger.WarnContext(ctx, "decompress base memory failed",
-						"vm_id", vmID, "error", err)
-				} else {
-					_ = os.Remove(baseZstLocal)
-					baseDownloaded = true
+			} else if meta.DiskSnapshotType == "incremental" && len(diskChain) > 0 {
+				// Incremental disk: find the most recent full-disk snapshot in the chain
+				// (compaction point) and use its disk as root. Download cow deltas only
+				// for chain members after that point.
+				diskRootIdx := 0
+				for i, chainSnap := range diskChain {
+					cm, _ := chainSnap.ParseMetadata()
+					if cm != nil && (cm.DiskSnapshotType == "full" || cm.DiskSnapshotType == "self_contained") {
+						diskRootIdx = i
+					}
 				}
+				diskRoot := diskChain[diskRootIdx]
+
+				// Download the disk root's full disk image.
+				rootDiskZst := diskRoot.SnapshotPath + "/disk.zst"
+				rootDiskRaw := diskRoot.SnapshotPath + "/disk"
+				diskPath := filepath.Join(vmDir, "disk.img")
+				if exists, _ := s.snapshotStore.ObjectExists(ctx, rootDiskZst); exists {
+					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+						{Key: rootDiskZst, LocalPath: filepath.Join(tmpDir, "root_disk.zst")},
+					}); err != nil {
+						return nil, exception.Internal(fmt.Errorf("download root disk: %w", err))
+					}
+					if err := fcutil.DecompressFileZstd(filepath.Join(tmpDir, "root_disk.zst"), diskPath); err != nil {
+						return nil, exception.Internal(fmt.Errorf("decompress root disk: %w", err))
+					}
+					_ = os.Remove(filepath.Join(tmpDir, "root_disk.zst"))
+				} else {
+					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+						{Key: rootDiskRaw, LocalPath: diskPath},
+					}); err != nil {
+						return nil, exception.Internal(fmt.Errorf("download root disk (raw): %w", err))
+					}
+				}
+				spec.DiskImagePath = diskPath
+				spec.Runtime.EnableDiffSnapshots = true
+
+				// Download cow deltas from chain members after the disk root.
+				var cowPaths []string
+				for i, chainSnap := range diskChain[diskRootIdx+1:] {
+					cowZst := chainSnap.SnapshotPath + "/cow.zst"
+					cowRaw := chainSnap.SnapshotPath + "/cow"
+					cowLocal := filepath.Join(vmDir, fmt.Sprintf("cow_chain_%d.img", i))
+
+					if exists, _ := s.snapshotStore.ObjectExists(ctx, cowZst); exists {
+						if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+							{Key: cowZst, LocalPath: filepath.Join(tmpDir, fmt.Sprintf("chain_cow_%d.zst", i))},
+						}); err != nil {
+							return nil, exception.Internal(fmt.Errorf("download chain cow %d: %w", i, err))
+						}
+						if err := fcutil.DecompressFileZstd(
+							filepath.Join(tmpDir, fmt.Sprintf("chain_cow_%d.zst", i)),
+							cowLocal,
+						); err != nil {
+							return nil, exception.Internal(fmt.Errorf("decompress chain cow %d: %w", i, err))
+						}
+						_ = os.Remove(filepath.Join(tmpDir, fmt.Sprintf("chain_cow_%d.zst", i)))
+					} else {
+						if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+							{Key: cowRaw, LocalPath: cowLocal},
+						}); err != nil {
+							return nil, exception.Internal(fmt.Errorf("download chain cow %d (raw): %w", i, err))
+						}
+					}
+					cowPaths = append(cowPaths, cowLocal)
+				}
+
+				if len(cowPaths) > 0 {
+					spec.CowChainPaths = cowPaths
+				}
+				logger.InfoContext(ctx, "incremental disk chain prepared for restore",
+					"vm_id", vmID, "root_disk", diskPath,
+					"disk_root_idx", diskRootIdx, "cow_chain", len(cowPaths))
 			}
-			if !baseDownloaded {
-				if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
-					{Key: baseRawKey, LocalPath: baseRawLocal},
-				}); err != nil {
-					logger.WarnContext(ctx, "base snapshot memory missing from storage (GC race); falling back to new VM",
-						"vm_id", vmID, "base_snapshot_id", baseSnap.ID, "error", err)
+
+		// Incremental memory merge: download base memory and apply diffs.
+		if snap.IsIncremental() && baseSnap != nil {
+			if len(diskChain) > 1 {
+				// Multi-step merge: chain has depth > 1, merge all intermediate diffs.
+				baseMemoryDir := filepath.Join(tmpDir, "chain_mem")
+				if err := os.MkdirAll(baseMemoryDir, 0755); err != nil {
+					return nil, exception.Internal(fmt.Errorf("create chain memory dir: %w", err))
+				}
+
+				// Download root (full) memory as the base.
+				root := diskChain[0]
+				rootMemZst := root.SnapshotPath + "/memory.zst"
+				rootMemRaw := root.SnapshotPath + "/memory"
+				baseMemLocal := filepath.Join(baseMemoryDir, "base_memory")
+				baseDownloaded := false
+				if exists, _ := s.snapshotStore.ObjectExists(ctx, rootMemZst); exists {
+					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+						{Key: rootMemZst, LocalPath: baseMemLocal + ".zst"},
+					}); err != nil {
+						logger.WarnContext(ctx, "download root memory.zst failed", "vm_id", vmID, "error", err)
+					} else if err := fcutil.DecompressFileZstd(baseMemLocal+".zst", baseMemLocal); err != nil {
+						logger.WarnContext(ctx, "decompress root memory failed", "vm_id", vmID, "error", err)
+					} else {
+						_ = os.Remove(baseMemLocal + ".zst")
+						baseDownloaded = true
+					}
+				}
+				if !baseDownloaded {
+					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+						{Key: rootMemRaw, LocalPath: baseMemLocal},
+					}); err != nil {
+						logger.WarnContext(ctx, "root memory missing; falling back to new VM",
+							"vm_id", vmID, "error", err)
+						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+							vm.WorkspaceSizeGB, nil, nil, nil)
+					}
+				}
+
+				// Iteratively merge each chain member's diff memory onto the accumulated base.
+				accumMemPath := baseMemLocal
+				for ci, chainSnap := range diskChain[1:] {
+					diffMemZst := chainSnap.SnapshotPath + "/memory.zst"
+					diffMemRaw := chainSnap.SnapshotPath + "/memory"
+					diffMemLocal := filepath.Join(baseMemoryDir, fmt.Sprintf("diff_%d", ci))
+					diffDownloaded := false
+					if exists, _ := s.snapshotStore.ObjectExists(ctx, diffMemZst); exists {
+						if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+							{Key: diffMemZst, LocalPath: diffMemLocal + ".zst"},
+						}); err != nil {
+							logger.WarnContext(ctx, "download diff memory failed", "chain_idx", ci, "error", err)
+						} else if err := fcutil.DecompressFileZstd(diffMemLocal+".zst", diffMemLocal); err != nil {
+							logger.WarnContext(ctx, "decompress diff memory failed", "chain_idx", ci, "error", err)
+						} else {
+							_ = os.Remove(diffMemLocal + ".zst")
+							diffDownloaded = true
+						}
+					}
+					if !diffDownloaded {
+						if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+							{Key: diffMemRaw, LocalPath: diffMemLocal},
+						}); err != nil {
+							logger.WarnContext(ctx, "diff memory missing; falling back", "chain_idx", ci, "error", err)
+							return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+								vm.WorkspaceSizeGB, nil, nil, nil)
+						}
+					}
+
+					// Download manifest for this diff.
+					manKey := chainSnap.SnapshotPath + "/memory.manifest"
+					manLocal := filepath.Join(baseMemoryDir, fmt.Sprintf("manifest_%d", ci))
+					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+						{Key: manKey, LocalPath: manLocal},
+					}); err != nil {
+						logger.WarnContext(ctx, "manifest download failed; falling back", "chain_idx", ci, "error", err)
+						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+							vm.WorkspaceSizeGB, nil, nil, nil)
+					}
+					manifest, manErr := fcutil.ReadManifest(manLocal)
+					if manErr != nil {
+						logger.WarnContext(ctx, "manifest parse failed; falling back", "chain_idx", ci, "error", manErr)
+						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+							vm.WorkspaceSizeGB, nil, nil, nil)
+					}
+
+					mergedPath := filepath.Join(baseMemoryDir, fmt.Sprintf("merged_%d", ci))
+					logger.InfoContext(ctx, "merging chain memory diff",
+						"vm_id", vmID, "chain_idx", ci, "regions", len(manifest))
+					if mergeErr := fcutil.MergeDiffMemory(accumMemPath, diffMemLocal, mergedPath, manifest); mergeErr != nil {
+						logger.WarnContext(ctx, "memory merge failed; falling back", "chain_idx", ci, "error", mergeErr)
+						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+							vm.WorkspaceSizeGB, nil, nil, nil)
+					}
+					accumMemPath = mergedPath
+				}
+
+				// Copy the fully merged memory to the restore dir.
+				diffMemoryPath := filepath.Join(tmpDir, "memory")
+				if err := os.Rename(accumMemPath, diffMemoryPath); err != nil {
+					return nil, exception.Internal(fmt.Errorf("rename merged memory: %w", err))
+				}
+				spec.RestoreAsFull = true
+				logger.InfoContext(ctx, "multi-step memory merge complete",
+					"vm_id", vmID, "chain_steps", len(diskChain)-1)
+			} else {
+				// Single-step merge (depth 1): merge leaf diff onto base full.
+				baseMemoryDir := filepath.Join(tmpDir, "base")
+				if err := os.MkdirAll(baseMemoryDir, 0755); err != nil {
+					return nil, exception.Internal(fmt.Errorf("create base snapshot dir: %w", err))
+				}
+				baseZstKey := baseSnap.SnapshotPath + "/memory.zst"
+				baseRawKey := baseSnap.SnapshotPath + "/memory"
+				baseZstLocal := filepath.Join(baseMemoryDir, "memory.zst")
+				baseRawLocal := filepath.Join(baseMemoryDir, "memory")
+				baseDownloaded := false
+				if exists, _ := s.snapshotStore.ObjectExists(ctx, baseZstKey); exists {
+					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+						{Key: baseZstKey, LocalPath: baseZstLocal},
+					}); err != nil {
+						logger.WarnContext(ctx, "download base memory.zst failed", "vm_id", vmID, "error", err)
+					} else if err := fcutil.DecompressFileZstd(baseZstLocal, baseRawLocal); err != nil {
+						logger.WarnContext(ctx, "decompress base memory failed", "vm_id", vmID, "error", err)
+					} else {
+						_ = os.Remove(baseZstLocal)
+						baseDownloaded = true
+					}
+				}
+				if !baseDownloaded {
+					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+						{Key: baseRawKey, LocalPath: baseRawLocal},
+					}); err != nil {
+						logger.WarnContext(ctx, "base memory missing; falling back to new VM",
+							"vm_id", vmID, "error", err)
+						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+							vm.WorkspaceSizeGB, nil, nil, nil)
+					}
+				}
+				manifestPath := filepath.Join(tmpDir, "memory.manifest")
+				manifest, manifestErr := fcutil.ReadManifest(manifestPath)
+				if manifestErr != nil {
+					logger.WarnContext(ctx, "failed to read memory manifest; falling back to new VM",
+						"error", manifestErr)
 					return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
 						vm.WorkspaceSizeGB, nil, nil, nil)
 				}
-			}
-			manifestPath := filepath.Join(tmpDir, "memory.manifest")
-			manifest, manifestErr := fcutil.ReadManifest(manifestPath)
-			if manifestErr != nil {
-				logger.WarnContext(ctx, "failed to read memory manifest, cannot merge chain; falling back to new VM",
-					"error", manifestErr)
-				return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
-					vm.WorkspaceSizeGB, nil, nil, nil)
-			}
-			diffMemoryPath := filepath.Join(tmpDir, "memory")
-			mergedPath := filepath.Join(tmpDir, "memory.merged")
-			logger.InfoContext(ctx, "merging incremental memory onto base",
-				"vm_id", vmID, "regions", len(manifest))
-			if mergeErr := fcutil.MergeDiffMemory(baseRawLocal, diffMemoryPath, mergedPath, manifest); mergeErr != nil {
-				logger.WarnContext(ctx, "failed to merge diff memory; falling back to new VM",
-					"error", mergeErr)
-				return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
-					vm.WorkspaceSizeGB, nil, nil, nil)
-			}
-			if renameErr := os.Rename(mergedPath, diffMemoryPath); renameErr != nil {
-				return nil, exception.Internal(fmt.Errorf("rename merged memory: %w", renameErr))
-			}
-			spec.RestoreAsFull = true
-			logger.InfoContext(ctx, "memory chain merge complete", "vm_id", vmID)
-
-			// For legacy format (no disk.img), also reconstruct the CoW chain.
-			if !hasDiskImage {
-				cowIncrPath := filepath.Join(vmDir, "cow_incr.img")
-				cowCurrentPath := filepath.Join(vmDir, "cow.img")
-				if _, statErr := os.Stat(cowCurrentPath); statErr == nil {
-					if renameErr := os.Rename(cowCurrentPath, cowIncrPath); renameErr != nil {
-						return nil, exception.Internal(fmt.Errorf("rename incremental cow: %w", renameErr))
-					}
+				diffMemoryPath := filepath.Join(tmpDir, "memory")
+				mergedPath := filepath.Join(tmpDir, "memory.merged")
+				logger.InfoContext(ctx, "merging incremental memory onto base",
+					"vm_id", vmID, "regions", len(manifest))
+				if mergeErr := fcutil.MergeDiffMemory(baseRawLocal, diffMemoryPath, mergedPath, manifest); mergeErr != nil {
+					logger.WarnContext(ctx, "failed to merge diff memory; falling back to new VM",
+						"error", mergeErr)
+					return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+						vm.WorkspaceSizeGB, nil, nil, nil)
+				}
+				if renameErr := os.Rename(mergedPath, diffMemoryPath); renameErr != nil {
+					return nil, exception.Internal(fmt.Errorf("rename merged memory: %w", renameErr))
 				}
 
-				cowFullPath := filepath.Join(vmDir, "cow_full.img")
-				baseCowZstKey := baseSnap.SnapshotPath + "/cow.zst"
-				baseCowRawKey := baseSnap.SnapshotPath + "/cow"
-				baseCowZstLocal := filepath.Join(baseMemoryDir, "cow.zst")
-				if exists, _ := s.snapshotStore.ObjectExists(ctx, baseCowZstKey); exists {
-					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
-						{Key: baseCowZstKey, LocalPath: baseCowZstLocal},
-					}); err != nil {
-						return nil, exception.Internal(fmt.Errorf("download base cow: %w", err))
+				// Legacy cow chain reconstruction for non-incremental disk mode.
+				if !hasDiskImage && meta.DiskSnapshotType != "incremental" {
+					cowIncrPath := filepath.Join(vmDir, "cow_incr.img")
+					cowCurrentPath := filepath.Join(vmDir, "cow.img")
+					if _, statErr := os.Stat(cowCurrentPath); statErr == nil {
+						if renameErr := os.Rename(cowCurrentPath, cowIncrPath); renameErr != nil {
+							return nil, exception.Internal(fmt.Errorf("rename incremental cow: %w", renameErr))
+						}
 					}
-					if err := fcutil.DecompressFileZstd(baseCowZstLocal, cowFullPath); err != nil {
-						return nil, exception.Internal(fmt.Errorf("decompress base cow: %w", err))
+					cowFullPath := filepath.Join(vmDir, "cow_full.img")
+					baseCowZstKey := baseSnap.SnapshotPath + "/cow.zst"
+					baseCowRawKey := baseSnap.SnapshotPath + "/cow"
+					baseCowZstLocal := filepath.Join(baseMemoryDir, "cow.zst")
+					if exists, _ := s.snapshotStore.ObjectExists(ctx, baseCowZstKey); exists {
+						if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+							{Key: baseCowZstKey, LocalPath: baseCowZstLocal},
+						}); err != nil {
+							return nil, exception.Internal(fmt.Errorf("download base cow: %w", err))
+						}
+						if err := fcutil.DecompressFileZstd(baseCowZstLocal, cowFullPath); err != nil {
+							return nil, exception.Internal(fmt.Errorf("decompress base cow: %w", err))
+						}
+						_ = os.Remove(baseCowZstLocal)
+					} else {
+						if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+							{Key: baseCowRawKey, LocalPath: cowFullPath},
+						}); err != nil {
+							return nil, exception.Internal(fmt.Errorf("download base cow (raw): %w", err))
+						}
 					}
-					_ = os.Remove(baseCowZstLocal)
-				} else {
-					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
-						{Key: baseCowRawKey, LocalPath: cowFullPath},
-					}); err != nil {
-						return nil, exception.Internal(fmt.Errorf("download base cow (raw): %w", err))
-					}
+					spec.CowChainPaths = []string{cowFullPath, cowIncrPath}
+					logger.InfoContext(ctx, "cow chain prepared for restore",
+						"vm_id", vmID, "full_cow", cowFullPath, "incr_cow", cowIncrPath)
 				}
-
-				spec.CowChainPaths = []string{cowFullPath, cowIncrPath}
-				logger.InfoContext(ctx, "cow chain prepared for restore",
-					"vm_id", vmID, "full_cow", cowFullPath, "incr_cow", cowIncrPath)
+				spec.RestoreAsFull = true
+				logger.InfoContext(ctx, "memory chain merge complete", "vm_id", vmID)
 			}
 		}
 
@@ -1808,7 +2140,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 
 	logger.InfoContext(ctx, "VM restored from snapshot", "vm_id", vmID, "chat_id", chatID, "snapshot_id", snap.ID)
 
-	// GC: delete all snapshots for this VM after successful resume.
+	// GC: after resume the VM is self-contained (flattened), safe to delete all.
 	go func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

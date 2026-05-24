@@ -45,7 +45,13 @@ type SnapshotResult struct {
 	SnapshotDir     string
 	MemoryBytes     int64
 	CowBytes        int64
+	DiskBytes       int64
 	PauseDurationMs int64
+}
+
+// SnapshotOptions controls snapshot creation behavior.
+type SnapshotOptions struct {
+	FullDisk bool // true = run flattenDmDevice, false = cow copy only
 }
 
 // Backend defines the interface for VM backend providers.
@@ -73,9 +79,10 @@ type Backend interface {
 	// GetMetrics returns resource usage metrics for the VM.
 	GetMetrics(ctx context.Context, id string) (Metrics, error)
 
-	// CreateSnapshot pauses the VM, creates a full snapshot, and resumes the VM.
+	// CreateSnapshot pauses the VM, creates a snapshot, and resumes the VM.
+	// opts controls whether a full disk flatten is performed or only a cow copy.
 	// Returns detailed result about the snapshot files and pause duration.
-	CreateSnapshot(ctx context.Context, id string) (*SnapshotResult, error)
+	CreateSnapshot(ctx context.Context, id string, opts SnapshotOptions) (*SnapshotResult, error)
 
 	// RestoreFromSnapshot creates a new VM process from previously taken snapshot files.
 	// The rootfs must already exist at the path from the original CreateSpec.

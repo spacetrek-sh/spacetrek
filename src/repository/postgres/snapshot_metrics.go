@@ -24,6 +24,7 @@ type snapshotMetricsRow struct {
 	MemoryZstBytes      int64  `db:"memory_zst_bytes"`
 	CowBytes            int64  `db:"cow_bytes"`
 	CowZstBytes         int64  `db:"cow_zst_bytes"`
+	DiskBytes           int64  `db:"disk_bytes"`
 	UploadDurationMs    int64  `db:"upload_duration_ms"`
 	DownloadDurationMs  int64  `db:"download_duration_ms"`
 	DecompressDurationMs int64 `db:"decompress_duration_ms"`
@@ -48,24 +49,24 @@ func (r *snapshotMetricsRepository) Insert(ctx context.Context, m *snapshot.Snap
 		INSERT INTO snapshot_metrics (
 			snapshot_id, vm_id, type,
 			pause_duration_ms, memory_bytes, memory_zst_bytes,
-			cow_bytes, cow_zst_bytes, upload_duration_ms,
+			cow_bytes, cow_zst_bytes, disk_bytes, upload_duration_ms,
 			download_duration_ms, decompress_duration_ms,
 			restore_duration_ms, agent_ready_ms, total_resume_ms,
 			guest_ram_mb, workload_type, chain_depth
 		) VALUES (
 			$1, $2, $3,
 			$4, $5, $6,
-			$7, $8, $9,
-			$10, $11,
-			$12, $13, $14,
-			$15, $16, $17
+			$7, $8, $9, $10,
+			$11, $12,
+			$13, $14, $15,
+			$16, $17, $18
 		) RETURNING id
 	`
 
 	if err := r.db.QueryRowxContext(ctx, query,
 		m.SnapshotID, m.VMID, string(m.Type),
 		m.PauseDurationMs, m.MemoryBytes, m.MemoryZstBytes,
-		m.CowBytes, m.CowZstBytes, m.UploadDurationMs,
+		m.CowBytes, m.CowZstBytes, m.DiskBytes, m.UploadDurationMs,
 		m.DownloadDurationMs, m.DecompressDurationMs,
 		m.RestoreDurationMs, m.AgentReadyMs, m.TotalResumeMs,
 		m.GuestRAMMB, m.WorkloadType, m.ChainDepth,
@@ -90,7 +91,7 @@ func (r *snapshotMetricsRepository) ListByVM(ctx context.Context, vmID string, l
 	query := `
 		SELECT id, snapshot_id, vm_id, type,
 		       pause_duration_ms, memory_bytes, memory_zst_bytes,
-		       cow_bytes, cow_zst_bytes, upload_duration_ms,
+		       cow_bytes, cow_zst_bytes, disk_bytes, upload_duration_ms,
 		       download_duration_ms, decompress_duration_ms,
 		       restore_duration_ms, agent_ready_ms, total_resume_ms,
 		       guest_ram_mb, workload_type, chain_depth, created_at
@@ -126,7 +127,7 @@ func (r *snapshotMetricsRepository) ListByType(ctx context.Context, snapType sna
 	query := `
 		SELECT id, snapshot_id, vm_id, type,
 		       pause_duration_ms, memory_bytes, memory_zst_bytes,
-		       cow_bytes, cow_zst_bytes, upload_duration_ms,
+		       cow_bytes, cow_zst_bytes, disk_bytes, upload_duration_ms,
 		       download_duration_ms, decompress_duration_ms,
 		       restore_duration_ms, agent_ready_ms, total_resume_ms,
 		       guest_ram_mb, workload_type, chain_depth, created_at
@@ -160,6 +161,7 @@ func mapSnapshotMetricsRow(row snapshotMetricsRow) snapshot.SnapshotMetrics {
 		MemoryZstBytes:       row.MemoryZstBytes,
 		CowBytes:             row.CowBytes,
 		CowZstBytes:          row.CowZstBytes,
+		DiskBytes:            row.DiskBytes,
 		UploadDurationMs:     row.UploadDurationMs,
 		DownloadDurationMs:   row.DownloadDurationMs,
 		DecompressDurationMs: row.DecompressDurationMs,

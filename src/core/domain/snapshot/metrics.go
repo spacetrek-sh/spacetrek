@@ -18,6 +18,7 @@ type SnapshotMetrics struct {
 	MemoryZstBytes   int64 `db:"memory_zst_bytes" json:"memory_zst_bytes"`
 	CowBytes         int64 `db:"cow_bytes" json:"cow_bytes"`
 	CowZstBytes      int64 `db:"cow_zst_bytes" json:"cow_zst_bytes"`
+	DiskBytes        int64 `db:"disk_bytes" json:"disk_bytes"`
 	UploadDurationMs int64 `db:"upload_duration_ms" json:"upload_duration_ms"`
 
 	// Resume metrics

@@ -33,6 +33,10 @@ type SnapshotMetadata struct {
 	BaseImagePath  string `json:"base_image_path"`  // Host path to environment base image
 	BaseSnapshotID string `json:"base_snapshot_id"` // Full snapshot this diff is relative to
 	CowDeviceName  string `json:"cow_device_name"`  // /dev/mapper/vm_{id}
+
+	// Disk snapshot strategy
+	DiskSnapshotType string `json:"disk_snapshot_type"` // "full" | "self_contained" | "incremental"
+	DiskChainLength  int    `json:"disk_chain_length"`  // 0 = chain root, N = depth in chain
 }
 
 // Snapshot represents a VM snapshot for backup/restore.

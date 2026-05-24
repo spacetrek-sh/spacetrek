@@ -157,7 +157,11 @@ func main() {
 		}
 	}
 
-	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, snapRepo, snapMetricsRepo, snapshotStore, cfg.VM.IdleTimeout, cfg.VM.AutoSnapshot, cfg.VM.ResumeGrace, vmNetworkCfg, vmIPAllocator)
+	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, snapRepo, snapMetricsRepo, snapshotStore, cfg.VM.IdleTimeout, cfg.VM.AutoSnapshot, cfg.VM.ResumeGrace, vmNetworkCfg, vmIPAllocator, vmsvc.SnapshotDiskConfig{
+		DiskMode:           cfg.VM.DiskMode,
+		MaxChainLength:     cfg.VM.MaxChainLength,
+		MaxChainAgeMinutes: cfg.VM.MaxChainAgeMinutes,
+	})
 	orchTools := orchestratorsvc.NewInMemoryToolRegistry(nil)
 	orchTools.Register(toolsvc.NewVMCommandTool(vmService))
 	orchTools.Register(toolsvc.NewVMCreateTool(vmService))
@@ -290,7 +294,7 @@ func (b unavailableBackend) GetMetrics(context.Context, string) (vmdomain.Metric
 	return vmdomain.Metrics{}, b.err()
 }
 
-func (b unavailableBackend) CreateSnapshot(context.Context, string) (*vmdomain.SnapshotResult, error) {
+func (b unavailableBackend) CreateSnapshot(context.Context, string, vmdomain.SnapshotOptions) (*vmdomain.SnapshotResult, error) {
 	return nil, b.err()
 }
 
