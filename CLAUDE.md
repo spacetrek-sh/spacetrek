@@ -85,6 +85,16 @@ orchestrator/
 - **VM Lease Tracking**: Assignment records for chat→VM binding with auto-resume across sessions
 - **CID Allocation**: Collision-detecting vsock CID allocator for guest agent communication
 
+### Networking Architecture
+- **Topology**: One TAP device per VM on the host. No bridge (`EnsureBridge` is a no-op in `src/infrastructure/vm/firecracker/network.go`). The bridge was deliberately skipped to avoid `br_netfilter` conflicts with Docker.
+- **Subnet**: `10.200.0.0/16` (config: `vm.firecracker.network.subnet`). IPs allocated sequentially by `IPAllocator` (`src/service/vm/service.go`) across `10.200.0.2` → `10.200.255.254`. Theoretical max ~65,533 VMs; vsock CID pool (`cid_min` 1024 → `cid_max` 65535) caps it at ~64,512.
+- **Gateway**: `10.200.0.1` assigned to each TAP as a `/32` point-to-point address. Each VM also gets a host-side `/32` route (`ip route replace <vmIP>/32 dev tap-<vmID>`).
+- **Guest config**: Kernel cmdline `ip=<vmIP>::10.200.0.1:255.255.0.0::eth0:off` — guests believe they are on a `/16`.
+- **Proxy ARP**: Enabled on every TAP (`proxy_arp=1`) so the host answers ARP on behalf of any routable VM IP. Combined with `ip_forward=1` and `policy accept` on the forward chain, **VMs can reach each other by IP** — VM-A → tap-A → host route lookup → tap-B → VM-B.
+- **Outbound NAT**: nft MASQUERADE on `table ip spacetrk-nat` for `10.200.0.0/16 → <outbound>`. Internet → VM inbound is not exposed (no DNAT rules).
+- **DNS**: dnsmasq runs on the host (`scripts/entrypoint.sh`), bound to `lo`, `br-stk`, and any `tap*` interface via `bind-dynamic`. Currently a **caching forwarder** to `1.1.1.1` / `8.8.8.8`. Guests resolve via `10.200.0.1:53`. VM-name resolution is in progress — see `docs/issues/vm-dns-naming.md`.
+- **CID allocation**: `src/infrastructure/vm/firecracker/cid_allocator.go` allocates vsock Context IDs with collision detection.
+
 ### Technology Stack
 - **Language**: Go 1.24+
 - **MicroVM**: Firecracker with vsock guest agent

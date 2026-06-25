@@ -6,6 +6,7 @@ type createVMRequest struct {
 	EnvironmentID   string `json:"environment_id" validate:"required"`
 	ConversationID  string `json:"conversation_id" validate:"required"`
 	Provider        string `json:"provider" validate:"omitempty,oneof=firecracker cloud-hypervisor"`
+	Name            string `json:"name,omitempty" validate:"omitempty,min=1,max=63"`
 	WorkspaceSizeGB int    `json:"workspace_size_gb,omitempty" validate:"omitempty,min=1,max=64"`
 	// Optional resource overrides (null = use environment default)
 	VCPU     *int `json:"vcpu" validate:"omitempty,min=1,max=16"`
@@ -16,6 +17,7 @@ type createVMRequest struct {
 // createVMResponse is the JSON response for successful VM creation.
 type createVMResponse struct {
 	ID              string  `json:"id"`
+	Name            string  `json:"name"`
 	EnvironmentID   string  `json:"environment_id"`
 	ConversationID  string  `json:"conversation_id"`
 	Provider        string  `json:"provider"`
@@ -35,6 +37,7 @@ type createVMResponse struct {
 // getVMResponse is the JSON response for GET /api/v1/vm/{id}.
 type getVMResponse struct {
 	ID              string `json:"id"`
+	Name            string `json:"name"`
 	EnvironmentID   string `json:"environment_id"`
 	ConversationID  string `json:"conversation_id"`
 	Provider        string `json:"provider"`
@@ -93,6 +96,7 @@ type vmLeaseResponse struct {
 // runtimeSnapshotResponse represents runtime-observed VM state for monitoring streams.
 type runtimeSnapshotResponse struct {
 	ID                   string  `json:"id"`
+	Name                 string  `json:"name"`
 	EnvironmentID        string  `json:"environment_id"`
 	Provider             string  `json:"provider"`
 	Status               string  `json:"status"`
@@ -165,6 +169,7 @@ type resumeVMRequest struct {
 // fleetVMResponse is a single VM in the fleet SSE stream.
 type fleetVMResponse struct {
 	ID      string  `json:"id"`
+	Name    string  `json:"name"`
 	Agent   string  `json:"agent,omitempty"`
 	Uptime  string  `json:"uptime"`
 	Mem     string  `json:"mem"`

@@ -528,7 +528,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.DebugContext(ctx, "VM create requested", "env_id", req.EnvironmentID, "conversation_id", req.ConversationID, "provider", req.Provider, "workspace_size_gb", req.WorkspaceSizeGB, "vcpu", req.VCPU, "memory_mb", req.MemoryMB, "disk_mb", req.DiskMB)
+	logger.DebugContext(ctx, "VM create requested", "env_id", req.EnvironmentID, "conversation_id", req.ConversationID, "provider", req.Provider, "name", req.Name, "workspace_size_gb", req.WorkspaceSizeGB, "vcpu", req.VCPU, "memory_mb", req.MemoryMB, "disk_mb", req.DiskMB)
 
 	// Parse provider
 	var provider vmdomain.Provider
@@ -536,7 +536,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		provider = vmdomain.Provider(req.Provider)
 	}
 
-	vm, err := h.vmservice.Create(ctx, req.EnvironmentID, req.ConversationID, provider, req.WorkspaceSizeGB, req.VCPU, req.MemoryMB, req.DiskMB)
+	vm, err := h.vmservice.Create(ctx, req.EnvironmentID, req.ConversationID, provider, req.Name, req.WorkspaceSizeGB, req.VCPU, req.MemoryMB, req.DiskMB)
 	if err != nil {
 		logger.WarnContext(ctx, "VM creation failed", "env_id", req.EnvironmentID, "error", err)
 		httputil.WriteError(w, err)
@@ -551,7 +551,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.InfoContext(ctx, "VM created", "vm_id", vm.ID, "env_id", req.EnvironmentID)
+	logger.InfoContext(ctx, "VM created", "vm_id", vm.ID, "vm_name", vm.Name, "env_id", req.EnvironmentID)
 	httputil.Created(w, "VM created", toCreateVMResponse(vm, env))
 }
 
@@ -599,7 +599,7 @@ func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.InfoContext(ctx, "VM stopped", "vm_id", id)
+	logger.InfoContext(ctx, "VM stopped", "vm_id", id, "vm_name", vm.Name)
 	httputil.WriteJSON(w, http.StatusOK, "VM stopped", deleteVMResponse{ID: vm.ID})
 }
 
@@ -728,6 +728,7 @@ func (h *Handler) ResumeVM(w http.ResponseWriter, r *http.Request) {
 func toCreateVMResponse(vm *vmdomain.VM, env *environment.Environment) createVMResponse {
 	return createVMResponse{
 		ID:              vm.ID,
+		Name:            vm.Name,
 		EnvironmentID:   vm.EnvironmentID,
 		ConversationID:  vm.ConversationID,
 		Provider:        string(vm.Provider),
@@ -748,6 +749,7 @@ func toCreateVMResponse(vm *vmdomain.VM, env *environment.Environment) createVMR
 func toGetVMResponse(vm *vmdomain.VM) getVMResponse {
 	return getVMResponse{
 		ID:              vm.ID,
+		Name:            vm.Name,
 		EnvironmentID:   vm.EnvironmentID,
 		ConversationID:  vm.ConversationID,
 		Provider:        string(vm.Provider),
@@ -798,6 +800,7 @@ func logPreview(text string, limit int) string {
 func toRuntimeSnapshotResponse(vm *vmdomain.VM, metrics vmdomain.Metrics) runtimeSnapshotResponse {
 	return runtimeSnapshotResponse{
 		ID:                   vm.ID,
+		Name:                 vm.Name,
 		EnvironmentID:        vm.EnvironmentID,
 		Provider:             string(vm.Provider),
 		Status:               string(vm.Status),
@@ -826,6 +829,7 @@ func toFleetVMResponse(vm *vmdomain.VM, metrics vmdomain.Metrics) fleetVMRespons
 	}
 	return fleetVMResponse{
 		ID:      vm.ID,
+		Name:    vm.Name,
 		Uptime:  formatDuration(time.Since(vm.CreatedAt)),
 		Mem:     fmt.Sprintf("%d / %dmb", metrics.MemoryUsedMB, metrics.MemoryLimitMB),
 		MemPct:  metrics.MemoryPercent,
@@ -840,9 +844,13 @@ func toFleetVMResponse(vm *vmdomain.VM, metrics vmdomain.Metrics) fleetVMRespons
 
 func toActivityEvent(e *orchdomain.PersistedRuntimeEvent) activityEventResponse {
 	vmID := ""
+	vmName := ""
 	if e.Metadata != nil {
 		if v, ok := e.Metadata["vm_id"].(string); ok {
 			vmID = v
+		}
+		if v, ok := e.Metadata["vm_name"].(string); ok {
+			vmName = v
 		}
 	}
 
@@ -854,10 +862,18 @@ func toActivityEvent(e *orchdomain.PersistedRuntimeEvent) activityEventResponse 
 		msg = e.Error
 	}
 
+	// Prefer the human-readable name; fall back to the UUID if the event
+	// predates vm_name enrichment. Until the orchestrator stamps vm_name
+	// into metadata at all emit sites this is a graceful degradation.
+	vmDisplay := vmName
+	if vmDisplay == "" {
+		vmDisplay = vmID
+	}
+
 	return activityEventResponse{
 		Time: e.CreatedAt.Format("15:04:05"),
 		Type: mapActivityType(e.Type, e.Data),
-		VM:   vmID,
+		VM:   vmDisplay,
 		Msg:  msg,
 	}
 }

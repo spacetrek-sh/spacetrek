@@ -17,6 +17,7 @@ type vmRepository struct {
 
 type vmRow struct {
 	ID                 string     `db:"id"`
+	Name               string     `db:"name"`
 	EnvironmentID      string     `db:"environment_id"`
 	ConversationID     *string    `db:"conversation_id"`
 	Provider           string     `db:"provider"`
@@ -59,25 +60,25 @@ func (r *vmRepository) Create(ctx context.Context, vm *vmdomain.VM) error {
 	logger := pkglog.FromContext(ctx)
 	query := `
 		INSERT INTO vm_instances (
-			id, environment_id, provider, status,
+			id, name, environment_id, provider, status,
 			runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 			vcpu, memory_mb, disk_mb,
 			ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb,
 			diff_snapshots_enabled
 		)
 		VALUES (
-			$1, $2, $3, $4,
-			$5, $6, $7, $8, $9, $10, $11, $12,
-			$13, $14, $15,
-				$16, $17, $18, $19, $20, $21, $22, $23,
-				$24
+			$1, $2, $3, $4, $5,
+			$6, $7, $8, $9, $10, $11, $12, $13,
+			$14, $15, $16,
+				$17, $18, $19, $20, $21, $22, $23, $24,
+				$25
 		)
 	`
 
 	guestCID := toNullableInt64(vm.GuestCID)
 
 	if _, err := r.db.ExecContext(ctx, query,
-		vm.ID, vm.EnvironmentID, string(vm.Provider), string(vm.Status),
+		vm.ID, vm.Name, vm.EnvironmentID, string(vm.Provider), string(vm.Status),
 		vm.RuntimeID, vm.SocketPath, vm.VsockPath, guestCID, vm.PID, vm.RuntimeState, vm.LastHeartbeatAt, vm.IdleDeadlineAt,
 		vm.VCPU, vm.MemoryMB, vm.DiskMB,
 		vm.IPAddress, vm.ChatID, vm.AssignedAt, vm.LastResumedAt, vm.TerminatedAt, vm.CreatedAt,
@@ -93,7 +94,7 @@ func (r *vmRepository) Create(ctx context.Context, vm *vmdomain.VM) error {
 func (r *vmRepository) GetByID(ctx context.Context, id string) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 	query := `
-		SELECT id, environment_id, provider, status,
+		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
@@ -113,38 +114,62 @@ func (r *vmRepository) GetByID(ctx context.Context, id string) (*vmdomain.VM, er
 	return mapVMRow(row)
 }
 
+func (r *vmRepository) GetByName(ctx context.Context, name string) (*vmdomain.VM, error) {
+	logger := pkglog.FromContext(ctx)
+	query := `
+		SELECT id, name, environment_id, provider, status,
+		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
+		       vcpu, memory_mb, disk_mb,
+		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
+		FROM vm_instances
+		WHERE name = $1
+	`
+
+	var row vmRow
+	if err := r.db.GetContext(ctx, &row, query, name); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, exception.NotFound("vm name", name)
+		}
+		logger.ErrorContext(ctx, "postgres: get vm by name failed", "vm_name", name, "error", err)
+		return nil, exception.Internal(fmt.Errorf("get vm by name: %w", err))
+	}
+
+	return mapVMRow(row)
+}
+
 func (r *vmRepository) Update(ctx context.Context, vm *vmdomain.VM) error {
 	logger := pkglog.FromContext(ctx)
 	query := `
 		UPDATE vm_instances
-		SET environment_id = $2,
-		    provider = $3,
-		    status = $4,
-		    runtime_id = $5,
-		    socket_path = $6,
-		    vsock_path = $7,
-		    guest_cid = $8,
-		    pid = $9,
-		    runtime_state_source = $10,
-		    last_heartbeat_at = $11,
-		    idle_deadline_at = $12,
-		    vcpu = $13,
-		    memory_mb = $14,
-		    disk_mb = $15,
-		    ip_address = $16,
-		    chat_id = $17,
-		    assigned_at = $18,
-		    last_resumed_at = $19,
-		    terminated_at = $20,
-		    conversation_id = $21,
-		    workspace_size_gb = $22
+		SET name = $2,
+		    environment_id = $3,
+		    provider = $4,
+		    status = $5,
+		    runtime_id = $6,
+		    socket_path = $7,
+		    vsock_path = $8,
+		    guest_cid = $9,
+		    pid = $10,
+		    runtime_state_source = $11,
+		    last_heartbeat_at = $12,
+		    idle_deadline_at = $13,
+		    vcpu = $14,
+		    memory_mb = $15,
+		    disk_mb = $16,
+		    ip_address = $17,
+		    chat_id = $18,
+		    assigned_at = $19,
+		    last_resumed_at = $20,
+		    terminated_at = $21,
+		    conversation_id = $22,
+		    workspace_size_gb = $23
 		WHERE id = $1
 	`
 
 	guestCID := toNullableInt64(vm.GuestCID)
 
 	result, err := r.db.ExecContext(ctx, query,
-		vm.ID, vm.EnvironmentID, string(vm.Provider), string(vm.Status),
+		vm.ID, vm.Name, vm.EnvironmentID, string(vm.Provider), string(vm.Status),
 		vm.RuntimeID, vm.SocketPath, vm.VsockPath, guestCID, vm.PID, vm.RuntimeState, vm.LastHeartbeatAt, vm.IdleDeadlineAt,
 		vm.VCPU, vm.MemoryMB, vm.DiskMB,
 		vm.IPAddress, vm.ChatID, vm.AssignedAt, vm.LastResumedAt, vm.TerminatedAt,
@@ -190,7 +215,7 @@ func (r *vmRepository) Delete(ctx context.Context, id string) error {
 func (r *vmRepository) List(ctx context.Context) ([]*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 	query := `
-		SELECT id, environment_id, provider, status,
+		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
@@ -219,7 +244,7 @@ func (r *vmRepository) List(ctx context.Context) ([]*vmdomain.VM, error) {
 func (r *vmRepository) GetAvailablePool(ctx context.Context, provider vmdomain.Provider, limit int) ([]*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 	query := `
-		SELECT id, environment_id, provider, status,
+		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
@@ -252,7 +277,7 @@ func (r *vmRepository) GetAvailablePool(ctx context.Context, provider vmdomain.P
 func (r *vmRepository) GetByEnvironmentID(ctx context.Context, envID string) ([]*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 	query := `
-		SELECT id, environment_id, provider, status,
+		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
@@ -282,7 +307,7 @@ func (r *vmRepository) GetByEnvironmentID(ctx context.Context, envID string) ([]
 func (r *vmRepository) GetByChatID(ctx context.Context, chatID string) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 	query := `
-		SELECT id, environment_id, provider, status,
+		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
@@ -307,7 +332,7 @@ func (r *vmRepository) GetByChatID(ctx context.Context, chatID string) (*vmdomai
 func (r *vmRepository) GetActiveVMs(ctx context.Context) ([]*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 	query := `
-		SELECT id, environment_id, provider, status,
+		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
@@ -338,7 +363,7 @@ func (r *vmRepository) GetActiveByUserID(ctx context.Context, userID string) ([]
 	logger := pkglog.FromContext(ctx)
 	query := `
 		SELECT DISTINCT ON (vm.id)
-		       vm.id, vm.environment_id, vm.provider, vm.status,
+		       vm.id, vm.name, vm.environment_id, vm.provider, vm.status,
 		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source,
 		       vm.last_heartbeat_at, vm.idle_deadline_at,
 		       vm.vcpu, vm.memory_mb, vm.disk_mb,
@@ -375,7 +400,7 @@ func (r *vmRepository) GetAllByUserID(ctx context.Context, userID string) ([]*vm
 	logger := pkglog.FromContext(ctx)
 	query := `
 		SELECT DISTINCT ON (vm.id)
-		       vm.id, vm.environment_id, vm.provider, vm.status,
+		       vm.id, vm.name, vm.environment_id, vm.provider, vm.status,
 		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source,
 		       vm.last_heartbeat_at, vm.idle_deadline_at,
 		       vm.vcpu, vm.memory_mb, vm.disk_mb,
@@ -409,7 +434,7 @@ func (r *vmRepository) GetAllByUserID(ctx context.Context, userID string) ([]*vm
 func (r *vmRepository) GetByEnvironmentAndChatID(ctx context.Context, envID, chatID string) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 	query := `
-		SELECT vm.id, vm.environment_id, vm.provider, vm.status,
+		SELECT vm.id, vm.name, vm.environment_id, vm.provider, vm.status,
 		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source, vm.last_heartbeat_at, vm.idle_deadline_at,
 		       vm.vcpu, vm.memory_mb, vm.disk_mb,
 		       vm.ip_address, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at, vm.conversation_id, vm.workspace_size_gb, diff_snapshots_enabled
@@ -449,7 +474,7 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 	}()
 
 	lockQuery := `
-		SELECT id, environment_id, provider, status,
+		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
@@ -500,7 +525,7 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 	}
 
 	readQuery := `
-		SELECT id, environment_id, provider, status,
+		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
 		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
@@ -572,7 +597,7 @@ func (r *vmRepository) ListActiveLeasesByChat(ctx context.Context, chatID string
 func (r *vmRepository) FindPreviousLeaseForChat(ctx context.Context, chatID string) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 	query := `
-		SELECT vm.id, vm.environment_id, vm.provider, vm.status,
+		SELECT vm.id, vm.name, vm.environment_id, vm.provider, vm.status,
 		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source, vm.last_heartbeat_at, vm.idle_deadline_at,
 		       vm.vcpu, vm.memory_mb, vm.disk_mb,
 		       vm.ip_address, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at, vm.conversation_id, vm.workspace_size_gb, diff_snapshots_enabled
@@ -600,7 +625,7 @@ func (r *vmRepository) FindPreviousLeaseForChat(ctx context.Context, chatID stri
 func (r *vmRepository) ListPreviousLeasesForChat(ctx context.Context, chatID string) ([]*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 	query := `
-		SELECT vm.id, vm.environment_id, vm.provider, vm.status,
+		SELECT vm.id, vm.name, vm.environment_id, vm.provider, vm.status,
 		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source, vm.last_heartbeat_at, vm.idle_deadline_at,
 		       vm.vcpu, vm.memory_mb, vm.disk_mb,
 		       vm.ip_address, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at, vm.conversation_id, vm.workspace_size_gb, diff_snapshots_enabled
@@ -633,6 +658,7 @@ func (r *vmRepository) ListPreviousLeasesForChat(ctx context.Context, chatID str
 func mapVMRow(row vmRow) (*vmdomain.VM, error) {
 	v := &vmdomain.VM{
 		ID:              row.ID,
+		Name:            row.Name,
 		EnvironmentID:   row.EnvironmentID,
 		ConversationID:  nullableStringValue(row.ConversationID),
 		Provider:        vmdomain.Provider(row.Provider),

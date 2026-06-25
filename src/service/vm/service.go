@@ -15,11 +15,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lib/pq"
+
 	"github.com/spacetrek-sh/spacetrek/pkg/exception"
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/environment"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/snapshot"
 	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/vm/naming"
 	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 	fcutil "github.com/spacetrek-sh/spacetrek/src/infrastructure/vm/firecracker"
 )
@@ -52,11 +55,77 @@ type Service struct {
 	resumeGrace   time.Duration
 	snapDiskCfg   SnapshotDiskConfig
 
+	// hook is notified after VM lifecycle transitions (Create, Destroy). It's
+	// used by the hostswriter to refresh dnsmasq's addn-hosts file. Set
+	// post-construction via SetLifecycleHook to avoid bloating NewService
+	// and to dodge a construction-time cycle with hostswriter.
+	hook LifecycleHook
+
 	// metricsCache holds the latest collected metrics per VM.
 	// Written by collectAndPersistMetrics, read by SSE handlers via GetCachedMetrics.
 	metricsMu    sync.RWMutex
 	metricsCache map[string]vmdomain.Metrics
 }
+
+// LifecycleHook is notified after VM lifecycle transitions. Implementations
+// must be safe to call inline from service goroutines; they should return
+// quickly or offload work themselves.
+type LifecycleHook interface {
+	OnVMChanged(ctx context.Context, vm *vmdomain.VM)
+}
+
+// SetLifecycleHook installs a hook that gets notified after Create/Destroy.
+// Optional — production wires hostswriter.Hook; tests omit it.
+func (s *Service) SetLifecycleHook(h LifecycleHook) { s.hook = h }
+
+// notifyHook fires the hook if one is configured. Safe to call from any path.
+func (s *Service) notifyHook(ctx context.Context, vm *vmdomain.VM) {
+	if s.hook == nil {
+		return
+	}
+	s.hook.OnVMChanged(ctx, vm)
+}
+
+// resolveUniqueName ensures vm.Name is unique before persistence. For
+// explicit user-provided names, it pre-checks via GetByName and returns 409 on
+// collision. For generated names, it retries up to 5 times then falls back to
+// a UUID-derived suffix.
+func (s *Service) resolveUniqueName(ctx context.Context, vm *vmdomain.VM, explicit bool) error {
+	logger := pkglog.FromContext(ctx)
+
+	if explicit {
+		existing, err := s.repo.GetByName(ctx, vm.Name)
+		if err == nil && existing != nil {
+			return exception.Conflict("vm name already in use")
+		}
+		return nil
+	}
+
+	for attempts := 0; attempts < nameCollisionRetries; attempts++ {
+		existing, err := s.repo.GetByName(ctx, vm.Name)
+		if err != nil || existing == nil {
+			return nil
+		}
+		logger.DebugContext(ctx, "vm name collision; regenerating", "attempt", attempts+1, "vm_name", vm.Name)
+		vm.Name = naming.Generate()
+	}
+
+	// Exhausted retries: derive a deterministic, unique name from the UUID.
+	vm.Name = naming.GenerateWithSuffix(vm.ID)
+	logger.InfoContext(ctx, "vm name set to suffixed fallback", "vm_name", vm.Name)
+	return nil
+}
+
+// isUniqueViolation reports whether err is a Postgres unique_violation (23505).
+func isUniqueViolation(err error) bool {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return pqErr.Code == "23505"
+	}
+	return false
+}
+
+const nameCollisionRetries = 5
 
 // NetworkConfig carries network parameters from app config to the VM service.
 type NetworkConfig struct {
@@ -523,10 +592,13 @@ func (s *Service) collectAndPersistMetrics(ctx context.Context) {
 }
 
 // Create provisions a new VM instance for the given environment.
-func (s *Service) Create(ctx context.Context, envID, conversationID string, provider vmdomain.Provider, workspaceSizeGB int, vcpu, memoryMB, diskMB *int) (*vmdomain.VM, error) {
+// name is optional — empty string means "generate a random Docker-style name".
+// A non-empty name is normalized and must be unique; explicit collisions
+// return 409, generated collisions are retried with a UUID-derived suffix.
+func (s *Service) Create(ctx context.Context, envID, conversationID string, provider vmdomain.Provider, name string, workspaceSizeGB int, vcpu, memoryMB, diskMB *int) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 
-	logger.DebugContext(ctx, "VM create: starting", "env_id", envID, "conversation_id", conversationID, "provider", provider, "workspace_size_gb", workspaceSizeGB)
+	logger.DebugContext(ctx, "VM create: starting", "env_id", envID, "conversation_id", conversationID, "provider", provider, "name", name, "workspace_size_gb", workspaceSizeGB)
 
 	if strings.TrimSpace(conversationID) == "" {
 		return nil, exception.BadRequest("conversation_id is required")
@@ -547,25 +619,54 @@ func (s *Service) Create(ctx context.Context, envID, conversationID string, prov
 		provider = vmdomain.ProviderFirecracker
 	}
 
+	var namePtr *string
+	if strings.TrimSpace(name) != "" {
+		normalized := vmdomain.NormalizeName(name)
+		if normalized == "" {
+			return nil, exception.BadRequest("invalid vm name")
+		}
+		namePtr = &normalized
+	}
+
 	// Create VM entity with optional resource overrides
 	vm := vmdomain.New(vmdomain.CreateParams{
 		EnvironmentID:   envID,
 		ConversationID:  strings.TrimSpace(conversationID),
 		Provider:        provider,
 		WorkspaceSizeGB: workspaceSizeGB,
+		Name:            namePtr,
 		VCPU:            vcpu,
 		MemoryMB:        memoryMB,
 		DiskMB:          diskMB,
 	})
 	vm.DiffSnapshotsEnabled = env.DiffSnapshots
 
-	// Persist VM to database
-	if err := s.repo.Create(ctx, vm); err != nil {
-		logger.ErrorContext(ctx, "failed to persist VM", "env_id", envID, "error", err)
+	if err := s.resolveUniqueName(ctx, vm, namePtr != nil); err != nil {
 		return nil, err
 	}
 
-	logger.DebugContext(ctx, "VM create: persisted to database", "vm_id", vm.ID)
+	// Persist VM to database
+	if err := s.repo.Create(ctx, vm); err != nil {
+		if isUniqueViolation(err) {
+			// Race: a concurrent Create with the same explicit name beat us,
+			// or a generated name collided despite the pre-check. For
+			// explicit names this is a 409. For generated names, fall back
+			// to a UUID-derived suffix and retry once.
+			if namePtr != nil {
+				return nil, exception.Conflict("vm name already in use")
+			}
+			vm.Name = naming.GenerateWithSuffix(vm.ID)
+			if err := s.repo.Create(ctx, vm); err != nil {
+				logger.ErrorContext(ctx, "failed to persist VM after name fallback", "vm_id", vm.ID, "vm_name", vm.Name, "error", err)
+				return nil, err
+			}
+		} else {
+			logger.ErrorContext(ctx, "failed to persist VM", "env_id", envID, "error", err)
+			return nil, err
+		}
+	}
+
+	logger.DebugContext(ctx, "VM create: persisted to database", "vm_id", vm.ID, "vm_name", vm.Name)
 
 	// Compute effective resources (use override if set, otherwise environment default)
 	effectiveVCPU := vm.GetVCPU(env.GetVCPU())
@@ -648,7 +749,8 @@ func (s *Service) Create(ctx context.Context, envID, conversationID string, prov
 		return nil, err
 	}
 
-	logger.InfoContext(ctx, "VM provisioned", "vm_id", vm.ID, "backend_id", backendID, "provider", provider)
+	logger.InfoContext(ctx, "VM provisioned", "vm_id", vm.ID, "vm_name", vm.Name, "backend_id", backendID, "provider", provider)
+	s.notifyHook(ctx, vm)
 	return vm, nil
 }
 
@@ -832,7 +934,7 @@ func (s *Service) AssignToChat(ctx context.Context, vmID, chatID string) (*vmdom
 		return nil, err
 	}
 
-	logger.InfoContext(ctx, "VM assigned to chat", "vm_id", vmID, "chat_id", chatID)
+	logger.InfoContext(ctx, "VM assigned to chat", "vm_id", vmID, "vm_name", vm.Name, "chat_id", chatID)
 	return vm, nil
 }
 
@@ -927,7 +1029,7 @@ func (s *Service) Stop(ctx context.Context, id string) (*vmdomain.VM, error) {
 		return nil, err
 	}
 
-	logger.InfoContext(ctx, "VM stopped", "vm_id", id)
+	logger.InfoContext(ctx, "VM stopped", "vm_id", id, "vm_name", vm.Name)
 	return vm, nil
 }
 
@@ -979,11 +1081,12 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 
 	// Delete from database
 	if err := s.repo.Delete(ctx, id); err != nil {
-		logger.ErrorContext(ctx, "failed to delete VM", "vm_id", id, "error", err)
+		logger.ErrorContext(ctx, "failed to delete VM", "vm_id", id, "vm_name", vm.Name, "error", err)
 		return err
 	}
 
-	logger.InfoContext(ctx, "VM destroyed", "vm_id", id)
+	logger.InfoContext(ctx, "VM destroyed", "vm_id", id, "vm_name", vm.Name)
+	s.notifyHook(ctx, vm)
 	return nil
 }
 
@@ -1624,7 +1727,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 		if err != nil || len(diskChain) == 0 {
 			logger.WarnContext(ctx, "failed to resolve cow chain, falling back to new VM",
 				"vm_id", vmID, "error", err)
-			return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+			return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
 				vm.WorkspaceSizeGB, nil, nil, nil)
 		}
 		baseSnap = diskChain[0]
@@ -1907,7 +2010,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 					}); err != nil {
 						logger.WarnContext(ctx, "root memory missing; falling back to new VM",
 							"vm_id", vmID, "error", err)
-						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
 							vm.WorkspaceSizeGB, nil, nil, nil)
 					}
 				}
@@ -1936,7 +2039,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 							{Key: diffMemRaw, LocalPath: diffMemLocal},
 						}); err != nil {
 							logger.WarnContext(ctx, "diff memory missing; falling back", "chain_idx", ci, "error", err)
-							return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+							return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
 								vm.WorkspaceSizeGB, nil, nil, nil)
 						}
 					}
@@ -1948,13 +2051,13 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 						{Key: manKey, LocalPath: manLocal},
 					}); err != nil {
 						logger.WarnContext(ctx, "manifest download failed; falling back", "chain_idx", ci, "error", err)
-						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
 							vm.WorkspaceSizeGB, nil, nil, nil)
 					}
 					manifest, manErr := fcutil.ReadManifest(manLocal)
 					if manErr != nil {
 						logger.WarnContext(ctx, "manifest parse failed; falling back", "chain_idx", ci, "error", manErr)
-						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
 							vm.WorkspaceSizeGB, nil, nil, nil)
 					}
 
@@ -1963,7 +2066,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 						"vm_id", vmID, "chain_idx", ci, "regions", len(manifest))
 					if mergeErr := fcutil.MergeDiffMemory(accumMemPath, diffMemLocal, mergedPath, manifest); mergeErr != nil {
 						logger.WarnContext(ctx, "memory merge failed; falling back", "chain_idx", ci, "error", mergeErr)
-						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
 							vm.WorkspaceSizeGB, nil, nil, nil)
 					}
 					accumMemPath = mergedPath
@@ -2006,7 +2109,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 					}); err != nil {
 						logger.WarnContext(ctx, "base memory missing; falling back to new VM",
 							"vm_id", vmID, "error", err)
-						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
 							vm.WorkspaceSizeGB, nil, nil, nil)
 					}
 				}
@@ -2015,7 +2118,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 				if manifestErr != nil {
 					logger.WarnContext(ctx, "failed to read memory manifest; falling back to new VM",
 						"error", manifestErr)
-					return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+					return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
 						vm.WorkspaceSizeGB, nil, nil, nil)
 				}
 				diffMemoryPath := filepath.Join(tmpDir, "memory")
@@ -2025,7 +2128,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 				if mergeErr := fcutil.MergeDiffMemory(baseRawLocal, diffMemoryPath, mergedPath, manifest); mergeErr != nil {
 					logger.WarnContext(ctx, "failed to merge diff memory; falling back to new VM",
 						"error", mergeErr)
-					return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker,
+					return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
 						vm.WorkspaceSizeGB, nil, nil, nil)
 				}
 				if renameErr := os.Rename(mergedPath, diffMemoryPath); renameErr != nil {

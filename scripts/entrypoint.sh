@@ -9,6 +9,12 @@ DNS_BRIDGE_INTERFACE="${SPACETRK_VM_DNS_BRIDGE_INTERFACE:-br-stk}"
 DNS_CONF="/tmp/dnsmasq-spacetrk.conf"
 
 start_dns() {
+  # dnsmasq refuses to start if addn-hosts points at a missing file, so
+  # ensure the state dir + the vm-hosts file exist before launch. The
+  # orchestrator rewrites this file on VM lifecycle events and every 60s.
+  mkdir -p /var/lib/spacetrk
+  touch /var/lib/spacetrk/vm-hosts
+
   cat >"$DNS_CONF" <<EOF
 port=${DNS_PORT}
 domain-needed
@@ -20,6 +26,10 @@ interface=lo
 interface=${DNS_BRIDGE_INTERFACE}
 interface=${DNS_TAP_INTERFACE_PATTERN}
 except-interface=eth0
+addn-hosts=/var/lib/spacetrk/vm-hosts
+domain=vm.internal
+local=/vm.internal/
+expand-hosts
 EOF
 
   OLD_IFS="$IFS"

@@ -31,6 +31,7 @@ import (
 	toolsvc "github.com/spacetrek-sh/spacetrek/src/service/tool"
 	usersvc "github.com/spacetrek-sh/spacetrek/src/service/user"
 	vmsvc "github.com/spacetrek-sh/spacetrek/src/service/vm"
+	"github.com/spacetrek-sh/spacetrek/src/service/vm/hostswriter"
 )
 
 func main() {
@@ -162,6 +163,12 @@ func main() {
 		MaxChainLength:     cfg.VM.MaxChainLength,
 		MaxChainAgeMinutes: cfg.VM.MaxChainAgeMinutes,
 	})
+
+	// Hosts-file writer: rebuilds /var/lib/spacetrk/vm-hosts whenever a VM is
+	// created or destroyed, plus a 60s reconciliation tick to catch drift.
+	hostsWriter := hostswriter.New(vmRepo, "/var/lib/spacetrk/vm-hosts")
+	vmService.SetLifecycleHook(&hostswriter.Hook{W: hostsWriter})
+
 	orchTools := orchestratorsvc.NewInMemoryToolRegistry(nil)
 	orchTools.Register(toolsvc.NewVMCommandTool(vmService))
 	orchTools.Register(toolsvc.NewVMCreateTool(vmService))
@@ -250,6 +257,7 @@ func main() {
 	go vmService.StartRuntimeReconciler(pkglog.WithLogger(ctx, logger), 30*time.Second)
 	go vmService.StartMetricsCollector(pkglog.WithLogger(ctx, logger), 10*time.Second)
 	go vmService.StartSnapshotGC(pkglog.WithLogger(ctx, logger), 24*time.Hour)
+	go hostsWriter.StartReconciler(pkglog.WithLogger(ctx, logger), 60*time.Second)
 
 	<-ctx.Done()
 	logger.Info("shutting down...")

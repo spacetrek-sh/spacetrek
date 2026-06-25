@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,19 @@ func (r *VMRepository) GetByID(_ context.Context, id string) (*vmdomain.VM, erro
 	}
 	cp := *vm
 	return &cp, nil
+}
+
+func (r *VMRepository) GetByName(_ context.Context, name string) (*vmdomain.VM, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	target := strings.ToLower(name)
+	for _, vm := range r.vms {
+		if strings.EqualFold(vm.Name, target) {
+			cp := *vm
+			return &cp, nil
+		}
+	}
+	return nil, exception.NotFound("vm name", name)
 }
 
 func (r *VMRepository) Update(_ context.Context, vm *vmdomain.VM) error {

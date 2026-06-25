@@ -2,9 +2,13 @@
 package vm
 
 import (
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/vm/naming"
 )
 
 // Status represents the lifecycle state of a VM.
@@ -30,6 +34,7 @@ const (
 // Aligned with database table vm_instances.
 type VM struct {
 	ID              string   `db:"id"`
+	Name            string   `db:"name"` // DNS label, unique, human-readable
 	EnvironmentID   string   `db:"environment_id"` // FK to environments
 	ConversationID  string   `db:"conversation_id"`
 	Provider        Provider `db:"provider"`
@@ -75,6 +80,10 @@ type CreateParams struct {
 	ConversationID  string
 	Provider        Provider
 	WorkspaceSizeGB int
+	// Name is optional. nil = generate a random Docker-style name.
+	// Non-nil is normalized via NormalizeName; the caller is responsible
+	// for rejecting an empty post-normalization result.
+	Name *string
 	// Optional resource overrides
 	VCPU     *int // nil = use environment default
 	MemoryMB *int // nil = use environment default
@@ -98,6 +107,7 @@ func New(params CreateParams) *VM {
 
 	return &VM{
 		ID:              uuid.NewString(),
+		Name:            resolveName(params.Name),
 		EnvironmentID:   params.EnvironmentID,
 		ConversationID:  params.ConversationID,
 		Provider:        provider,
@@ -108,6 +118,38 @@ func New(params CreateParams) *VM {
 		DiskMB:          params.DiskMB,
 		CreatedAt:       now,
 	}
+}
+
+// resolveName picks the initial VM name: a normalized user-provided name, or a
+// random Docker-style name if none was supplied. An empty result means the
+// user-provided name normalized to nothing; callers reject that case.
+func resolveName(provided *string) string {
+	if provided == nil {
+		return naming.Generate()
+	}
+	return NormalizeName(*provided)
+}
+
+var (
+	nonNameChar    = regexp.MustCompile(`[^a-z0-9-]+`)
+	consecutiveDsh = regexp.MustCompile(`-{2,}`)
+)
+
+// NormalizeName lowercases, replaces any non-[a-z0-9-] rune with a hyphen,
+// collapses consecutive hyphens, trims leading/trailing hyphens, and truncates
+// to 63 chars (DNS label limit per RFC 1123). Returns "" for input that
+// produces an empty label (e.g. "!!!", "   "). Callers decide whether empty is
+// an error.
+func NormalizeName(s string) string {
+	s = strings.ToLower(s)
+	s = nonNameChar.ReplaceAllString(s, "-")
+	s = consecutiveDsh.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	if len(s) > naming.MaxLen {
+		s = s[:naming.MaxLen]
+		s = strings.TrimRight(s, "-")
+	}
+	return s
 }
 
 // HasCustomResources returns true if the VM has custom resource overrides.

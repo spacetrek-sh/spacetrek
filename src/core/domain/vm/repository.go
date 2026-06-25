@@ -11,6 +11,7 @@ type Repository interface {
 	// Basic CRUD
 	Create(ctx context.Context, vm *VM) error
 	GetByID(ctx context.Context, id string) (*VM, error)
+	GetByName(ctx context.Context, name string) (*VM, error)
 	Update(ctx context.Context, vm *VM) error
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]*VM, error)
