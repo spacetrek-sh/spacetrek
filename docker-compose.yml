@@ -6,15 +6,15 @@ services:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: spacetrk
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: spacetrk
+      POSTGRES_USER: ${POSTGRES_USER:?set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set in .env}
     ports:
       - "5432:5432"
     volumes:
       - spacetrek-psql-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U spacetrek -d spacetrek"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -26,7 +26,7 @@ services:
     volumes:
       - ./migrations:/migrations
     # Run migrations on startup, then exit successfully
-    command: ["-path", "/migrations", "-database", "postgres://spacetrk:password@db:5432/spacetrk?sslmode=disable", "up"]
+    command: ["-path", "/migrations", "-database", "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@psql:5432/${POSTGRES_DB}?sslmode=disable", "up"]
     depends_on:
       psql:
         condition: service_healthy
@@ -37,8 +37,8 @@ services:
     image: rustfs/rustfs:latest
     restart: unless-stopped
     environment:
-      RUSTFS_ACCESS_KEY: rustfsadmin
-      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?set in .env}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?set in .env}
       RUSTFS_CONSOLE_ENABLE: "true"
     ports:
       - "9000:9000"
@@ -57,8 +57,13 @@ services:
     container_name: spacetrek-api
     environment:
       CONFIG_PATH: /app/configs/config.yaml
-      RUSTFS_ACCESS_KEY: rustfsadmin
-      RUSTFS_SECRET_KEY: rustfsadmin
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       - ./configs:/app/configs:ro
@@ -83,7 +88,6 @@ services:
     privileged: true
     sysctls:
       - net.ipv4.ip_forward=1
-      - net.bridge.bridge-nf-call-iptables=0
       - net.ipv4.conf.all.forwarding=1
     depends_on:
       psql:
