@@ -2,11 +2,9 @@ package vm
 
 import (
 	"context"
-
-	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 )
 
-// multiHook fans out OnVMChanged to multiple LifecycleHook implementations.
+// multiHook fans out OnVMEvent to multiple LifecycleHook implementations.
 // Returned by MultiHook; used when more than one subsystem needs to react to
 // VM lifecycle transitions (e.g. hostswriter + tunnelwriter).
 type multiHook struct {
@@ -25,8 +23,8 @@ func MultiHook(hooks ...LifecycleHook) LifecycleHook {
 	return multiHook{hooks: filtered}
 }
 
-func (m multiHook) OnVMChanged(ctx context.Context, vm *vmdomain.VM) {
+func (m multiHook) OnVMEvent(ctx context.Context, evt Event) {
 	for _, h := range m.hooks {
-		h.OnVMChanged(ctx, vm)
+		h.OnVMEvent(ctx, evt)
 	}
 }

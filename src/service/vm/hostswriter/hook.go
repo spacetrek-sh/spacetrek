@@ -3,7 +3,7 @@ package hostswriter
 import (
 	"context"
 
-	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
+	vmsvc "github.com/spacetrek-sh/spacetrek/src/service/vm"
 )
 
 // Hook adapts a *Writer to the vm.Service LifecycleHook interface. It is a
@@ -13,9 +13,9 @@ type Hook struct {
 	W *Writer
 }
 
-// OnVMChanged is called inline by the VM service after lifecycle transitions.
-// The VM argument is informational (the writer always rebuilds from the repo
-// to avoid missing updates from concurrent events).
-func (h *Hook) OnVMChanged(ctx context.Context, _ *vmdomain.VM) {
+// OnVMEvent is called inline by the VM service after lifecycle transitions.
+// The event argument is informational (the writer always rebuilds from the
+// repo to avoid missing updates from concurrent events).
+func (h *Hook) OnVMEvent(ctx context.Context, _ vmsvc.Event) {
 	_ = h.W.Refresh(ctx)
 }

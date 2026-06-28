@@ -129,14 +129,9 @@ func (t *VMCreateTool) Execute(ctx context.Context, call tool.Call) (tool.Result
 	}
 
 	result.OK = true
-	result.Payload = map[string]any{
-		"vm_id":        assigned.ID,
-		"name":         assigned.Name,
-		"status":       string(assigned.Status),
-		"environment":  envType,
-		"service_port": assigned.ServicePort,
-		"public_url":   publicURL(assigned),
-	}
+	payload := vmBaseFields(assigned)
+	payload["environment"] = envType
+	result.Payload = payload
 	logger.InfoContext(ctx, "vm create tool: created and assigned", "vm_id", assigned.ID, "chat_id", chatID, "env_type", envType)
 	return result, nil
 }

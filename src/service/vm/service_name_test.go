@@ -28,7 +28,7 @@ func (s *nameLookupStub) GetByName(_ context.Context, name string) (*vmdomain.VM
 }
 
 // Stub out everything else so nameLookupStub satisfies vmdomain.Repository.
-func (s *nameLookupStub) Create(context.Context, *vmdomain.VM) error  { panic("not used") }
+func (s *nameLookupStub) Create(context.Context, *vmdomain.VM) error { panic("not used") }
 func (s *nameLookupStub) GetByID(context.Context, string) (*vmdomain.VM, error) {
 	panic("not used")
 }

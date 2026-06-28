@@ -44,24 +44,26 @@ const (
 
 // Service handles VM business logic.
 type Service struct {
-	repo          vmdomain.Repository
-	metricsRepo   vmdomain.MetricsHistoryRepository
-	snapRepo      snapshot.Repository
+	repo            vmdomain.Repository
+	metricsRepo     vmdomain.MetricsHistoryRepository
+	snapRepo        snapshot.Repository
 	snapMetricsRepo snapshot.MetricsRepository
-	backend       vmdomain.Backend // VM provider (Firecracker, etc.)
-	envRepo       EnvironmentRepository
-	snapshotStore ports.SnapshotStore // nil = local-only mode
-	ipAllocator   *IPAllocator        // nil when networking disabled
-	networkCfg    NetworkConfig       // zero-value when networking disabled
-	idleTimeout   time.Duration
-	autoSnapshot  bool
-	resumeGrace   time.Duration
-	snapDiskCfg   SnapshotDiskConfig
+	backend         vmdomain.Backend // VM provider (Firecracker, etc.)
+	envRepo         EnvironmentRepository
+	snapshotStore   ports.SnapshotStore // nil = local-only mode
+	ipAllocator     *IPAllocator        // nil when networking disabled
+	networkCfg      NetworkConfig       // zero-value when networking disabled
+	idleTimeout     time.Duration
+	autoSnapshot    bool
+	resumeGrace     time.Duration
+	snapDiskCfg     SnapshotDiskConfig
 
-	// hook is notified after VM lifecycle transitions (Create, Destroy). It's
-	// used by the hostswriter to refresh dnsmasq's addn-hosts file. Set
-	// post-construction via SetLifecycleHook to avoid bloating NewService
-	// and to dodge a construction-time cycle with hostswriter.
+	// hook is notified after VM lifecycle transitions — Create, Destroy,
+	// Status change (Stop, idle reap, Resume), Assign, Unassign. Used by
+	// hostswriter to refresh dnsmasq's addn-hosts file and by tunnelwriter
+	// to refresh cloudflared ingress. Set post-construction via
+	// SetLifecycleHook to avoid bloating NewService and to dodge a
+	// construction-time cycle with hostswriter.
 	hook LifecycleHook
 
 	// metricsCache holds the latest collected metrics per VM.
@@ -80,21 +82,24 @@ type Service struct {
 
 // LifecycleHook is notified after VM lifecycle transitions. Implementations
 // must be safe to call inline from service goroutines; they should return
-// quickly or offload work themselves.
+// quickly or offload work themselves. Subscribers switch on evt.Type() to
+// react to specific transitions.
 type LifecycleHook interface {
-	OnVMChanged(ctx context.Context, vm *vmdomain.VM)
+	OnVMEvent(ctx context.Context, evt Event)
 }
 
-// SetLifecycleHook installs a hook that gets notified after Create/Destroy.
-// Optional — production wires hostswriter.Hook; tests omit it.
+// SetLifecycleHook installs a hook that gets notified after lifecycle
+// transitions. Optional — production wires MultiHook(hostswriter.Hook,
+// tunnelwriter.Hook); tests omit it.
 func (s *Service) SetLifecycleHook(h LifecycleHook) { s.hook = h }
 
-// notifyHook fires the hook if one is configured. Safe to call from any path.
-func (s *Service) notifyHook(ctx context.Context, vm *vmdomain.VM) {
+// notifyHook fires the hook if one is configured. Safe to call from any
+// path. Call after the corresponding repo write commits, never before.
+func (s *Service) notifyHook(ctx context.Context, evt Event) {
 	if s.hook == nil {
 		return
 	}
-	s.hook.OnVMChanged(ctx, vm)
+	s.hook.OnVMEvent(ctx, evt)
 }
 
 // resolveUniqueName ensures vm.Name is unique before persistence. For
@@ -255,14 +260,14 @@ func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRep
 		envRepo:         envRepo,
 		snapshotStore:   snapshotStore,
 		ipAllocator:     ipAllocator,
-		networkCfg:    networkCfg,
-		idleTimeout:   idleTimeout,
-		autoSnapshot:  autoSnapshot,
-		resumeGrace:   resumeGrace,
-		snapDiskCfg:   snapDiskCfg,
-		metricsCache:  make(map[string]vmdomain.Metrics),
+		networkCfg:      networkCfg,
+		idleTimeout:     idleTimeout,
+		autoSnapshot:    autoSnapshot,
+		resumeGrace:     resumeGrace,
+		snapDiskCfg:     snapDiskCfg,
+		metricsCache:    make(map[string]vmdomain.Metrics),
 
-		fleetBroadcaster:   fleetbroadcaster.New(repo, 2*time.Second),
+		fleetBroadcaster:    fleetbroadcaster.New(repo, 2*time.Second),
 		activityBroadcaster: activitybroadcaster.New(runtimeEventRepo, 2*time.Second, 100),
 	}
 }
@@ -550,6 +555,12 @@ func (s *Service) reapIdleVMs(ctx context.Context) {
 			continue
 		}
 
+		oldStatus := vm.Status
+		priorChatID := ""
+		if vm.ChatID != nil {
+			priorChatID = *vm.ChatID
+		}
+
 		// Auto-snapshot before stopping if enabled.
 		if s.autoSnapshot && s.snapRepo != nil {
 			if _, snapErr := s.CreateSnapshot(ctx, vm.ID); snapErr != nil {
@@ -579,6 +590,12 @@ func (s *Service) reapIdleVMs(ctx context.Context) {
 					logger.WarnContext(ctx, "VM idle reaper failed to persist state for already-stopped VM", "vm_id", vm.ID, "error", repoErr)
 				} else {
 					logger.InfoContext(ctx, "VM idle reaper reconciled already-stopped VM", "vm_id", vm.ID)
+					if vm.Status != oldStatus {
+						s.notifyHook(ctx, NewStatusChangedEvent(vm, oldStatus))
+					}
+					if priorChatID != "" {
+						s.notifyHook(ctx, NewUnassignedEvent(vm, priorChatID))
+					}
 				}
 				continue
 			}
@@ -603,6 +620,12 @@ func (s *Service) reapIdleVMs(ctx context.Context) {
 		}
 
 		logger.InfoContext(ctx, "VM auto-stopped due to idle timeout", "vm_id", vm.ID)
+		if vm.Status != oldStatus {
+			s.notifyHook(ctx, NewStatusChangedEvent(vm, oldStatus))
+		}
+		if priorChatID != "" {
+			s.notifyHook(ctx, NewUnassignedEvent(vm, priorChatID))
+		}
 	}
 }
 
@@ -763,7 +786,7 @@ func (s *Service) Create(ctx context.Context, envID, conversationID string, prov
 			ConversationID: vm.ConversationID,
 			SizeGB:         vm.WorkspaceSizeGB,
 		},
-		
+
 		Runtime: vmdomain.DefaultRuntimeConfig(),
 	}
 	spec.Runtime.EnableDiffSnapshots = env.DiffSnapshots
@@ -829,7 +852,7 @@ func (s *Service) Create(ctx context.Context, envID, conversationID string, prov
 	}
 
 	logger.InfoContext(ctx, "VM provisioned", "vm_id", vm.ID, "vm_name", vm.Name, "backend_id", backendID, "provider", provider)
-	s.notifyHook(ctx, vm)
+	s.notifyHook(ctx, NewCreatedEvent(vm))
 	return vm, nil
 }
 
@@ -1014,6 +1037,7 @@ func (s *Service) AssignToChat(ctx context.Context, vmID, chatID string) (*vmdom
 	}
 
 	logger.InfoContext(ctx, "VM assigned to chat", "vm_id", vmID, "vm_name", vm.Name, "chat_id", chatID)
+	s.notifyHook(ctx, NewAssignedEvent(vm, chatID))
 	return vm, nil
 }
 
@@ -1049,6 +1073,11 @@ func (s *Service) Unassign(ctx context.Context, vmID string) (*vmdomain.VM, erro
 		return nil, err
 	}
 
+	priorChatID := ""
+	if vm.ChatID != nil {
+		priorChatID = *vm.ChatID
+	}
+
 	vm.Unassign()
 	s.refreshIdleDeadline(vm)
 	if err := s.repo.ReleaseActiveLeaseByVM(ctx, vmID); err != nil {
@@ -1061,6 +1090,7 @@ func (s *Service) Unassign(ctx context.Context, vmID string) (*vmdomain.VM, erro
 	}
 
 	logger.InfoContext(ctx, "VM unassigned", "vm_id", vmID)
+	s.notifyHook(ctx, NewUnassignedEvent(vm, priorChatID))
 	return vm, nil
 }
 
@@ -1075,6 +1105,12 @@ func (s *Service) Stop(ctx context.Context, id string) (*vmdomain.VM, error) {
 	if err != nil {
 		logger.WarnContext(ctx, "VM not found", "vm_id", id, "error", err)
 		return nil, err
+	}
+
+	oldStatus := vm.Status
+	priorChatID := ""
+	if vm.ChatID != nil {
+		priorChatID = *vm.ChatID
 	}
 
 	// Auto-snapshot before stopping if enabled and VM is running.
@@ -1109,6 +1145,12 @@ func (s *Service) Stop(ctx context.Context, id string) (*vmdomain.VM, error) {
 	}
 
 	logger.InfoContext(ctx, "VM stopped", "vm_id", id, "vm_name", vm.Name)
+	if vm.Status != oldStatus {
+		s.notifyHook(ctx, NewStatusChangedEvent(vm, oldStatus))
+	}
+	if priorChatID != "" {
+		s.notifyHook(ctx, NewUnassignedEvent(vm, priorChatID))
+	}
 	return vm, nil
 }
 
@@ -1165,7 +1207,7 @@ func (s *Service) Destroy(ctx context.Context, id string) error {
 	}
 
 	logger.InfoContext(ctx, "VM destroyed", "vm_id", id, "vm_name", vm.Name)
-	s.notifyHook(ctx, vm)
+	s.notifyHook(ctx, NewDestroyedEvent(vm))
 	return nil
 }
 
@@ -1499,16 +1541,16 @@ func (s *Service) CreateSnapshot(ctx context.Context, vmID string) (*snapshot.Sn
 	}
 	guestPort := uint32(10789) // default guest agent port
 	meta := snapshot.SnapshotMetadata{
-		EnvironmentID:   vm.EnvironmentID,
-		ImagePath:       env.ImagePath,
-		VCPU:            vm.GetVCPU(env.GetVCPU()),
-		MemoryMB:        vm.GetMemoryMB(env.GetMemoryMB()),
-		DiskMB:          vm.GetDiskMB(env.GetDiskMB()),
-		GuestCID:        guestCID,
-		GuestPort:       guestPort,
-		RootfsPath:      filepath.Join("/var/lib/firecracker/vms", vm.ID, "rootfs.ext4"),
-		DiffSnapshots:   diffEnabled,
-		BaseImagePath:   env.ImagePath,
+		EnvironmentID:    vm.EnvironmentID,
+		ImagePath:        env.ImagePath,
+		VCPU:             vm.GetVCPU(env.GetVCPU()),
+		MemoryMB:         vm.GetMemoryMB(env.GetMemoryMB()),
+		DiskMB:           vm.GetDiskMB(env.GetDiskMB()),
+		GuestCID:         guestCID,
+		GuestPort:        guestPort,
+		RootfsPath:       filepath.Join("/var/lib/firecracker/vms", vm.ID, "rootfs.ext4"),
+		DiffSnapshots:    diffEnabled,
+		BaseImagePath:    env.ImagePath,
 		DiskSnapshotType: diskType,
 		DiskChainLength:  s.resolveChainLength(ctx, vmID, diskType),
 	}
@@ -1782,6 +1824,10 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 		return nil, err
 	}
 
+	// Capture the pre-resume status so the post-resume StatusChangedEvent
+	// can carry the prior state. Captured before any mutation.
+	preResumeStatus := vm.Status
+
 	// Try to find a snapshot for this VM.
 	snap, snapErr := s.snapRepo.GetLatestByVMID(ctx, vmID)
 	if snapErr != nil {
@@ -1981,80 +2027,80 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 			spec.Runtime.EnableDiffSnapshots = true
 			logger.InfoContext(ctx, "using full disk image for restore (no chain reconstruction)",
 				"vm_id", vmID, "disk_image", spec.DiskImagePath)
-			} else if meta.DiskSnapshotType == "incremental" && len(diskChain) > 0 {
-				// Incremental disk: find the most recent full-disk snapshot in the chain
-				// (compaction point) and use its disk as root. Download cow deltas only
-				// for chain members after that point.
-				diskRootIdx := 0
-				for i, chainSnap := range diskChain {
-					cm, _ := chainSnap.ParseMetadata()
-					if cm != nil && (cm.DiskSnapshotType == "full" || cm.DiskSnapshotType == "self_contained") {
-						diskRootIdx = i
-					}
+		} else if meta.DiskSnapshotType == "incremental" && len(diskChain) > 0 {
+			// Incremental disk: find the most recent full-disk snapshot in the chain
+			// (compaction point) and use its disk as root. Download cow deltas only
+			// for chain members after that point.
+			diskRootIdx := 0
+			for i, chainSnap := range diskChain {
+				cm, _ := chainSnap.ParseMetadata()
+				if cm != nil && (cm.DiskSnapshotType == "full" || cm.DiskSnapshotType == "self_contained") {
+					diskRootIdx = i
 				}
-				diskRoot := diskChain[diskRootIdx]
+			}
+			diskRoot := diskChain[diskRootIdx]
 
-				// Download the disk root's full disk image.
-				rootDiskZst := diskRoot.SnapshotPath + "/disk.zst"
-				rootDiskRaw := diskRoot.SnapshotPath + "/disk"
-				diskPath := filepath.Join(vmDir, "disk.img")
-				if exists, _ := s.snapshotStore.ObjectExists(ctx, rootDiskZst); exists {
+			// Download the disk root's full disk image.
+			rootDiskZst := diskRoot.SnapshotPath + "/disk.zst"
+			rootDiskRaw := diskRoot.SnapshotPath + "/disk"
+			diskPath := filepath.Join(vmDir, "disk.img")
+			if exists, _ := s.snapshotStore.ObjectExists(ctx, rootDiskZst); exists {
+				if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+					{Key: rootDiskZst, LocalPath: filepath.Join(tmpDir, "root_disk.zst")},
+				}); err != nil {
+					return nil, exception.Internal(fmt.Errorf("download root disk: %w", err))
+				}
+				if err := fcutil.DecompressFileZstd(filepath.Join(tmpDir, "root_disk.zst"), diskPath); err != nil {
+					return nil, exception.Internal(fmt.Errorf("decompress root disk: %w", err))
+				}
+				_ = os.Remove(filepath.Join(tmpDir, "root_disk.zst"))
+			} else {
+				if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
+					{Key: rootDiskRaw, LocalPath: diskPath},
+				}); err != nil {
+					return nil, exception.Internal(fmt.Errorf("download root disk (raw): %w", err))
+				}
+			}
+			spec.DiskImagePath = diskPath
+			spec.Runtime.EnableDiffSnapshots = true
+
+			// Download cow deltas from chain members after the disk root.
+			var cowPaths []string
+			for i, chainSnap := range diskChain[diskRootIdx+1:] {
+				cowZst := chainSnap.SnapshotPath + "/cow.zst"
+				cowRaw := chainSnap.SnapshotPath + "/cow"
+				cowLocal := filepath.Join(vmDir, fmt.Sprintf("cow_chain_%d.img", i))
+
+				if exists, _ := s.snapshotStore.ObjectExists(ctx, cowZst); exists {
 					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
-						{Key: rootDiskZst, LocalPath: filepath.Join(tmpDir, "root_disk.zst")},
+						{Key: cowZst, LocalPath: filepath.Join(tmpDir, fmt.Sprintf("chain_cow_%d.zst", i))},
 					}); err != nil {
-						return nil, exception.Internal(fmt.Errorf("download root disk: %w", err))
+						return nil, exception.Internal(fmt.Errorf("download chain cow %d: %w", i, err))
 					}
-					if err := fcutil.DecompressFileZstd(filepath.Join(tmpDir, "root_disk.zst"), diskPath); err != nil {
-						return nil, exception.Internal(fmt.Errorf("decompress root disk: %w", err))
+					if err := fcutil.DecompressFileZstd(
+						filepath.Join(tmpDir, fmt.Sprintf("chain_cow_%d.zst", i)),
+						cowLocal,
+					); err != nil {
+						return nil, exception.Internal(fmt.Errorf("decompress chain cow %d: %w", i, err))
 					}
-					_ = os.Remove(filepath.Join(tmpDir, "root_disk.zst"))
+					_ = os.Remove(filepath.Join(tmpDir, fmt.Sprintf("chain_cow_%d.zst", i)))
 				} else {
 					if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
-						{Key: rootDiskRaw, LocalPath: diskPath},
+						{Key: cowRaw, LocalPath: cowLocal},
 					}); err != nil {
-						return nil, exception.Internal(fmt.Errorf("download root disk (raw): %w", err))
+						return nil, exception.Internal(fmt.Errorf("download chain cow %d (raw): %w", i, err))
 					}
 				}
-				spec.DiskImagePath = diskPath
-				spec.Runtime.EnableDiffSnapshots = true
-
-				// Download cow deltas from chain members after the disk root.
-				var cowPaths []string
-				for i, chainSnap := range diskChain[diskRootIdx+1:] {
-					cowZst := chainSnap.SnapshotPath + "/cow.zst"
-					cowRaw := chainSnap.SnapshotPath + "/cow"
-					cowLocal := filepath.Join(vmDir, fmt.Sprintf("cow_chain_%d.img", i))
-
-					if exists, _ := s.snapshotStore.ObjectExists(ctx, cowZst); exists {
-						if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
-							{Key: cowZst, LocalPath: filepath.Join(tmpDir, fmt.Sprintf("chain_cow_%d.zst", i))},
-						}); err != nil {
-							return nil, exception.Internal(fmt.Errorf("download chain cow %d: %w", i, err))
-						}
-						if err := fcutil.DecompressFileZstd(
-							filepath.Join(tmpDir, fmt.Sprintf("chain_cow_%d.zst", i)),
-							cowLocal,
-						); err != nil {
-							return nil, exception.Internal(fmt.Errorf("decompress chain cow %d: %w", i, err))
-						}
-						_ = os.Remove(filepath.Join(tmpDir, fmt.Sprintf("chain_cow_%d.zst", i)))
-					} else {
-						if err := s.snapshotStore.DownloadFiles(ctx, []ports.SnapshotFile{
-							{Key: cowRaw, LocalPath: cowLocal},
-						}); err != nil {
-							return nil, exception.Internal(fmt.Errorf("download chain cow %d (raw): %w", i, err))
-						}
-					}
-					cowPaths = append(cowPaths, cowLocal)
-				}
-
-				if len(cowPaths) > 0 {
-					spec.CowChainPaths = cowPaths
-				}
-				logger.InfoContext(ctx, "incremental disk chain prepared for restore",
-					"vm_id", vmID, "root_disk", diskPath,
-					"disk_root_idx", diskRootIdx, "cow_chain", len(cowPaths))
+				cowPaths = append(cowPaths, cowLocal)
 			}
+
+			if len(cowPaths) > 0 {
+				spec.CowChainPaths = cowPaths
+			}
+			logger.InfoContext(ctx, "incremental disk chain prepared for restore",
+				"vm_id", vmID, "root_disk", diskPath,
+				"disk_root_idx", diskRootIdx, "cow_chain", len(cowPaths))
+		}
 
 		// Incremental memory merge: download base memory and apply diffs.
 		if snap.IsIncremental() && baseSnap != nil {
@@ -2308,19 +2354,23 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 	if s.snapMetricsRepo != nil {
 		totalMs := time.Since(resumeStart).Milliseconds()
 		_ = s.snapMetricsRepo.Insert(ctx, &snapshot.SnapshotMetrics{
-			SnapshotID:        snap.ID,
-			VMID:              vmID,
-			Type:              snap.Type,
+			SnapshotID:         snap.ID,
+			VMID:               vmID,
+			Type:               snap.Type,
 			DownloadDurationMs: downloadMs,
-			RestoreDurationMs: restoreMs,
-			AgentReadyMs:      agentReadyMs,
-			TotalResumeMs:     totalMs,
-			GuestRAMMB:        meta.MemoryMB,
-			CreatedAt:         time.Now().UTC(),
+			RestoreDurationMs:  restoreMs,
+			AgentReadyMs:       agentReadyMs,
+			TotalResumeMs:      totalMs,
+			GuestRAMMB:         meta.MemoryMB,
+			CreatedAt:          time.Now().UTC(),
 		})
 	}
 
 	logger.InfoContext(ctx, "VM restored from snapshot", "vm_id", vmID, "chat_id", chatID, "snapshot_id", snap.ID)
+
+	// Notify subscribers: status changed (stopped → running), then assigned.
+	s.notifyHook(ctx, NewStatusChangedEvent(assignedVM, preResumeStatus))
+	s.notifyHook(ctx, NewAssignedEvent(assignedVM, chatID))
 
 	// GC: after resume the VM is self-contained (flattened), safe to delete all.
 	go func() {
@@ -2765,7 +2815,7 @@ func (s *Service) DeleteSnapshot(ctx context.Context, snapshotID string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	for _, childSnap := range snaps {
 		if childSnap.ParentSnapshotID != nil && *childSnap.ParentSnapshotID == snapshotID {
 			return exception.BadRequest("cannot delete snapshot because it has children")
@@ -2776,9 +2826,9 @@ func (s *Service) DeleteSnapshot(ctx context.Context, snapshotID string) error {
 		sPrefix := fmt.Sprintf("snapshots/%s/%s", snap.VMID, snap.ID)
 		_ = s.snapshotStore.DeletePrefix(ctx, sPrefix)
 	}
-	
+
 	// Assume backend snapshot cleanup is handled or unnecessary if files are removed.
-	
+
 	return s.snapRepo.Delete(ctx, snapshotID)
 }
 
