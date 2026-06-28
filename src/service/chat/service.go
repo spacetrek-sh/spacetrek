@@ -29,6 +29,7 @@ type Service struct {
 	agents      agent.Repository
 	orch        Orchestrator
 	vmCollector AvailableVMCollector
+	titleGen    ports.TitleGenerator
 
 	mu          sync.RWMutex
 	subscribers map[string]map[uint64]chan orchdomain.RuntimeEvent
@@ -38,13 +39,14 @@ type Service struct {
 	eventBufs  map[string][]orchdomain.RuntimeEvent
 }
 
-func New(chats chat.Repository, runtimes orchdomain.RuntimeEventRepository, agents agent.Repository, orch Orchestrator, vmCol AvailableVMCollector) *Service {
+func New(chats chat.Repository, runtimes orchdomain.RuntimeEventRepository, agents agent.Repository, orch Orchestrator, vmCol AvailableVMCollector, titleGen ports.TitleGenerator) *Service {
 	return &Service{
 		chats:       chats,
 		runtimes:    runtimes,
 		agents:      agents,
 		orch:        orch,
 		vmCollector: vmCol,
+		titleGen:    titleGen,
 		subscribers: make(map[string]map[uint64]chan orchdomain.RuntimeEvent),
 		eventBufs:   make(map[string][]orchdomain.RuntimeEvent),
 	}
@@ -197,6 +199,7 @@ func (s *Service) SendMessageAsync(ctx context.Context, id, content, vmID string
 	chatID := id
 	agentID := c.AgentID
 	userID := c.UserID
+	isFirstMessage := len(c.Messages) == 1
 
 	go func() {
 		bgCtx := pkglog.WithLogger(context.Background(), pkglog.FromContext(ctx).With("chat_id", chatID))
@@ -224,6 +227,10 @@ func (s *Service) SendMessageAsync(ctx context.Context, id, content, vmID string
 			}
 			s.publish(event)
 			s.persistEvent(bgCtx, chatID, event)
+		}
+
+		if isFirstMessage && s.titleGen != nil {
+			go s.generateTitle(bgCtx, chatID, content, emit)
 		}
 
 		bgLogger.DebugContext(bgCtx, "async orchestrator: starting")
@@ -296,6 +303,35 @@ func tokenUsagePtr(trace *orchdomain.ExecutionTrace) *orchdomain.TokenUsage {
 	}
 	copy := trace.TokenUsage
 	return &copy
+}
+
+// generateTitle produces a short conversation title from the user's first
+// message, persists it via a single-column update, and emits an EventTitle
+// runtime event. Runs in its own goroutine in parallel with orchestration;
+// failures are logged but never break orchestration.
+func (s *Service) generateTitle(ctx context.Context, chatID, message string, emit func(orchdomain.RuntimeEvent)) {
+	logger := pkglog.FromContext(ctx)
+
+	title, err := s.titleGen.GenerateTitle(ctx, message)
+	if err != nil {
+		logger.WarnContext(ctx, "title generation failed", "chat_id", chatID, "error", err)
+		return
+	}
+	if title == "" {
+		return
+	}
+
+	if err := s.chats.UpdateTitle(ctx, chatID, title); err != nil {
+		logger.WarnContext(ctx, "failed to persist chat title", "chat_id", chatID, "error", err)
+		return
+	}
+
+	emit(orchdomain.RuntimeEvent{
+		Type:   orchdomain.EventTitle,
+		ChatID: chatID,
+		Data:   title,
+		At:     time.Now().UTC(),
+	})
 }
 
 // SendMessage appends user input, runs orchestrator flow, and persists updates.

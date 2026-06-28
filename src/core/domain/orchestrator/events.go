@@ -12,6 +12,7 @@ const (
 	EventToolCall RuntimeEventType = "tool_call"
 	EventError   RuntimeEventType = "error"
 	EventDone    RuntimeEventType = "done"
+	EventTitle   RuntimeEventType = "title"
 )
 
 // RuntimeEvent is the transport-neutral runtime streaming payload.

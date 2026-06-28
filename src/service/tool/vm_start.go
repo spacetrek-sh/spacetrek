@@ -108,18 +108,20 @@ func (t *VMStartTool) Execute(ctx context.Context, call tool.Call) (tool.Result,
 	return result, nil
 }
 
-// enrichedPayload builds a tool result payload with optional environment description.
+// enrichedPayload builds a tool result payload with the environment type name.
 func enrichedPayload(vm *vmdomain.VM, restarter VMRestarter, ctx context.Context, restored bool) map[string]any {
 	payload := map[string]any{
-		"vm_id":    vm.ID,
-		"status":   string(vm.Status),
-		"provider": string(vm.Provider),
+		"vm_id":        vm.ID,
+		"name":         vm.Name,
+		"status":       string(vm.Status),
+		"service_port": vm.ServicePort,
+		"public_url":   publicURL(vm),
 	}
 	if restored {
 		payload["restored"] = true
 	}
-	if envDesc, err := restarter.ResolveEnvironmentHint(ctx, vm.ID); err == nil && envDesc != "" {
-		payload["env_description"] = envDesc
+	if envType, err := restarter.ResolveEnvironmentHint(ctx, vm.ID); err == nil && envType != "" {
+		payload["environment"] = envType
 	}
 	return payload
 }

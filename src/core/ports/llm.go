@@ -86,3 +86,10 @@ type ToolPlannerWithMetadata interface {
 	PlanToolsWithMetadata(ctx context.Context, req PlanRequest) (ToolPlan, PlanMetadata, error)
 	FinalResponseWithMetadata(ctx context.Context, req FinalResponseRequest) (string, FinalResponseMetadata, error)
 }
+
+// TitleGenerator produces a short conversation title from the first user
+// message. Implementations are optional — when unavailable, chats keep an
+// empty title and the feature degrades gracefully.
+type TitleGenerator interface {
+	GenerateTitle(ctx context.Context, message string) (string, error)
+}

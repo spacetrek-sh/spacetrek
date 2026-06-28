@@ -77,6 +77,7 @@ func New(p CreateParams) *Chat {
 		ID:        uuid.NewString(),
 		AgentID:   p.AgentID,
 		UserID:    p.UserID,
+		Title:     p.Title,
 		Status:    StatusActive,
 		Messages:  make([]Message, 0),
 		CreatedAt: now,
@@ -152,6 +153,7 @@ type Repository interface {
 	Create(ctx context.Context, c *Chat) error
 	GetByID(ctx context.Context, id string) (*Chat, error)
 	Update(ctx context.Context, c *Chat) error
+	UpdateTitle(ctx context.Context, id, title string) error
 	Delete(ctx context.Context, id string) error
 	ListByUserID(ctx context.Context, params ListParams) (*ListResult, error)
 	ListMessages(ctx context.Context, params ListMessagesParams) (*ListMessagesResult, error)

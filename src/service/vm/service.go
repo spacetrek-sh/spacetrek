@@ -20,11 +20,14 @@ import (
 	"github.com/spacetrek-sh/spacetrek/pkg/exception"
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/environment"
+	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/snapshot"
 	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/vm/naming"
 	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 	fcutil "github.com/spacetrek-sh/spacetrek/src/infrastructure/vm/firecracker"
+	"github.com/spacetrek-sh/spacetrek/src/service/vm/activitybroadcaster"
+	"github.com/spacetrek-sh/spacetrek/src/service/vm/fleetbroadcaster"
 )
 
 const (
@@ -65,6 +68,14 @@ type Service struct {
 	// Written by collectAndPersistMetrics, read by SSE handlers via GetCachedMetrics.
 	metricsMu    sync.RWMutex
 	metricsCache map[string]vmdomain.Metrics
+
+	// fleetBroadcaster fans out VM snapshots to SSE subscribers. Started once
+	// via StartFleetBroadcaster; nil-safe if never started.
+	fleetBroadcaster *fleetbroadcaster.Broadcaster
+
+	// activityBroadcaster fans out recent runtime events to SSE subscribers.
+	// Started once via StartActivityBroadcaster; nil-safe if never started.
+	activityBroadcaster *activitybroadcaster.Broadcaster
 }
 
 // LifecycleHook is notified after VM lifecycle transitions. Implementations
@@ -218,7 +229,7 @@ type EnvironmentRepository interface {
 }
 
 // NewService creates a new VM service.
-func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRepository, backend vmdomain.Backend, envRepo EnvironmentRepository, snapRepo snapshot.Repository, snapMetricsRepo snapshot.MetricsRepository, snapshotStore ports.SnapshotStore, idleTimeout time.Duration, autoSnapshot bool, resumeGrace time.Duration, networkCfg NetworkConfig, ipAllocator *IPAllocator, snapDiskCfg SnapshotDiskConfig) *Service {
+func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRepository, backend vmdomain.Backend, envRepo EnvironmentRepository, snapRepo snapshot.Repository, snapMetricsRepo snapshot.MetricsRepository, snapshotStore ports.SnapshotStore, runtimeEventRepo orchdomain.RuntimeEventRepository, idleTimeout time.Duration, autoSnapshot bool, resumeGrace time.Duration, networkCfg NetworkConfig, ipAllocator *IPAllocator, snapDiskCfg SnapshotDiskConfig) *Service {
 	if idleTimeout <= 0 {
 		idleTimeout = 5 * time.Minute
 	}
@@ -250,7 +261,67 @@ func NewService(repo vmdomain.Repository, metricsRepo vmdomain.MetricsHistoryRep
 		resumeGrace:   resumeGrace,
 		snapDiskCfg:   snapDiskCfg,
 		metricsCache:  make(map[string]vmdomain.Metrics),
+
+		fleetBroadcaster:   fleetbroadcaster.New(repo, 2*time.Second),
+		activityBroadcaster: activitybroadcaster.New(runtimeEventRepo, 2*time.Second, 100),
 	}
+}
+
+// releaseIPOnTerminate frees the allocated IP both in the DB (via the
+// allocator) and in the in-memory VM state. Call before s.repo.Update when
+// terminating a VM, so the subsequent Update does not write the released IP
+// back to the row and the next allocation can reuse it.
+func (s *Service) releaseIPOnTerminate(ctx context.Context, vm *vmdomain.VM) {
+	if vm.IPAddress == nil || s.ipAllocator == nil {
+		return
+	}
+	logger := pkglog.FromContext(ctx)
+	if err := s.ipAllocator.Release(ctx, vm.ID); err != nil {
+		logger.WarnContext(ctx, "failed to release IP on terminate", "vm_id", vm.ID, "error", err)
+	}
+	vm.IPAddress = nil
+}
+
+// StartFleetBroadcaster launches the background goroutine that refreshes
+// the fleet snapshot every 2s and fans it out to SSE subscribers. Blocks
+// until ctx is cancelled; run in a goroutine.
+func (s *Service) StartFleetBroadcaster(ctx context.Context) {
+	if s.fleetBroadcaster == nil {
+		return
+	}
+	s.fleetBroadcaster.Start(ctx)
+}
+
+// SubscribeFleet registers a new SSE subscriber and returns a receive
+// channel plus an unsubscribe func. If a snapshot is already available
+// it is delivered immediately.
+func (s *Service) SubscribeFleet() (<-chan []*vmdomain.VM, func()) {
+	if s.fleetBroadcaster == nil {
+		ch := make(chan []*vmdomain.VM)
+		return ch, func() {}
+	}
+	return s.fleetBroadcaster.Subscribe()
+}
+
+// StartActivityBroadcaster launches the background goroutine that polls
+// recent runtime events every 2s and fans them out to SSE subscribers.
+// Blocks until ctx is cancelled; run in a goroutine.
+func (s *Service) StartActivityBroadcaster(ctx context.Context) {
+	if s.activityBroadcaster == nil {
+		return
+	}
+	s.activityBroadcaster.Start(ctx)
+}
+
+// SubscribeActivity registers a new SSE subscriber for runtime events and
+// returns a receive channel plus an unsubscribe func. If a batch is
+// already available it is delivered immediately (the lookback window).
+func (s *Service) SubscribeActivity() (<-chan []*orchdomain.PersistedRuntimeEvent, func()) {
+	if s.activityBroadcaster == nil {
+		ch := make(chan []*orchdomain.PersistedRuntimeEvent)
+		return ch, func() {}
+	}
+	return s.activityBroadcaster.Subscribe()
 }
 
 // ResolveEnvironment resolves an environment type name (e.g. "alpine", "ubuntu") to its UUID.
@@ -267,7 +338,9 @@ func (s *Service) ResolveEnvironment(ctx context.Context, envType string) (strin
 	return "", exception.NotFound("environment type", envType)
 }
 
-// ResolveEnvironmentHint returns the environment description for a VM's environment.
+// ResolveEnvironmentHint returns the environment type name (e.g. "uv", "bun")
+// for a VM. The short name is used both as the system-prompt active-environment
+// hint and as the "environment" field in tool result payloads.
 func (s *Service) ResolveEnvironmentHint(ctx context.Context, vmID string) (string, error) {
 	vm, err := s.repo.GetByID(ctx, vmID)
 	if err != nil {
@@ -277,7 +350,7 @@ func (s *Service) ResolveEnvironmentHint(ctx context.Context, vmID string) (stri
 	if err != nil {
 		return "", err
 	}
-	return env.Description, nil
+	return string(env.Type), nil
 }
 
 // StartMetricsCollector periodically captures and persists VM metrics samples.
@@ -382,6 +455,7 @@ func (s *Service) reconcileRuntimeStates(ctx context.Context) {
 				vm.LastHeartbeatAt = &now
 				vm.IdleDeadlineAt = nil
 				vm.Terminate()
+				s.releaseIPOnTerminate(ctx, vm)
 				if repoErr := s.repo.ReleaseActiveLeaseByVM(ctx, vm.ID); repoErr != nil {
 					logger.WarnContext(ctx, "VM runtime reconciler failed to release lease for not-found VM", "vm_id", vm.ID, "error", repoErr)
 				}
@@ -397,6 +471,7 @@ func (s *Service) reconcileRuntimeStates(ctx context.Context) {
 		if runtimeStatus.State == "stopped" || runtimeStatus.State == "terminated" {
 			vm.PID = nil
 			vm.Terminate()
+			s.releaseIPOnTerminate(ctx, vm)
 		}
 
 		if err := s.repo.Update(ctx, vm); err != nil {
@@ -595,7 +670,7 @@ func (s *Service) collectAndPersistMetrics(ctx context.Context) {
 // name is optional — empty string means "generate a random Docker-style name".
 // A non-empty name is normalized and must be unique; explicit collisions
 // return 409, generated collisions are retried with a UUID-derived suffix.
-func (s *Service) Create(ctx context.Context, envID, conversationID string, provider vmdomain.Provider, name string, workspaceSizeGB int, vcpu, memoryMB, diskMB *int) (*vmdomain.VM, error) {
+func (s *Service) Create(ctx context.Context, envID, conversationID string, provider vmdomain.Provider, name string, workspaceSizeGB int, vcpu, memoryMB, diskMB, servicePort *int) (*vmdomain.VM, error) {
 	logger := pkglog.FromContext(ctx)
 
 	logger.DebugContext(ctx, "VM create: starting", "env_id", envID, "conversation_id", conversationID, "provider", provider, "name", name, "workspace_size_gb", workspaceSizeGB)
@@ -638,6 +713,7 @@ func (s *Service) Create(ctx context.Context, envID, conversationID string, prov
 		VCPU:            vcpu,
 		MemoryMB:        memoryMB,
 		DiskMB:          diskMB,
+		ServicePort:     servicePort,
 	})
 	vm.DiffSnapshotsEnabled = env.DiffSnapshots
 
@@ -712,6 +788,7 @@ func (s *Service) Create(ctx context.Context, envID, conversationID string, prov
 
 	if err := s.prepareWorkspaceImageFromStorage(ctx, vm.ID, vm.ConversationID); err != nil {
 		vm.Terminate()
+		s.releaseIPOnTerminate(ctx, vm)
 		_ = s.repo.Update(ctx, vm)
 		return nil, exception.Internal(fmt.Errorf("prepare workspace image: %w", err))
 	}
@@ -721,6 +798,7 @@ func (s *Service) Create(ctx context.Context, envID, conversationID string, prov
 		logger.ErrorContext(ctx, "backend provisioning failed", "vm_id", vm.ID, "error", err)
 		// Mark VM as terminated on failure
 		vm.Terminate()
+		s.releaseIPOnTerminate(ctx, vm)
 		s.repo.Update(ctx, vm)
 		return nil, exception.Internal(err)
 	}
@@ -731,6 +809,7 @@ func (s *Service) Create(ctx context.Context, envID, conversationID string, prov
 		logger.ErrorContext(ctx, "workspace mount failed after create", "vm_id", vm.ID, "error", err)
 		_ = s.backend.Destroy(ctx, backendID)
 		vm.Terminate()
+		s.releaseIPOnTerminate(ctx, vm)
 		_ = s.repo.Update(ctx, vm)
 		return nil, err
 	}
@@ -1728,7 +1807,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 			logger.WarnContext(ctx, "failed to resolve cow chain, falling back to new VM",
 				"vm_id", vmID, "error", err)
 			return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
-				vm.WorkspaceSizeGB, nil, nil, nil)
+				vm.WorkspaceSizeGB, nil, nil, nil, nil)
 		}
 		baseSnap = diskChain[0]
 		logger.InfoContext(ctx, "resolved snapshot chain for restore",
@@ -2011,7 +2090,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 						logger.WarnContext(ctx, "root memory missing; falling back to new VM",
 							"vm_id", vmID, "error", err)
 						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
-							vm.WorkspaceSizeGB, nil, nil, nil)
+							vm.WorkspaceSizeGB, nil, nil, nil, nil)
 					}
 				}
 
@@ -2040,7 +2119,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 						}); err != nil {
 							logger.WarnContext(ctx, "diff memory missing; falling back", "chain_idx", ci, "error", err)
 							return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
-								vm.WorkspaceSizeGB, nil, nil, nil)
+								vm.WorkspaceSizeGB, nil, nil, nil, nil)
 						}
 					}
 
@@ -2052,13 +2131,13 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 					}); err != nil {
 						logger.WarnContext(ctx, "manifest download failed; falling back", "chain_idx", ci, "error", err)
 						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
-							vm.WorkspaceSizeGB, nil, nil, nil)
+							vm.WorkspaceSizeGB, nil, nil, nil, nil)
 					}
 					manifest, manErr := fcutil.ReadManifest(manLocal)
 					if manErr != nil {
 						logger.WarnContext(ctx, "manifest parse failed; falling back", "chain_idx", ci, "error", manErr)
 						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
-							vm.WorkspaceSizeGB, nil, nil, nil)
+							vm.WorkspaceSizeGB, nil, nil, nil, nil)
 					}
 
 					mergedPath := filepath.Join(baseMemoryDir, fmt.Sprintf("merged_%d", ci))
@@ -2067,7 +2146,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 					if mergeErr := fcutil.MergeDiffMemory(accumMemPath, diffMemLocal, mergedPath, manifest); mergeErr != nil {
 						logger.WarnContext(ctx, "memory merge failed; falling back", "chain_idx", ci, "error", mergeErr)
 						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
-							vm.WorkspaceSizeGB, nil, nil, nil)
+							vm.WorkspaceSizeGB, nil, nil, nil, nil)
 					}
 					accumMemPath = mergedPath
 				}
@@ -2110,7 +2189,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 						logger.WarnContext(ctx, "base memory missing; falling back to new VM",
 							"vm_id", vmID, "error", err)
 						return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
-							vm.WorkspaceSizeGB, nil, nil, nil)
+							vm.WorkspaceSizeGB, nil, nil, nil, nil)
 					}
 				}
 				manifestPath := filepath.Join(tmpDir, "memory.manifest")
@@ -2119,7 +2198,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 					logger.WarnContext(ctx, "failed to read memory manifest; falling back to new VM",
 						"error", manifestErr)
 					return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
-						vm.WorkspaceSizeGB, nil, nil, nil)
+						vm.WorkspaceSizeGB, nil, nil, nil, nil)
 				}
 				diffMemoryPath := filepath.Join(tmpDir, "memory")
 				mergedPath := filepath.Join(tmpDir, "memory.merged")
@@ -2129,7 +2208,7 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 					logger.WarnContext(ctx, "failed to merge diff memory; falling back to new VM",
 						"error", mergeErr)
 					return s.Create(ctx, meta.EnvironmentID, chatID, vmdomain.ProviderFirecracker, "",
-						vm.WorkspaceSizeGB, nil, nil, nil)
+						vm.WorkspaceSizeGB, nil, nil, nil, nil)
 				}
 				if renameErr := os.Rename(mergedPath, diffMemoryPath); renameErr != nil {
 					return nil, exception.Internal(fmt.Errorf("rename merged memory: %w", renameErr))

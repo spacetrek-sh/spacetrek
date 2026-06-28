@@ -2,6 +2,7 @@ package toolsvc
 
 import (
 	"context"
+	"strings"
 
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/tool"
@@ -90,7 +91,13 @@ func (t *VMWriteFileTool) Execute(ctx context.Context, call tool.Call) (tool.Res
 	}
 
 	result.OK = true
-	logger.DebugContext(ctx, "vm write file tool executed", "vm_id", vmID, "path", path)
+	result.Payload = map[string]any{
+		"path":          path,
+		"bytes_written": len(content),
+		"lines":         len(strings.Split(content, "\n")),
+		"note":          "file written; do not re-read to verify",
+	}
+	logger.DebugContext(ctx, "vm write file tool executed", "vm_id", vmID, "path", path, "bytes", len(content))
 	return result, nil
 }
 

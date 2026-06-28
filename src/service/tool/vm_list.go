@@ -61,9 +61,12 @@ func (t *VMListTool) Execute(ctx context.Context, call tool.Call) (tool.Result, 
 			continue
 		}
 		active = append(active, map[string]any{
-			"vm_id":    vm.ID,
-			"status":   string(vm.Status),
-			"provider": string(vm.Provider),
+			"vm_id":        vm.ID,
+			"name":         vm.Name,
+			"status":       string(vm.Status),
+			"provider":     string(vm.Provider),
+			"service_port": vm.ServicePort,
+			"public_url":   publicURL(vm),
 		})
 	}
 
@@ -76,8 +79,11 @@ func (t *VMListTool) Execute(ctx context.Context, call tool.Call) (tool.Result, 
 	for _, vm := range prevVMs {
 		previous = append(previous, map[string]any{
 			"vm_id":        vm.ID,
+			"name":         vm.Name,
 			"status":       string(vm.Status),
 			"provider":     string(vm.Provider),
+			"service_port": vm.ServicePort,
+			"public_url":   publicURL(vm),
 			"has_snapshot": t.lister.HasSnapshot(ctx, vm.ID),
 		})
 	}

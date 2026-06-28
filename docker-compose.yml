@@ -25,8 +25,11 @@ services:
     profiles: ["migrate"]
     volumes:
       - ./migrations:/migrations
-    # Run migrations on startup, then exit successfully
-    command: ["-path", "/migrations", "-database", "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@psql:5432/${POSTGRES_DB}?sslmode=disable", "up"]
+    # Global flags (-path, -database) live in entrypoint so they survive
+    # `docker compose run --rm migrate <subcommand>` overrides; command is the
+    # default subcommand for `docker compose up migrate`.
+    entrypoint: ["migrate", "-path", "/migrations", "-database", "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@psql:5432/${POSTGRES_DB}?sslmode=disable"]
+    command: ["up"]
     depends_on:
       psql:
         condition: service_healthy
@@ -64,6 +67,12 @@ services:
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY}
       JWT_SECRET: ${JWT_SECRET}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      # Tunnel UUID + optional creds path. The orchestrator renders these into
+      # /var/lib/spacetrek/cloudflared-config.yml as the static header.
+      CLOUDFLARE_TUNNEL_ID: ${CLOUDFLARE_TUNNEL_ID:-}
+      CLOUDFLARE_TUNNEL_CREDENTIALS_FILE: ${CLOUDFLARE_TUNNEL_CREDENTIALS_FILE:-}
+      # Optional override — defaults to /var/lib/spacetrek/cloudflared-static.yml
+      CLOUDFLARE_STATIC_INGRESS_FILE: ${CLOUDFLARE_STATIC_INGRESS_FILE:-}
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       - ./configs:/app/configs:ro
@@ -74,6 +83,9 @@ services:
       - /usr/local/bin/firecracker:/usr/local/bin/firecracker:ro
       # Firecracker kernel
       - /usr/share/firecracker:/usr/share/firecracker:ro
+      # Shared with host cloudflared: orchestrator renders vm-hosts and
+      # cloudflared-config.yml here; host cloudflared reads the latter.
+      - /var/lib/spacetrek:/var/lib/spacetrek
     devices:
       # KVM device passthrough for hardware virtualization
       - /dev/kvm:/dev/kvm
@@ -86,6 +98,10 @@ services:
     ports:
       - "8080:8080"
     privileged: true
+    # pid: host lets the orchestrator install a host-side route into the VM
+    # subnet via `nsenter -t 1 -n ip route replace ...`. Required for host
+    # cloudflared to reach 10.200.x.y. See src/infrastructure/vm/hostroute.
+    pid: host
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.forwarding=1

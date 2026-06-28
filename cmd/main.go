@@ -22,6 +22,7 @@ import (
 	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 	geminiadapter "github.com/spacetrek-sh/spacetrek/src/infrastructure/llm/gemini"
 	"github.com/spacetrek-sh/spacetrek/src/infrastructure/vm/firecracker"
+	"github.com/spacetrek-sh/spacetrek/src/infrastructure/vm/hostroute"
 	s3storage "github.com/spacetrek-sh/spacetrek/src/infrastructure/storage/s3"
 	postgresrepo "github.com/spacetrek-sh/spacetrek/src/repository/postgres"
 	agentsvc "github.com/spacetrek-sh/spacetrek/src/service/agent"
@@ -32,6 +33,7 @@ import (
 	usersvc "github.com/spacetrek-sh/spacetrek/src/service/user"
 	vmsvc "github.com/spacetrek-sh/spacetrek/src/service/vm"
 	"github.com/spacetrek-sh/spacetrek/src/service/vm/hostswriter"
+	"github.com/spacetrek-sh/spacetrek/src/service/vm/tunnelwriter"
 )
 
 func main() {
@@ -66,6 +68,7 @@ func main() {
 	snapMetricsRepo := postgresrepo.NewSnapshotMetricsRepository(db)
 	userRepo := postgresrepo.NewUserRepository(db)
 	authRepo := postgresrepo.NewAuthRepository(db)
+	runtimeEventRepo := postgresrepo.NewRuntimeEventRepository(db)
 
 	// ── JWT Manager ────────────────────────────────────────────────────────
 	jwtManager := jwt.NewManager(cfg.Security.JWTSecret, cfg.Security.AccessTokenExpiry)
@@ -116,6 +119,19 @@ func main() {
 		vmBackend = provider
 	}
 
+	// Install a host-side route into the VM subnet so host cloudflared can
+	// dial VM IPs directly. Requires pid: host on the api container; logs a
+	// warning and continues on failure (VMs work fine without host reachability,
+	// only host cloudflared depends on the route).
+	if cfg.VM.NetworkEnabled && cfg.VM.Firecracker.Network.Subnet != "" {
+		ctx := pkglog.WithLogger(context.Background(), logger)
+		if err := hostroute.EnsureRoute(ctx, cfg.VM.Firecracker.Network.Subnet); err != nil {
+			logger.Warn("failed to install host route into VM subnet; host cloudflared will not reach VMs",
+				slog.String("subnet", cfg.VM.Firecracker.Network.Subnet),
+				slog.Any("error", err))
+		}
+	}
+
 	// ── Snapshot Storage ─────────────────────────────────────────────────────
 	var snapshotStore ports.SnapshotStore
 	if cfg.Storage.Endpoint != "" {
@@ -158,16 +174,42 @@ func main() {
 		}
 	}
 
-	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, snapRepo, snapMetricsRepo, snapshotStore, cfg.VM.IdleTimeout, cfg.VM.AutoSnapshot, cfg.VM.ResumeGrace, vmNetworkCfg, vmIPAllocator, vmsvc.SnapshotDiskConfig{
+	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, snapRepo, snapMetricsRepo, snapshotStore, runtimeEventRepo, cfg.VM.IdleTimeout, cfg.VM.AutoSnapshot, cfg.VM.ResumeGrace, vmNetworkCfg, vmIPAllocator, vmsvc.SnapshotDiskConfig{
 		DiskMode:           cfg.VM.DiskMode,
 		MaxChainLength:     cfg.VM.MaxChainLength,
 		MaxChainAgeMinutes: cfg.VM.MaxChainAgeMinutes,
 	})
 
-	// Hosts-file writer: rebuilds /var/lib/spacetrk/vm-hosts whenever a VM is
+	// Hosts-file writer: rebuilds /var/lib/spacetrek/vm-hosts whenever a VM is
 	// created or destroyed, plus a 60s reconciliation tick to catch drift.
-	hostsWriter := hostswriter.New(vmRepo, "/var/lib/spacetrk/vm-hosts")
-	vmService.SetLifecycleHook(&hostswriter.Hook{W: hostsWriter})
+	hostsWriter := hostswriter.New(vmRepo, "/var/lib/spacetrek/vm-hosts")
+
+	// Cloudflared config writer: rebuilds /var/lib/spacetrek/cloudflared-config.yml
+	// on the same lifecycle. Read by the host's cloudflared service; reload is
+	// driven by a systemd .path unit (see docs/operations/cloudflare-access.md).
+	// The header carries the static tunnel / credentials-file directives from
+	// env vars; when unset, the writer emits ingress-only and cloudflared
+	// refuses to start until creds are provided.
+	tunnelHeader := ""
+	if tid := os.Getenv("CLOUDFLARE_TUNNEL_ID"); tid != "" {
+		creds := os.Getenv("CLOUDFLARE_TUNNEL_CREDENTIALS_FILE")
+		if creds == "" {
+			creds = "/etc/cloudflared/" + tid + ".json"
+		}
+		tunnelHeader = "tunnel: " + tid + "\ncredentials-file: " + creds + "\n"
+	}
+	// Optional: path to a file with extra ingress entries for non-VM services
+	// (api, www, etc.) that share the tunnel. Missing file = no static rules.
+	staticRulesPath := os.Getenv("CLOUDFLARE_STATIC_INGRESS_FILE")
+	if staticRulesPath == "" {
+		staticRulesPath = "/var/lib/spacetrek/cloudflared-static.yml"
+	}
+	tunnelWriter := tunnelwriter.New(vmRepo, "/var/lib/spacetrek/cloudflared-config.yml", ".box.spacetrek.xyz", tunnelHeader, staticRulesPath)
+
+	vmService.SetLifecycleHook(vmsvc.MultiHook(
+		&hostswriter.Hook{W: hostsWriter},
+		&tunnelwriter.Hook{W: tunnelWriter},
+	))
 
 	orchTools := orchestratorsvc.NewInMemoryToolRegistry(nil)
 	orchTools.Register(toolsvc.NewVMCommandTool(vmService))
@@ -181,6 +223,7 @@ func main() {
 	orchTools.Register(toolsvc.NewVMEditFileTool(vmService))
 
 	var planner ports.ToolPlanner
+	var titleGen ports.TitleGenerator
 	if cfg.LLM.DefaultProvider == "gemini" && cfg.LLM.Gemini.APIKey != "" {
 		geminiCfg := geminiadapter.Config{
 			APIKey:          cfg.LLM.Gemini.APIKey,
@@ -201,6 +244,7 @@ func main() {
 			planner = orchestratorsvc.NewRulePlanner()
 		} else {
 			planner = gp
+			titleGen = gp
 			logger.Info("using gemini planner", slog.String("model", geminiCfg.Model))
 		}
 	} else {
@@ -218,15 +262,14 @@ func main() {
 		orchestratorsvc.NewMemoryStateStore(),
 		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot", "vm.read_file", "vm.write_file", "vm.edit_file"}, cfg.Security.MaxTaskDuration, maxReactSteps),
 	)
-	runtimeEventRepo := postgresrepo.NewRuntimeEventRepository(db)
 	vmCollector := chatsvc.NewAvailableVMCollector(vmService, environmentRepo)
-	chatService := chatsvc.New(chatRepo, runtimeEventRepo, agentRepo, orchService, vmCollector)
+	chatService := chatsvc.New(chatRepo, runtimeEventRepo, agentRepo, orchService, vmCollector, titleGen)
 
 	// ── Handlers ────────────────────────────────────────────────────────────
 	agentHandler := agenthttp.NewHandler(agentService, jwtManager)
 	chatHandler := chathttp.NewHandler(chatService, jwtManager)
 	authHandler := authhttp.NewHandler(userService, authService, jwtManager)
-	vmHandler := vmhttp.NewHandler(vmService, jwtManager, environmentRepo, runtimeEventRepo)
+	vmHandler := vmhttp.NewHandler(vmService, jwtManager, environmentRepo)
 
 	// ── HTTP Server ───────────────────────────────────────────────────────
 	srv := apihttp.New(apihttp.Config{
@@ -257,7 +300,10 @@ func main() {
 	go vmService.StartRuntimeReconciler(pkglog.WithLogger(ctx, logger), 30*time.Second)
 	go vmService.StartMetricsCollector(pkglog.WithLogger(ctx, logger), 10*time.Second)
 	go vmService.StartSnapshotGC(pkglog.WithLogger(ctx, logger), 24*time.Hour)
+	go vmService.StartFleetBroadcaster(pkglog.WithLogger(ctx, logger))
+	go vmService.StartActivityBroadcaster(pkglog.WithLogger(ctx, logger))
 	go hostsWriter.StartReconciler(pkglog.WithLogger(ctx, logger), 60*time.Second)
+	go tunnelWriter.StartReconciler(pkglog.WithLogger(ctx, logger), 60*time.Second)
 
 	<-ctx.Done()
 	logger.Info("shutting down...")

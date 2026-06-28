@@ -13,6 +13,139 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+  schemas:
+    Chat:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          description: |
+            LLM-generated title. Empty for newly-created chats until the
+            title-generation event arrives over the SSE stream.
+        status:
+          type: string
+          enum: [active, idle, closed]
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ConversationSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          description: LLM-generated title (may be empty until first message is processed).
+        vm_id:
+          type: string
+        status:
+          type: string
+          enum: [active, idle, closed]
+        last_message:
+          type: string
+        last_message_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Message:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant, system]
+        content:
+          type: string
+        content_type:
+          type: string
+          enum: [text, image]
+        metadata:
+          type: object
+          additionalProperties: true
+        at:
+          type: string
+          format: date-time
+    RuntimeEvent:
+      type: object
+      description: |
+        Payload emitted on the `/chat/{id}/stream` SSE endpoint. The `type`
+        field discriminates the payload; only the relevant subset of fields is
+        populated for each type.
+
+        Field usage by type:
+          - `thinking` / `answer` / `token` / `title` / `done` → `data` holds
+            the text (for `done`, this is the final assistant message).
+          - `tool_call` → `metadata.tool` is the tool name, `metadata.arguments`
+            is the args map, `result` is the tool's observation, `error` is set
+            on failure. `command` is only populated for `vm.execute_command`.
+          - `error` → `error` holds the orchestration failure message.
+      properties:
+        type:
+          type: string
+          enum: [token, thinking, answer, tool_call, title, error, done]
+        chat_id:
+          type: string
+          format: uuid
+        trace_id:
+          type: string
+        step:
+          type: integer
+          minimum: 0
+        data:
+          type: string
+          description: Text payload for thinking/answer/token/title/done events.
+        command:
+          type: string
+          description: |
+            Only populated for `tool_call` events where the tool is
+            `vm.execute_command` — holds the shell command string. For every
+            other tool this is empty; read the tool name from `metadata.tool`.
+        result:
+          type: string
+          description: Tool observation (output or marshalled payload). `tool_call` only.
+        error:
+          type: string
+          description: Error message. Set on `tool_call` failures and on `error` events.
+        token_usage:
+          type: object
+          additionalProperties: true
+          description: Token usage breakdown. Set on `done` events.
+        metadata:
+          type: object
+          description: |
+            Additional structured payload. For `tool_call` events this always
+            contains `tool` (the tool name) and `arguments` (the args map).
+          additionalProperties: true
+        at:
+          type: string
+          format: date-time
 
 security:
   - bearerAuth: []
@@ -252,15 +385,37 @@ paths:
       responses:
         '200':
           description: Conversations retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      conversations:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ConversationSummary'
+                      next_cursor:
+                        type: string
+                      has_more:
+                        type: boolean
     post:
       summary: Send a message / create conversation
       tags: [Chat]
+      description: |
+        If `conversation_id` is omitted, a new chat is created.
+        For new chats, an LLM-generated `title` is produced from the first
+        message in the background and delivered via the `/chat/{id}/stream`
+        SSE endpoint as a `title` event (typically within 1-3s).
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required: [message]
               properties:
                 conversation_id:
                   type: string
@@ -275,6 +430,19 @@ paths:
       responses:
         '202':
           description: Message accepted for processing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      chat_id:
+                        type: string
+                      status:
+                        type: string
+                        example: processing
 
   /chat/{id}:
     get:
@@ -289,6 +457,13 @@ paths:
       responses:
         '200':
           description: Chat retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Chat'
     delete:
       summary: Close a chat
       tags: [Chat]
@@ -329,6 +504,23 @@ paths:
     get:
       summary: Stream chat events via SSE
       tags: [Chat]
+      description: |
+        Server-Sent Events stream for one chat. Emits `RuntimeEvent` payloads
+        (see `components.schemas.RuntimeEvent`) as they occur during
+        orchestration. Event types:
+
+          - `thinking`  — model reasoning trace (`data` = reasoning text)
+          - `token`     — incremental answer token
+          - `answer`    — completed answer chunk
+          - `tool_call` — tool invocation; tool name in `metadata.tool`, args
+                          in `metadata.arguments`, observation in `result`,
+                          failure message in `error`. `command` is only set
+                          for `vm.execute_command`.
+          - `title`     — LLM-generated conversation title (first message only,
+                          emitted once within ~1-3s of the initial POST)
+          - `error`     — orchestration failure (`error` = message)
+          - `done`      — final assistant message (`data`) and token usage
+                          (`token_usage`); stream closes after this event
       parameters:
         - name: id
           in: path
@@ -338,6 +530,10 @@ paths:
       responses:
         '200':
           description: Event stream
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/RuntimeEvent'
 
   # VM Endpoints
   /vm:
@@ -396,15 +592,76 @@ paths:
     get:
       summary: Stream running runtimes via SSE
       tags: [VM]
+      description: >
+        Admin-only. Emits `runtime` events every 2s with a paginated snapshot of
+        all VM runtimes (including terminated ones). A single broadcaster fans
+        out one DB query per tick to all subscribers.
+
+
+        Pagination: pass `offset` and `limit` query params. Defaults: offset=0,
+        limit=20. Max limit=100. The connection holds offset/limit fixed for its
+        lifetime; only the underlying data refreshes each tick.
+
+
+        Response shape (BREAKING): each event payload is an object, not a bare
+        array: `{"vms": [...], "offset": 0, "limit": 20, "total": 87}`.
+      parameters:
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+            maximum: 10000
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
       responses:
         '200':
-          description: Event stream
+          description: SSE event stream
 
   /vm/fleet/stream:
     get:
       summary: Stream VM fleet metrics via SSE
       tags: [VM]
-      description: Emits `fleet` events every 2s with frontend-shaped VM snapshots. Admin sees all VMs; users see only their own.
+      description: >
+        Emits `fleet` events every 2s with frontend-shaped VM snapshots.
+        Admin sees all VMs (sourced from a shared broadcaster — one DB query
+        per tick fanned out to all admin subscribers). Users see only their
+        own VMs (per-tick query, naturally partitioned by user_id).
+
+
+        Pagination: pass `offset` and `limit` query params. Defaults: offset=0,
+        limit=20. Max limit=100. Pagination is applied per-connection after
+        role filtering.
+
+
+        Response shape (BREAKING): each event payload is an object, not a bare
+        array: `{"vms": [...], "offset": 0, "limit": 20, "total": 87}`. Use
+        `total` to render page count.
+      parameters:
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+            maximum: 10000
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
       responses:
         '200':
           description: SSE event stream
@@ -413,7 +670,33 @@ paths:
     get:
       summary: Stream global VM activity events via SSE
       tags: [VM]
-      description: Emits `activity` events every 2s with new runtime events. Admin sees all events; users see only their own.
+      description: >
+        Admin-only. Subscribes to the shared activity broadcaster (1 DB query
+        per 2s tick across all subscribers). Emits `activity` events containing
+        any runtime events newer than the connection's last-seen cursor.
+
+
+        On connect, the last `?lookback=` events (default 50, max 200) are
+        emitted as the initial window; subsequent ticks emit only
+        newly-observed events. Slow subscribers drop ticks silently — the next
+        tick's batch includes anything missed within the lookback window.
+
+
+        Response shape: each event payload is an array of activity event
+        objects (newest first). No pagination metadata is sent; the FE
+        appends to its local log and uses the lookback window on connect for
+        initial state. For backward pagination through older history, use a
+        paginated REST endpoint (planned, not yet implemented).
+      parameters:
+        - name: lookback
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+          description: Number of recent events to emit on connect (initial window).
       responses:
         '200':
           description: SSE event stream

@@ -205,8 +205,8 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 		// Extract environment hint from vm.start/vm.create tool results.
 		if result.OK && (next.Name == "vm.start" || next.Name == "vm.create") {
 			if payload, ok := result.Payload.(map[string]any); ok {
-				if desc, ok := payload["env_description"].(string); ok && desc != "" {
-					input.EnvironmentHint = desc
+				if envType, ok := payload["environment"].(string); ok && envType != "" {
+					input.EnvironmentHint = envType
 				}
 			}
 		}
@@ -223,20 +223,29 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 			observation = "error: " + result.Error
 		}
 
-		// Only emit tool_call for vm.execute_command.
-		if next.Name == "vm.execute_command" {
-			cmd, _ := next.Arguments["command"].(string)
-			emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-				Type:    orchdomain.EventToolCall,
-				ChatID:  input.ChatID,
-				TraceID: trace.TraceID,
-				Step:    step,
-				Command: cmd,
-				Result:  observation,
-				Error:   result.Error,
-				At:      time.Now().UTC(),
-			})
+		// Emit a tool_call event for every tool execution so the frontend sees
+		// VM lifecycle and file operations in real time. vm.execute_command keeps
+		// the legacy Command/Result shape; other tools surface structured data
+		// via Metadata (tool name + arguments).
+		toolEvent := orchdomain.RuntimeEvent{
+			Type:    orchdomain.EventToolCall,
+			ChatID:  input.ChatID,
+			TraceID: trace.TraceID,
+			Step:    step,
+			Result:  observation,
+			Error:   result.Error,
+			Metadata: map[string]any{
+				"tool":      next.Name,
+				"arguments": next.Arguments,
+			},
+			At: time.Now().UTC(),
 		}
+		if next.Name == "vm.execute_command" {
+			if cmd, ok := next.Arguments["command"].(string); ok {
+				toolEvent.Command = cmd
+			}
+		}
+		emitRuntimeEvent(input.EmitEvent, toolEvent)
 
 		trace.Steps = append(trace.Steps, orchdomain.TraceStep{
 			Step:          step,

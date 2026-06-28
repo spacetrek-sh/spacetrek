@@ -415,6 +415,7 @@ func toResponse(c *chat.Chat) *chatResponse {
 		ID:        c.ID,
 		AgentID:   c.AgentID,
 		UserID:    c.UserID,
+		Title:     c.Title,
 		Status:    string(c.Status),
 		Messages:  msgs,
 		CreatedAt: c.CreatedAt,

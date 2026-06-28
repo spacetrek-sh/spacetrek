@@ -12,6 +12,8 @@ type createVMRequest struct {
 	VCPU     *int `json:"vcpu" validate:"omitempty,min=1,max=16"`
 	MemoryMB *int `json:"memory_mb" validate:"omitempty,min=128,max=32768"`
 	DiskMB   *int `json:"disk_mb" validate:"omitempty,min=512,max=102400"`
+	// Backend port cloudflared forwards to (default 80)
+	ServicePort *int `json:"service_port" validate:"omitempty,min=1,max=65535"`
 }
 
 // createVMResponse is the JSON response for successful VM creation.
@@ -32,6 +34,8 @@ type createVMResponse struct {
 	VCPU     int `json:"vcpu"`
 	MemoryMB int `json:"memory_mb"`
 	DiskMB   int `json:"disk_mb"`
+	// Backend port cloudflared forwards to
+	ServicePort int `json:"service_port"`
 }
 
 // getVMResponse is the JSON response for GET /api/v1/vm/{id}.
@@ -56,6 +60,8 @@ type getVMResponse struct {
 	HasOverrides bool `json:"has_overrides"`       // true if any override is set
 	// Network
 	IPAddress *string `json:"ip_address,omitempty"`
+	// Backend port cloudflared forwards to
+	ServicePort int `json:"service_port"`
 	// Session binding
 	ChatID     *string `json:"chat_id,omitempty"`
 	AssignedAt *string `json:"assigned_at,omitempty"`
@@ -106,6 +112,7 @@ type runtimeSnapshotResponse struct {
 	LastHeartbeatAt      *string `json:"last_heartbeat_at,omitempty"`
 	IdleDeadlineAt       *string `json:"idle_deadline_at,omitempty"`
 	ChatID               *string `json:"chat_id,omitempty"`
+	ServicePort          int     `json:"service_port"`
 	CPUUsagePercent      float64 `json:"cpu_usage_percent"`
 	MemoryUsedMB         int     `json:"memory_used_mb"`
 	MemoryLimitMB        int     `json:"memory_limit_mb"`
@@ -168,18 +175,35 @@ type resumeVMRequest struct {
 
 // fleetVMResponse is a single VM in the fleet SSE stream.
 type fleetVMResponse struct {
-	ID      string  `json:"id"`
-	Name    string  `json:"name"`
-	Agent   string  `json:"agent,omitempty"`
-	Uptime  string  `json:"uptime"`
-	Mem     string  `json:"mem"`
-	MemPct  float64 `json:"memPct"`
-	CPU     string  `json:"cpu"`
-	Disk    string  `json:"disk"`
-	DiskPct float64 `json:"diskPct"`
-	Status  string  `json:"status"`
-	IP      string  `json:"ip,omitempty"`
-	Created string  `json:"created"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Agent       string  `json:"agent,omitempty"`
+	Uptime      string  `json:"uptime"`
+	Mem         string  `json:"mem"`
+	MemPct      float64 `json:"memPct"`
+	CPU         string  `json:"cpu"`
+	Disk        string  `json:"disk"`
+	DiskPct     float64 `json:"diskPct"`
+	Status      string  `json:"status"`
+	IP          string  `json:"ip,omitempty"`
+	ServicePort int     `json:"service_port"`
+	Created     string  `json:"created"`
+}
+
+// fleetPageResponse is the paginated payload emitted by /vm/fleet/stream.
+type fleetPageResponse struct {
+	VMs    []fleetVMResponse `json:"vms"`
+	Offset int               `json:"offset"`
+	Limit  int               `json:"limit"`
+	Total  int               `json:"total"`
+}
+
+// runtimeSnapshotPageResponse is the paginated payload emitted by /vm/runtimes/stream.
+type runtimeSnapshotPageResponse struct {
+	VMs    []runtimeSnapshotResponse `json:"vms"`
+	Offset int                       `json:"offset"`
+	Limit  int                       `json:"limit"`
+	Total  int                       `json:"total"`
 }
 
 // activityEventResponse is a single event in the activity SSE stream.

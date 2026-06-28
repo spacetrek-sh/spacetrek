@@ -35,6 +35,7 @@ type vmRow struct {
 	MemoryMB           *int       `db:"memory_mb"`
 	DiskMB             *int       `db:"disk_mb"`
 	IPAddress          *string    `db:"ip_address"`
+	ServicePort        *int       `db:"service_port"`
 	ChatID             *string    `db:"chat_id"`
 	AssignedAt         *time.Time `db:"assigned_at"`
 	LastResumedAt      *time.Time `db:"last_resumed_at"`
@@ -63,15 +64,15 @@ func (r *vmRepository) Create(ctx context.Context, vm *vmdomain.VM) error {
 			id, name, environment_id, provider, status,
 			runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 			vcpu, memory_mb, disk_mb,
-			ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb,
+			ip_address, service_port, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb,
 			diff_snapshots_enabled
 		)
 		VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10, $11, $12, $13,
 			$14, $15, $16,
-				$17, $18, $19, $20, $21, $22, $23, $24,
-				$25
+				$17, $18, $19, $20, $21, $22, $23, $24, $25,
+				$26
 		)
 	`
 
@@ -81,7 +82,7 @@ func (r *vmRepository) Create(ctx context.Context, vm *vmdomain.VM) error {
 		vm.ID, vm.Name, vm.EnvironmentID, string(vm.Provider), string(vm.Status),
 		vm.RuntimeID, vm.SocketPath, vm.VsockPath, guestCID, vm.PID, vm.RuntimeState, vm.LastHeartbeatAt, vm.IdleDeadlineAt,
 		vm.VCPU, vm.MemoryMB, vm.DiskMB,
-		vm.IPAddress, vm.ChatID, vm.AssignedAt, vm.LastResumedAt, vm.TerminatedAt, vm.CreatedAt,
+		vm.IPAddress, vm.ServicePort, vm.ChatID, vm.AssignedAt, vm.LastResumedAt, vm.TerminatedAt, vm.CreatedAt,
 		toNullableString(vm.ConversationID), vm.WorkspaceSizeGB, vm.DiffSnapshotsEnabled,
 	); err != nil {
 		logger.ErrorContext(ctx, "postgres: create vm failed", "vm_id", vm.ID, "error", err)
@@ -97,7 +98,7 @@ func (r *vmRepository) GetByID(ctx context.Context, id string) (*vmdomain.VM, er
 		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
+		       ip_address, service_port, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
 		FROM vm_instances
 		WHERE id = $1
 	`
@@ -120,7 +121,7 @@ func (r *vmRepository) GetByName(ctx context.Context, name string) (*vmdomain.VM
 		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
+		       ip_address, service_port, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
 		FROM vm_instances
 		WHERE name = $1
 	`
@@ -157,12 +158,13 @@ func (r *vmRepository) Update(ctx context.Context, vm *vmdomain.VM) error {
 		    memory_mb = $15,
 		    disk_mb = $16,
 		    ip_address = $17,
-		    chat_id = $18,
-		    assigned_at = $19,
-		    last_resumed_at = $20,
-		    terminated_at = $21,
-		    conversation_id = $22,
-		    workspace_size_gb = $23
+		    service_port = $18,
+		    chat_id = $19,
+		    assigned_at = $20,
+		    last_resumed_at = $21,
+		    terminated_at = $22,
+		    conversation_id = $23,
+		    workspace_size_gb = $24
 		WHERE id = $1
 	`
 
@@ -172,7 +174,7 @@ func (r *vmRepository) Update(ctx context.Context, vm *vmdomain.VM) error {
 		vm.ID, vm.Name, vm.EnvironmentID, string(vm.Provider), string(vm.Status),
 		vm.RuntimeID, vm.SocketPath, vm.VsockPath, guestCID, vm.PID, vm.RuntimeState, vm.LastHeartbeatAt, vm.IdleDeadlineAt,
 		vm.VCPU, vm.MemoryMB, vm.DiskMB,
-		vm.IPAddress, vm.ChatID, vm.AssignedAt, vm.LastResumedAt, vm.TerminatedAt,
+		vm.IPAddress, vm.ServicePort, vm.ChatID, vm.AssignedAt, vm.LastResumedAt, vm.TerminatedAt,
 		toNullableString(vm.ConversationID), vm.WorkspaceSizeGB,
 	)
 	if err != nil {
@@ -218,7 +220,7 @@ func (r *vmRepository) List(ctx context.Context) ([]*vmdomain.VM, error) {
 		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
+		       ip_address, service_port, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
 		FROM vm_instances
 		ORDER BY created_at DESC
 	`
@@ -247,7 +249,7 @@ func (r *vmRepository) GetAvailablePool(ctx context.Context, provider vmdomain.P
 		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
+		       ip_address, service_port, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
 		FROM vm_instances
 		WHERE provider = $1
 		  AND status IN ('ready', 'idle')
@@ -280,7 +282,7 @@ func (r *vmRepository) GetByEnvironmentID(ctx context.Context, envID string) ([]
 		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
+		       ip_address, service_port, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
 		FROM vm_instances
 		WHERE environment_id = $1
 		ORDER BY created_at DESC
@@ -310,7 +312,7 @@ func (r *vmRepository) GetByChatID(ctx context.Context, chatID string) (*vmdomai
 		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
+		       ip_address, service_port, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
 		FROM vm_instances
 		WHERE chat_id = $1
 		ORDER BY created_at DESC
@@ -335,7 +337,7 @@ func (r *vmRepository) GetActiveVMs(ctx context.Context) ([]*vmdomain.VM, error)
 		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
+		       ip_address, service_port, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
 		FROM vm_instances
 		WHERE status IN ('ready', 'running', 'idle')
 		ORDER BY created_at DESC
@@ -367,7 +369,7 @@ func (r *vmRepository) GetActiveByUserID(ctx context.Context, userID string) ([]
 		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source,
 		       vm.last_heartbeat_at, vm.idle_deadline_at,
 		       vm.vcpu, vm.memory_mb, vm.disk_mb,
-		       vm.ip_address, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at,
+		       vm.ip_address, vm.service_port, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at,
 		       vm.conversation_id, vm.workspace_size_gb, vm.diff_snapshots_enabled
 		FROM vm_instances vm
 		JOIN vm_leases l ON l.vm_id = vm.id
@@ -404,7 +406,7 @@ func (r *vmRepository) GetAllByUserID(ctx context.Context, userID string) ([]*vm
 		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source,
 		       vm.last_heartbeat_at, vm.idle_deadline_at,
 		       vm.vcpu, vm.memory_mb, vm.disk_mb,
-		       vm.ip_address, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at,
+		       vm.ip_address, vm.service_port, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at,
 		       vm.conversation_id, vm.workspace_size_gb, vm.diff_snapshots_enabled
 		FROM vm_instances vm
 		JOIN vm_leases l ON l.vm_id = vm.id
@@ -437,7 +439,7 @@ func (r *vmRepository) GetByEnvironmentAndChatID(ctx context.Context, envID, cha
 		SELECT vm.id, vm.name, vm.environment_id, vm.provider, vm.status,
 		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source, vm.last_heartbeat_at, vm.idle_deadline_at,
 		       vm.vcpu, vm.memory_mb, vm.disk_mb,
-		       vm.ip_address, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at, vm.conversation_id, vm.workspace_size_gb, diff_snapshots_enabled
+		       vm.ip_address, vm.service_port, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at, vm.conversation_id, vm.workspace_size_gb, diff_snapshots_enabled
 		FROM vm_instances vm
 		JOIN vm_leases l ON l.vm_id = vm.id
 		WHERE vm.environment_id = $1
@@ -477,7 +479,7 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
+		       ip_address, service_port, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
 		FROM vm_instances
 		WHERE id = $1
 		FOR UPDATE
@@ -528,7 +530,7 @@ func (r *vmRepository) AssignToChatIfAvailable(ctx context.Context, vmID, chatID
 		SELECT id, name, environment_id, provider, status,
 		       runtime_id, socket_path, vsock_path, guest_cid, pid, runtime_state_source, last_heartbeat_at, idle_deadline_at,
 		       vcpu, memory_mb, disk_mb,
-		       ip_address, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
+		       ip_address, service_port, chat_id, assigned_at, last_resumed_at, terminated_at, created_at, conversation_id, workspace_size_gb, diff_snapshots_enabled
 		FROM vm_instances
 		WHERE id = $1
 	`
@@ -600,7 +602,7 @@ func (r *vmRepository) FindPreviousLeaseForChat(ctx context.Context, chatID stri
 		SELECT vm.id, vm.name, vm.environment_id, vm.provider, vm.status,
 		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source, vm.last_heartbeat_at, vm.idle_deadline_at,
 		       vm.vcpu, vm.memory_mb, vm.disk_mb,
-		       vm.ip_address, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at, vm.conversation_id, vm.workspace_size_gb, diff_snapshots_enabled
+		       vm.ip_address, vm.service_port, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at, vm.conversation_id, vm.workspace_size_gb, diff_snapshots_enabled
 		FROM vm_instances vm
 		JOIN vm_leases l ON l.vm_id = vm.id
 		WHERE l.chat_id = $1
@@ -628,7 +630,7 @@ func (r *vmRepository) ListPreviousLeasesForChat(ctx context.Context, chatID str
 		SELECT vm.id, vm.name, vm.environment_id, vm.provider, vm.status,
 		       vm.runtime_id, vm.socket_path, vm.vsock_path, vm.guest_cid, vm.pid, vm.runtime_state_source, vm.last_heartbeat_at, vm.idle_deadline_at,
 		       vm.vcpu, vm.memory_mb, vm.disk_mb,
-		       vm.ip_address, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at, vm.conversation_id, vm.workspace_size_gb, diff_snapshots_enabled
+		       vm.ip_address, vm.service_port, vm.chat_id, vm.assigned_at, vm.last_resumed_at, vm.terminated_at, vm.created_at, vm.conversation_id, vm.workspace_size_gb, diff_snapshots_enabled
 		FROM vm_instances vm
 		JOIN vm_leases l ON l.vm_id = vm.id
 		WHERE l.chat_id = $1
@@ -673,6 +675,7 @@ func mapVMRow(row vmRow) (*vmdomain.VM, error) {
 		MemoryMB:        row.MemoryMB,
 		DiskMB:          row.DiskMB,
 		IPAddress:       row.IPAddress,
+		ServicePort:     nullableIntValue(row.ServicePort, 80),
 		ChatID:          row.ChatID,
 		CreatedAt:       row.CreatedAt,
 	}

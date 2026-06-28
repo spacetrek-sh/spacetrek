@@ -48,12 +48,23 @@ func NewDmSnapshotManager() *DmSnapshotManager {
 // cowSizeForBase returns a reasonable CoW file size for a given base image.
 // 10% of base with a 64MB floor — enough for typical inter-snapshot deltas
 // without wasting space on a full-size sparse file.
+//
+// Result is 512-aligned: a non-sector-sized backing file makes losetup emit
+// a warning on stderr, and CombinedOutput merges that into the parsed path.
 func cowSizeForBase(baseSize int64) int64 {
 	s := baseSize / 10
 	if s < 64*1024*1024 {
 		s = 64 * 1024 * 1024
 	}
-	return s
+	return s / 512 * 512
+}
+
+// parseLoopDev extracts the loop device path from losetup output. The path is
+// the last non-empty line; warnings printed to stderr (sector alignment, etc.)
+// get merged into stdout via CombinedOutput and must not leak into dm tables.
+func parseLoopDev(out []byte) string {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
 }
 
 // actualDiskUsage returns the actual allocated disk space (in bytes) for a file,
@@ -79,7 +90,7 @@ func (d *DmSnapshotManager) setupOriginLocked(baseImagePath string) (string, err
 	if err != nil {
 		return "", fmt.Errorf("losetup --find --show --read-only %s: %w (%s)", baseImagePath, err, string(out))
 	}
-	loopDev := strings.TrimSpace(string(out))
+	loopDev := parseLoopDev(out)
 	d.baseLoopDevs[baseImagePath] = &baseLoopEntry{loopDev: loopDev, refCount: 1}
 	return loopDev, nil
 }
@@ -155,7 +166,7 @@ func (d *DmSnapshotManager) ReconstructChainDevice(vmID, baseImagePath string, c
 			d.cleanupChainLayers(layers)
 			return "", fmt.Errorf("losetup cow[%d] %s: %w (%s)", i, cowPath, err, string(out))
 		}
-		cowLoopDev := strings.TrimSpace(string(out))
+		cowLoopDev := parseLoopDev(out)
 
 		// Determine device-mapper name for this layer.
 		var dmName string
@@ -327,7 +338,7 @@ func (d *DmSnapshotManager) createCowDeviceLocked(vmID, baseImagePath, cowImageP
 	if err != nil {
 		return "", fmt.Errorf("losetup cow %s: %w (%s)", cowImagePath, err, string(out))
 	}
-	cowLoopDev := strings.TrimSpace(string(out))
+	cowLoopDev := parseLoopDev(out)
 
 	dmName := dmNameForVM(vmID)
 	sectors := baseSize / 512
@@ -515,7 +526,7 @@ func (d *DmSnapshotManager) ResetCoW(vmID, cowImagePath string) error {
 	if err != nil {
 		return fmt.Errorf("losetup new cow %s: %w (%s)", cowImagePath, err, string(out))
 	}
-	newCowLoopDev := strings.TrimSpace(string(out))
+	newCowLoopDev := parseLoopDev(out)
 
 	// Reload the dm table in-place (device stays, table swaps).
 	sectors := baseInfo.Size() / 512

@@ -12,9 +12,8 @@ import (
 // VMCreator is the subset of VM service needed by the create tool.
 type VMCreator interface {
 	ResolveEnvironment(ctx context.Context, envType string) (string, error)
-	Create(ctx context.Context, envID, conversationID string, provider vmdomain.Provider, name string, workspaceSizeGB int, vcpu, memoryMB, diskMB *int) (*vmdomain.VM, error)
+	Create(ctx context.Context, envID, conversationID string, provider vmdomain.Provider, name string, workspaceSizeGB int, vcpu, memoryMB, diskMB, servicePort *int) (*vmdomain.VM, error)
 	AssignToChat(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error)
-	ResolveEnvironmentHint(ctx context.Context, vmID string) (string, error)
 	GetByEnvironmentAndChatID(ctx context.Context, envID, chatID string) (*vmdomain.VM, error)
 	HasSnapshot(ctx context.Context, vmID string) bool
 }
@@ -37,6 +36,11 @@ func (t *VMCreateTool) Definition() tool.Definition {
 				Type:        "string",
 				Description: "Environment type: 'uv' (Python/data science), 'bun' (JS/TS), or 'ubuntu' (generic shell). Pick the most specific match for the task.",
 				Required:    true,
+			},
+			"service_port": {
+				Type:        "integer",
+				Description: "Port the VM's server listens on inside the VM. The VM is exposed publicly at https://<vm-name>.box.spacetrek.xyz, which forwards to this port. Defaults to 80. Set this to match the port your server binds (e.g. 8000 for uvicorn, 3000 for next dev, 5173 for vite).",
+				Required:    false,
 			},
 		},
 	}
@@ -98,7 +102,17 @@ func (t *VMCreateTool) Execute(ctx context.Context, call tool.Call) (tool.Result
 		}
 	}
 
-	vm, err := t.creator.Create(ctx, envID, chatID, vmdomain.ProviderFirecracker, "", 2, nil, nil, nil)
+	var servicePort *int
+	if port, found := readIntArg(call.Arguments, "service_port"); found {
+		if port < 1 || port > 65535 {
+			result.OK = false
+			result.Error = fmt.Sprintf("service_port must be between 1 and 65535, got %d", port)
+			return result, nil
+		}
+		servicePort = &port
+	}
+
+	vm, err := t.creator.Create(ctx, envID, chatID, vmdomain.ProviderFirecracker, "", 2, nil, nil, nil, servicePort)
 	if err != nil {
 		result.OK = false
 		result.Error = err.Error()
@@ -115,16 +129,15 @@ func (t *VMCreateTool) Execute(ctx context.Context, call tool.Call) (tool.Result
 	}
 
 	result.OK = true
-	payload := map[string]any{
-		"vm_id":    assigned.ID,
-		"status":   string(assigned.Status),
-		"provider": string(assigned.Provider),
+	result.Payload = map[string]any{
+		"vm_id":        assigned.ID,
+		"name":         assigned.Name,
+		"status":       string(assigned.Status),
+		"environment":  envType,
+		"service_port": assigned.ServicePort,
+		"public_url":   publicURL(assigned),
 	}
-	if envDesc, err := t.creator.ResolveEnvironmentHint(ctx, assigned.ID); err == nil && envDesc != "" {
-		payload["env_description"] = envDesc
-	}
-	result.Payload = payload
-	logger.InfoContext(ctx, "vm create tool: created and assigned", "vm_id", assigned.ID, "chat_id", chatID)
+	logger.InfoContext(ctx, "vm create tool: created and assigned", "vm_id", assigned.ID, "chat_id", chatID, "env_type", envType)
 	return result, nil
 }
 

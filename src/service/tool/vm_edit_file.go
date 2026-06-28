@@ -102,7 +102,26 @@ func (t *VMEditFileTool) Execute(ctx context.Context, call tool.Call) (tool.Resu
 	}
 
 	result.OK = true
-	logger.DebugContext(ctx, "vm edit file tool executed", "vm_id", vmID, "path", path)
+	if replaceAll {
+		// Guest agent performs the substitution; per-match counts are known but the
+		// total occurrence count is not surfaced by the current vsock protocol.
+		result.Payload = map[string]any{
+			"path":                    path,
+			"replace_all":             true,
+			"bytes_removed_per_match": len(oldString),
+			"bytes_added_per_match":   len(newString),
+			"note":                    "all occurrences replaced; do not re-read to verify",
+		}
+	} else {
+		result.Payload = map[string]any{
+			"path":          path,
+			"replacements":  1,
+			"bytes_removed": len(oldString),
+			"bytes_added":   len(newString),
+			"note":          "substitution applied; do not re-read to verify",
+		}
+	}
+	logger.DebugContext(ctx, "vm edit file tool executed", "vm_id", vmID, "path", path, "replace_all", replaceAll)
 	return result, nil
 }
 

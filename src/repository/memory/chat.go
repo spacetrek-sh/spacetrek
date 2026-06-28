@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/spacetrek-sh/spacetrek/pkg/exception"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/chat"
@@ -50,6 +51,18 @@ func (r *ChatRepository) Update(_ context.Context, c *chat.Chat) error {
 	cp := *c
 	cp.Messages = cloneMessages(c.Messages)
 	r.chats[c.ID] = &cp
+	return nil
+}
+
+func (r *ChatRepository) UpdateTitle(_ context.Context, id, title string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.chats[id]
+	if !ok {
+		return exception.NotFound("chat", id)
+	}
+	c.Title = title
+	c.UpdatedAt = time.Now().UTC()
 	return nil
 }
 

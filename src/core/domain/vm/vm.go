@@ -58,6 +58,7 @@ type VM struct {
 
 	// Network
 	IPAddress *string `db:"ip_address"` // Assigned IP (nullable)
+	ServicePort int `db:"service_port"` // Backend port for cloudflared ingress (default 80)
 
 	// Session binding (mapped from chat_id in DB)
 	ChatID     *string    `db:"chat_id"`     // Bound chat (nullable)
@@ -88,6 +89,8 @@ type CreateParams struct {
 	VCPU     *int // nil = use environment default
 	MemoryMB *int // nil = use environment default
 	DiskMB   *int // nil = use environment default
+	// ServicePort is the backend port cloudflared forwards to. nil = 80.
+	ServicePort *int
 }
 
 // New creates a new VM entity with a generated ID and timestamp.
@@ -105,6 +108,11 @@ func New(params CreateParams) *VM {
 		workspaceSizeGB = 2
 	}
 
+	servicePort := 80
+	if params.ServicePort != nil && *params.ServicePort > 0 {
+		servicePort = *params.ServicePort
+	}
+
 	return &VM{
 		ID:              uuid.NewString(),
 		Name:            resolveName(params.Name),
@@ -116,6 +124,7 @@ func New(params CreateParams) *VM {
 		VCPU:            params.VCPU,
 		MemoryMB:        params.MemoryMB,
 		DiskMB:          params.DiskMB,
+		ServicePort:     servicePort,
 		CreatedAt:       now,
 	}
 }
