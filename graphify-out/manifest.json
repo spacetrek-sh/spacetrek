@@ -1,0 +1,1112 @@
+{
+  "/home/soic/project/spacetrek/.claude/settings.json": {
+    "mtime": 1777992826.198068,
+    "ast_hash": "7071442b176742e9c0fc0c035f1f8893",
+    "semantic_hash": "7071442b176742e9c0fc0c035f1f8893"
+  },
+  "/home/soic/project/spacetrek/.claude/settings.local.json": {
+    "mtime": 1782586739.088112,
+    "ast_hash": "5bc57c59897b7e65bf24b189a1ceeaa6",
+    "semantic_hash": "5bc57c59897b7e65bf24b189a1ceeaa6"
+  },
+  "/home/soic/project/spacetrek/cmd/main.go": {
+    "mtime": 1782633721.9857137,
+    "ast_hash": "8322dd62143a3f887316b3a38895516c",
+    "semantic_hash": "8322dd62143a3f887316b3a38895516c"
+  },
+  "/home/soic/project/spacetrek/cmd/seed/main.go": {
+    "mtime": 1778323153.8982992,
+    "ast_hash": "81c6d85d33dd36b08ed229e9b2f2b7ec",
+    "semantic_hash": "81c6d85d33dd36b08ed229e9b2f2b7ec"
+  },
+  "/home/soic/project/spacetrek/migrations/000001_create_enums.down.sql": {
+    "mtime": 1777992826.2000842,
+    "ast_hash": "1d6478079f61a19cc1bf0b7caeda8627",
+    "semantic_hash": "1d6478079f61a19cc1bf0b7caeda8627"
+  },
+  "/home/soic/project/spacetrek/migrations/000001_create_enums.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "0b1e750ead3c32a3cfd1bafaf81b46b1",
+    "semantic_hash": "0b1e750ead3c32a3cfd1bafaf81b46b1"
+  },
+  "/home/soic/project/spacetrek/migrations/000002_create_users.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "e50b19833b634821ed0ba29a4a55e7bf",
+    "semantic_hash": "e50b19833b634821ed0ba29a4a55e7bf"
+  },
+  "/home/soic/project/spacetrek/migrations/000002_create_users.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "cbee101f38f3020762a3332dfa616b68",
+    "semantic_hash": "cbee101f38f3020762a3332dfa616b68"
+  },
+  "/home/soic/project/spacetrek/migrations/000004_create_access_keys.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "3b7aec7bd18cf8aacf6a355213efb19a",
+    "semantic_hash": "3b7aec7bd18cf8aacf6a355213efb19a"
+  },
+  "/home/soic/project/spacetrek/migrations/000004_create_access_keys.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "fe8a414a865e8ab36ee5843ef79379d2",
+    "semantic_hash": "fe8a414a865e8ab36ee5843ef79379d2"
+  },
+  "/home/soic/project/spacetrek/migrations/000005_create_agents.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "59d728a4ae5299d07f3a3c6fb69715f7",
+    "semantic_hash": "59d728a4ae5299d07f3a3c6fb69715f7"
+  },
+  "/home/soic/project/spacetrek/migrations/000005_create_agents.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "3b17ec0cb9b6f9565e31ce6bd105ea6b",
+    "semantic_hash": "3b17ec0cb9b6f9565e31ce6bd105ea6b"
+  },
+  "/home/soic/project/spacetrek/migrations/000006_create_environments.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "960b2299d1e84361bed85281d15fe73e",
+    "semantic_hash": "960b2299d1e84361bed85281d15fe73e"
+  },
+  "/home/soic/project/spacetrek/migrations/000006_create_environments.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "df8d15a42a60bf05ccee5dc00404a26f",
+    "semantic_hash": "df8d15a42a60bf05ccee5dc00404a26f"
+  },
+  "/home/soic/project/spacetrek/migrations/000007_create_vm_instances.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "a649fb9d53f5e2cc2034e05b2d2445a0",
+    "semantic_hash": "a649fb9d53f5e2cc2034e05b2d2445a0"
+  },
+  "/home/soic/project/spacetrek/migrations/000007_create_vm_instances.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "620d68f44ba951984857c4323e5378af",
+    "semantic_hash": "620d68f44ba951984857c4323e5378af"
+  },
+  "/home/soic/project/spacetrek/migrations/000008_create_chats.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "7341d79ee6edc48205b11533e4b08002",
+    "semantic_hash": "7341d79ee6edc48205b11533e4b08002"
+  },
+  "/home/soic/project/spacetrek/migrations/000008_create_chats.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "8de1bbe72442975927a6c879e15088cc",
+    "semantic_hash": "8de1bbe72442975927a6c879e15088cc"
+  },
+  "/home/soic/project/spacetrek/migrations/000009_add_chat_id_to_vm_instances.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "2459715908b9ffd5e9bc079874194464",
+    "semantic_hash": "2459715908b9ffd5e9bc079874194464"
+  },
+  "/home/soic/project/spacetrek/migrations/000009_add_chat_id_to_vm_instances.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "9db34aaeacf367c261bd9dd501704255",
+    "semantic_hash": "9db34aaeacf367c261bd9dd501704255"
+  },
+  "/home/soic/project/spacetrek/migrations/000010_create_messages.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "f71658ed55ed85045e2b0f0a210f4131",
+    "semantic_hash": "f71658ed55ed85045e2b0f0a210f4131"
+  },
+  "/home/soic/project/spacetrek/migrations/000010_create_messages.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "8ea3fe4456c29582f651b97518763369",
+    "semantic_hash": "8ea3fe4456c29582f651b97518763369"
+  },
+  "/home/soic/project/spacetrek/migrations/000011_create_tasks.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "71d5dc337205152de422b514167dd278",
+    "semantic_hash": "71d5dc337205152de422b514167dd278"
+  },
+  "/home/soic/project/spacetrek/migrations/000011_create_tasks.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "18f40340806cedffcddf882c893266c9",
+    "semantic_hash": "18f40340806cedffcddf882c893266c9"
+  },
+  "/home/soic/project/spacetrek/migrations/000012_create_vm_snapshots.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "acbc5b255b305446423f87d92e90fdd6",
+    "semantic_hash": "acbc5b255b305446423f87d92e90fdd6"
+  },
+  "/home/soic/project/spacetrek/migrations/000012_create_vm_snapshots.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "7e8f5296d6d07c7a290d4e998884e4f9",
+    "semantic_hash": "7e8f5296d6d07c7a290d4e998884e4f9"
+  },
+  "/home/soic/project/spacetrek/migrations/000013_create_vm_volumes.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "9d4c6df37fc3a4bc240103f7f01190bd",
+    "semantic_hash": "9d4c6df37fc3a4bc240103f7f01190bd"
+  },
+  "/home/soic/project/spacetrek/migrations/000013_create_vm_volumes.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "fa036ad39ecc35f32b81763d348e4034",
+    "semantic_hash": "fa036ad39ecc35f32b81763d348e4034"
+  },
+  "/home/soic/project/spacetrek/migrations/000014_create_audit_logs.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "67aca2ff5017dd0fe6db80f3125a790a",
+    "semantic_hash": "67aca2ff5017dd0fe6db80f3125a790a"
+  },
+  "/home/soic/project/spacetrek/migrations/000014_create_audit_logs.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "e412e40b97c2bbf3ba56cf5a2d292689",
+    "semantic_hash": "e412e40b97c2bbf3ba56cf5a2d292689"
+  },
+  "/home/soic/project/spacetrek/migrations/000015_add_vm_resource_overrides.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "83f265b21bb03422c51b8adc78b1cc77",
+    "semantic_hash": "83f265b21bb03422c51b8adc78b1cc77"
+  },
+  "/home/soic/project/spacetrek/migrations/000015_add_vm_resource_overrides.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "358c3363994bb05d80d6891d0d9f1ab1",
+    "semantic_hash": "358c3363994bb05d80d6891d0d9f1ab1"
+  },
+  "/home/soic/project/spacetrek/migrations/000016_add_vm_runtime_metadata.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "0f6414ffbb7e9f3bfaa72d15da1aa643",
+    "semantic_hash": "0f6414ffbb7e9f3bfaa72d15da1aa643"
+  },
+  "/home/soic/project/spacetrek/migrations/000016_add_vm_runtime_metadata.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "8a33e41fa4fd73c219e19a1782e03334",
+    "semantic_hash": "8a33e41fa4fd73c219e19a1782e03334"
+  },
+  "/home/soic/project/spacetrek/migrations/000017_create_vm_metrics_history.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "16562afcd26f2a836f7b2b614f183ff7",
+    "semantic_hash": "16562afcd26f2a836f7b2b614f183ff7"
+  },
+  "/home/soic/project/spacetrek/migrations/000017_create_vm_metrics_history.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "b82a94b119aa1fa0b8daa6960b8396ce",
+    "semantic_hash": "b82a94b119aa1fa0b8daa6960b8396ce"
+  },
+  "/home/soic/project/spacetrek/migrations/000018_create_vm_leases.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "226ebbcf33b210524637f54476c72748",
+    "semantic_hash": "226ebbcf33b210524637f54476c72748"
+  },
+  "/home/soic/project/spacetrek/migrations/000018_create_vm_leases.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "6591d23e5dceb846f478ebbb6495ce49",
+    "semantic_hash": "6591d23e5dceb846f478ebbb6495ce49"
+  },
+  "/home/soic/project/spacetrek/migrations/000019_add_vm_vsock_metadata.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "99fb4624f8f1d7ab67edaa9fc038c9af",
+    "semantic_hash": "99fb4624f8f1d7ab67edaa9fc038c9af"
+  },
+  "/home/soic/project/spacetrek/migrations/000019_add_vm_vsock_metadata.up.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "343fbdbf7b1d8d7e6d23a55de62bf286",
+    "semantic_hash": "343fbdbf7b1d8d7e6d23a55de62bf286"
+  },
+  "/home/soic/project/spacetrek/migrations/000020_create_system_user.down.sql": {
+    "mtime": 1777992826.2015405,
+    "ast_hash": "57340ac4df2fde8487c346cc2d6db979",
+    "semantic_hash": "57340ac4df2fde8487c346cc2d6db979"
+  },
+  "/home/soic/project/spacetrek/migrations/000020_create_system_user.up.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "4f72363bdb7149e507c616ba3ae4eaf9",
+    "semantic_hash": "4f72363bdb7149e507c616ba3ae4eaf9"
+  },
+  "/home/soic/project/spacetrek/migrations/000021_add_vm_last_resumed_at.down.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "0b625779c00143b9a65831172006c0d5",
+    "semantic_hash": "0b625779c00143b9a65831172006c0d5"
+  },
+  "/home/soic/project/spacetrek/migrations/000021_add_vm_last_resumed_at.up.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "691398df357cc2824a4261ce4af21a73",
+    "semantic_hash": "691398df357cc2824a4261ce4af21a73"
+  },
+  "/home/soic/project/spacetrek/migrations/000022_add_event_message_roles.down.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "0426af1de18a63941248ee6098f0df03",
+    "semantic_hash": "0426af1de18a63941248ee6098f0df03"
+  },
+  "/home/soic/project/spacetrek/migrations/000022_add_event_message_roles.up.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "1309445eab5ae29984d31a49fa46623a",
+    "semantic_hash": "1309445eab5ae29984d31a49fa46623a"
+  },
+  "/home/soic/project/spacetrek/migrations/000023_add_runtime_event_roles.down.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "343a79cd646475e35dd1b629c30c1449",
+    "semantic_hash": "343a79cd646475e35dd1b629c30c1449"
+  },
+  "/home/soic/project/spacetrek/migrations/000023_add_runtime_event_roles.up.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "a072217af923b94d6ed3043e536efac6",
+    "semantic_hash": "a072217af923b94d6ed3043e536efac6"
+  },
+  "/home/soic/project/spacetrek/migrations/000024_create_runtime_events.down.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "50220f00fdd43114c9200affd6314ced",
+    "semantic_hash": "50220f00fdd43114c9200affd6314ced"
+  },
+  "/home/soic/project/spacetrek/migrations/000024_create_runtime_events.up.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "fe77d0a9109990787b516604b05487c8",
+    "semantic_hash": "fe77d0a9109990787b516604b05487c8"
+  },
+  "/home/soic/project/spacetrek/migrations/000025_migrate_events_from_messages.down.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "8728a39c7d0eb9a4042b479117608eb0",
+    "semantic_hash": "8728a39c7d0eb9a4042b479117608eb0"
+  },
+  "/home/soic/project/spacetrek/migrations/000025_migrate_events_from_messages.up.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "34c5a2e7c15662bd06207b04a69a97f5",
+    "semantic_hash": "34c5a2e7c15662bd06207b04a69a97f5"
+  },
+  "/home/soic/project/spacetrek/migrations/000026_cleanup_message_role_enum.down.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "1c57ecd80359020aa79b1fcc5d206a82",
+    "semantic_hash": "1c57ecd80359020aa79b1fcc5d206a82"
+  },
+  "/home/soic/project/spacetrek/migrations/000026_cleanup_message_role_enum.up.sql": {
+    "mtime": 1777992826.2020679,
+    "ast_hash": "ea06436fd8ba175ee69f2c84a5bf4d7e",
+    "semantic_hash": "ea06436fd8ba175ee69f2c84a5bf4d7e"
+  },
+  "/home/soic/project/spacetrek/migrations/000027_add_vm_workspace_metadata.down.sql": {
+    "mtime": 1778323153.8982992,
+    "ast_hash": "6abbacd0df05db4e11c00b86072734df",
+    "semantic_hash": "6abbacd0df05db4e11c00b86072734df"
+  },
+  "/home/soic/project/spacetrek/migrations/000027_add_vm_workspace_metadata.up.sql": {
+    "mtime": 1778323153.8982992,
+    "ast_hash": "e2159d3add2121539ca17630463ef268",
+    "semantic_hash": "e2159d3add2121539ca17630463ef268"
+  },
+  "/home/soic/project/spacetrek/migrations/000028_add_bun_environment_type.down.sql": {
+    "mtime": 1778323153.8982992,
+    "ast_hash": "811062a5363b3c23ff8e37980cb8a2de",
+    "semantic_hash": "811062a5363b3c23ff8e37980cb8a2de"
+  },
+  "/home/soic/project/spacetrek/migrations/000028_add_bun_environment_type.up.sql": {
+    "mtime": 1778323153.8982992,
+    "ast_hash": "4112c58402a5fec04d9268ee8f8e76bd",
+    "semantic_hash": "4112c58402a5fec04d9268ee8f8e76bd"
+  },
+  "/home/soic/project/spacetrek/migrations/000029_add_environment_description.down.sql": {
+    "mtime": 1778323153.8982992,
+    "ast_hash": "c7ffefa0a29a090b6e78354c18c4f0a8",
+    "semantic_hash": "c7ffefa0a29a090b6e78354c18c4f0a8"
+  },
+  "/home/soic/project/spacetrek/migrations/000029_add_environment_description.up.sql": {
+    "mtime": 1778323153.8982992,
+    "ast_hash": "b9e9a56214025accfec2aafdf69f5bce",
+    "semantic_hash": "b9e9a56214025accfec2aafdf69f5bce"
+  },
+  "/home/soic/project/spacetrek/migrations/000030_create_snapshot_metrics.down.sql": {
+    "mtime": 1778524355.4530091,
+    "ast_hash": "0fb37956251b26cc3af96a57e1ddd33c",
+    "semantic_hash": "0fb37956251b26cc3af96a57e1ddd33c"
+  },
+  "/home/soic/project/spacetrek/migrations/000030_create_snapshot_metrics.up.sql": {
+    "mtime": 1778524348.139003,
+    "ast_hash": "55dfe6fc64a81bda9ce34ceacb55443c",
+    "semantic_hash": "55dfe6fc64a81bda9ce34ceacb55443c"
+  },
+  "/home/soic/project/spacetrek/migrations/000031_add_diff_snapshots_to_vms.down.sql": {
+    "mtime": 1778567145.4267201,
+    "ast_hash": "76ce9d89271c4efdbec8bae9a6a60707",
+    "semantic_hash": "76ce9d89271c4efdbec8bae9a6a60707"
+  },
+  "/home/soic/project/spacetrek/migrations/000031_add_diff_snapshots_to_vms.up.sql": {
+    "mtime": 1778567135.6197875,
+    "ast_hash": "45ffc31c4775ba2da5efaac0aec5c8c2",
+    "semantic_hash": "45ffc31c4775ba2da5efaac0aec5c8c2"
+  },
+  "/home/soic/project/spacetrek/migrations/000032_add_diff_snapshots_to_environments.down.sql": {
+    "mtime": 1778576797.740107,
+    "ast_hash": "014ef2bca6e03a741c57bfeabe86d0cf",
+    "semantic_hash": "014ef2bca6e03a741c57bfeabe86d0cf"
+  },
+  "/home/soic/project/spacetrek/migrations/000032_add_diff_snapshots_to_environments.up.sql": {
+    "mtime": 1778576797.3581502,
+    "ast_hash": "b09828b3e5be989afbe6607cda63701f",
+    "semantic_hash": "b09828b3e5be989afbe6607cda63701f"
+  },
+  "/home/soic/project/spacetrek/migrations/000033_add_runtime_events_created_at_idx.down.sql": {
+    "mtime": 1779379422.397198,
+    "ast_hash": "1edaf6670c9e3584e9b5281f51ded340",
+    "semantic_hash": "1edaf6670c9e3584e9b5281f51ded340"
+  },
+  "/home/soic/project/spacetrek/migrations/000033_add_runtime_events_created_at_idx.up.sql": {
+    "mtime": 1779379422.397198,
+    "ast_hash": "d1652e64bb4989f7338d3a6ce7ad2a4c",
+    "semantic_hash": "d1652e64bb4989f7338d3a6ce7ad2a4c"
+  },
+  "/home/soic/project/spacetrek/migrations/000034_add_disk_bytes_to_snapshot_metrics.down.sql": {
+    "mtime": 1779593302.0604985,
+    "ast_hash": "4925382d7d7edd15d5381c9ae5104771",
+    "semantic_hash": "4925382d7d7edd15d5381c9ae5104771"
+  },
+  "/home/soic/project/spacetrek/migrations/000034_add_disk_bytes_to_snapshot_metrics.up.sql": {
+    "mtime": 1779593301.967498,
+    "ast_hash": "9718152f63d122367e41da9a2b304199",
+    "semantic_hash": "9718152f63d122367e41da9a2b304199"
+  },
+  "/home/soic/project/spacetrek/migrations/000035_vm_name.down.sql": {
+    "mtime": 1782418254.0591366,
+    "ast_hash": "4fe930917687cfb6b5b84fd58d49bf60",
+    "semantic_hash": "4fe930917687cfb6b5b84fd58d49bf60"
+  },
+  "/home/soic/project/spacetrek/migrations/000035_vm_name.up.sql": {
+    "mtime": 1782418254.059158,
+    "ast_hash": "becf73d206a426efac11d1fa25d354bf",
+    "semantic_hash": "becf73d206a426efac11d1fa25d354bf"
+  },
+  "/home/soic/project/spacetrek/migrations/000036_vm_service_port.down.sql": {
+    "mtime": 1782593258.8419192,
+    "ast_hash": "99c6210dd9998883db585e9559a9bcc6",
+    "semantic_hash": "99c6210dd9998883db585e9559a9bcc6"
+  },
+  "/home/soic/project/spacetrek/migrations/000036_vm_service_port.up.sql": {
+    "mtime": 1782593258.78392,
+    "ast_hash": "270514530c93e01146cc32e85c641153",
+    "semantic_hash": "270514530c93e01146cc32e85c641153"
+  },
+  "/home/soic/project/spacetrek/pkg/auth/jwt/jwt.go": {
+    "mtime": 1777992826.2031407,
+    "ast_hash": "4ddbb1eeb34f71c8255ed17a049ce1fa",
+    "semantic_hash": "4ddbb1eeb34f71c8255ed17a049ce1fa"
+  },
+  "/home/soic/project/spacetrek/pkg/config/config.go": {
+    "mtime": 1782418254.059204,
+    "ast_hash": "85404db766b4afc0b42fb75901c09298",
+    "semantic_hash": "85404db766b4afc0b42fb75901c09298"
+  },
+  "/home/soic/project/spacetrek/pkg/exception/codes.go": {
+    "mtime": 1777992826.2031407,
+    "ast_hash": "ec24293c342ed4f1ae52cbb1e797b30e",
+    "semantic_hash": "ec24293c342ed4f1ae52cbb1e797b30e"
+  },
+  "/home/soic/project/spacetrek/pkg/exception/exception.go": {
+    "mtime": 1777992826.2034383,
+    "ast_hash": "5823eb975f46ca0757bc573171a63146",
+    "semantic_hash": "5823eb975f46ca0757bc573171a63146"
+  },
+  "/home/soic/project/spacetrek/pkg/grpc/status.go": {
+    "mtime": 1777992826.2034383,
+    "ast_hash": "5840cefda6ef7a8c9ee1b709aa6582af",
+    "semantic_hash": "5840cefda6ef7a8c9ee1b709aa6582af"
+  },
+  "/home/soic/project/spacetrek/pkg/http/request.go": {
+    "mtime": 1777992826.2034383,
+    "ast_hash": "398726cdd07ef0ffefc9c442a420f539",
+    "semantic_hash": "398726cdd07ef0ffefc9c442a420f539"
+  },
+  "/home/soic/project/spacetrek/pkg/http/response.go": {
+    "mtime": 1777992826.2036588,
+    "ast_hash": "ccde91fc6efbc874a06d1b2d3070709d",
+    "semantic_hash": "ccde91fc6efbc874a06d1b2d3070709d"
+  },
+  "/home/soic/project/spacetrek/pkg/http/sse.go": {
+    "mtime": 1779386271.884567,
+    "ast_hash": "af0b75d11bbefbdaacadb6fb3afb6c58",
+    "semantic_hash": "af0b75d11bbefbdaacadb6fb3afb6c58"
+  },
+  "/home/soic/project/spacetrek/pkg/json/json.go": {
+    "mtime": 1777992826.2036588,
+    "ast_hash": "51022a30d40f77aef4ea75c62e81446d",
+    "semantic_hash": "51022a30d40f77aef4ea75c62e81446d"
+  },
+  "/home/soic/project/spacetrek/pkg/log/context.go": {
+    "mtime": 1777992826.2036588,
+    "ast_hash": "ee2563d93da713b52ae5d7f950e7ef7e",
+    "semantic_hash": "ee2563d93da713b52ae5d7f950e7ef7e"
+  },
+  "/home/soic/project/spacetrek/pkg/log/logger.go": {
+    "mtime": 1777992826.203866,
+    "ast_hash": "38dd9528829835cd8d6acca3d9667ee1",
+    "semantic_hash": "38dd9528829835cd8d6acca3d9667ee1"
+  },
+  "/home/soic/project/spacetrek/pkg/validation/validator.go": {
+    "mtime": 1777992826.203866,
+    "ast_hash": "97a4d1b8044c99b3e89ebafcb82ed7c5",
+    "semantic_hash": "97a4d1b8044c99b3e89ebafcb82ed7c5"
+  },
+  "/home/soic/project/spacetrek/scripts/entrypoint.sh": {
+    "mtime": 1782627698.8145218,
+    "ast_hash": "be75ea62cda71cf70ae59010a9ef72cb",
+    "semantic_hash": "be75ea62cda71cf70ae59010a9ef72cb"
+  },
+  "/home/soic/project/spacetrek/scripts/test_incremental_snapshots.sh": {
+    "mtime": 1779256830.2644517,
+    "ast_hash": "ab185725676938b8577987a56a662d2e",
+    "semantic_hash": "ab185725676938b8577987a56a662d2e"
+  },
+  "/home/soic/project/spacetrek/scripts/test_snapshot_gc_flatten.sh": {
+    "mtime": 1779443394.0099905,
+    "ast_hash": "c08e8d8ad22cc5e7d805631aa9e22266",
+    "semantic_hash": "c08e8d8ad22cc5e7d805631aa9e22266"
+  },
+  "/home/soic/project/spacetrek/scripts/test_snapshot_incremental.sh": {
+    "mtime": 1779596263.8969145,
+    "ast_hash": "566572858a2ecbe1ebc76ec799e70b3a",
+    "semantic_hash": "566572858a2ecbe1ebc76ec799e70b3a"
+  },
+  "/home/soic/project/spacetrek/seeds/environments.json": {
+    "mtime": 1778684388.8970633,
+    "ast_hash": "5b41ec7520213a4bb9e44edfd46f2c58",
+    "semantic_hash": "5b41ec7520213a4bb9e44edfd46f2c58"
+  },
+  "/home/soic/project/spacetrek/src/api/http/server.go": {
+    "mtime": 1779381997.7519722,
+    "ast_hash": "f4a756dbb7b784fe063efe7e85d55516",
+    "semantic_hash": "f4a756dbb7b784fe063efe7e85d55516"
+  },
+  "/home/soic/project/spacetrek/src/api/http/v1/agent/dto.go": {
+    "mtime": 1777992826.2042875,
+    "ast_hash": "caf0e09ba8cac19588d1dc45d8f48a09",
+    "semantic_hash": "caf0e09ba8cac19588d1dc45d8f48a09"
+  },
+  "/home/soic/project/spacetrek/src/api/http/v1/agent/handler.go": {
+    "mtime": 1777992826.2043717,
+    "ast_hash": "02d35bc8b04584f48259dbe14968f9e3",
+    "semantic_hash": "02d35bc8b04584f48259dbe14968f9e3"
+  },
+  "/home/soic/project/spacetrek/src/api/http/v1/auth/dto.go": {
+    "mtime": 1777992826.2043717,
+    "ast_hash": "bdf0fbe1b4d2bfc025cb7379f0f460cf",
+    "semantic_hash": "bdf0fbe1b4d2bfc025cb7379f0f460cf"
+  },
+  "/home/soic/project/spacetrek/src/api/http/v1/auth/handler.go": {
+    "mtime": 1777992826.2045517,
+    "ast_hash": "49c3efbf4d4f1909aefacc74343d9637",
+    "semantic_hash": "49c3efbf4d4f1909aefacc74343d9637"
+  },
+  "/home/soic/project/spacetrek/src/api/http/v1/chat/dto.go": {
+    "mtime": 1782574744.2389128,
+    "ast_hash": "a5068da80a415dcb7912bfa6bea70892",
+    "semantic_hash": "a5068da80a415dcb7912bfa6bea70892"
+  },
+  "/home/soic/project/spacetrek/src/api/http/v1/chat/handler.go": {
+    "mtime": 1782574749.9880455,
+    "ast_hash": "7c4684c15e95a378a4160bb9532f8886",
+    "semantic_hash": "7c4684c15e95a378a4160bb9532f8886"
+  },
+  "/home/soic/project/spacetrek/src/api/http/v1/chat/handler_test.go": {
+    "mtime": 1777992826.2047288,
+    "ast_hash": "e950f6dd9677452ca758ed38cc7df492",
+    "semantic_hash": "e950f6dd9677452ca758ed38cc7df492"
+  },
+  "/home/soic/project/spacetrek/src/api/http/v1/vm/dto.go": {
+    "mtime": 1782593463.929576,
+    "ast_hash": "fb22e85b56c945eedd4ee25b03f90427",
+    "semantic_hash": "fb22e85b56c945eedd4ee25b03f90427"
+  },
+  "/home/soic/project/spacetrek/src/api/http/v1/vm/handler.go": {
+    "mtime": 1782593491.322499,
+    "ast_hash": "fe861f48fa97396087658119a97c27a8",
+    "semantic_hash": "fe861f48fa97396087658119a97c27a8"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/agent/agent.go": {
+    "mtime": 1777992826.2053192,
+    "ast_hash": "9abf1b3b7cc0466d35a5bdd41f2ad740",
+    "semantic_hash": "9abf1b3b7cc0466d35a5bdd41f2ad740"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/auth/repository.go": {
+    "mtime": 1777992826.2053192,
+    "ast_hash": "3092ab1b3f5ba2ca9c2f0025b0305367",
+    "semantic_hash": "3092ab1b3f5ba2ca9c2f0025b0305367"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/chat/chat.go": {
+    "mtime": 1782574561.7365115,
+    "ast_hash": "9ab8d9681d0b3aa219ba20eb6535508b",
+    "semantic_hash": "9ab8d9681d0b3aa219ba20eb6535508b"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/environment/environment.go": {
+    "mtime": 1778577749.9504013,
+    "ast_hash": "d43f026344619a8f09cc574d418b39cf",
+    "semantic_hash": "d43f026344619a8f09cc574d418b39cf"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/environment/repository.go": {
+    "mtime": 1777992826.2057064,
+    "ast_hash": "d42e4a51f7803f56e493208931ec6775",
+    "semantic_hash": "d42e4a51f7803f56e493208931ec6775"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/orchestrator/events.go": {
+    "mtime": 1782574543.623876,
+    "ast_hash": "a47dde76126e86fdd9e5c3f3dfcfb91d",
+    "semantic_hash": "a47dde76126e86fdd9e5c3f3dfcfb91d"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/orchestrator/runtime_event.go": {
+    "mtime": 1779379422.398198,
+    "ast_hash": "5bde95071a62bea90f5b05d442e03d10",
+    "semantic_hash": "5bde95071a62bea90f5b05d442e03d10"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/orchestrator/trace.go": {
+    "mtime": 1777992826.2058105,
+    "ast_hash": "23c6d10d3b3212a5f0ef04b1997f9355",
+    "semantic_hash": "23c6d10d3b3212a5f0ef04b1997f9355"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/orchestrator/types.go": {
+    "mtime": 1777992826.2058105,
+    "ast_hash": "7a7725f4ed6bdd551eb85c7a8f789cd4",
+    "semantic_hash": "7a7725f4ed6bdd551eb85c7a8f789cd4"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/snapshot/metrics.go": {
+    "mtime": 1782418254.0594158,
+    "ast_hash": "c15bbf304e8210cf97c3f800d5d05724",
+    "semantic_hash": "c15bbf304e8210cf97c3f800d5d05724"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/snapshot/repository.go": {
+    "mtime": 1779407762.5756104,
+    "ast_hash": "561b18d68f2d9b2196e09f2a809cfe81",
+    "semantic_hash": "561b18d68f2d9b2196e09f2a809cfe81"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/snapshot/snapshot.go": {
+    "mtime": 1782418254.0594518,
+    "ast_hash": "99ec457bb07753c4ff073d8ec37f6252",
+    "semantic_hash": "99ec457bb07753c4ff073d8ec37f6252"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/tool/context.go": {
+    "mtime": 1777992826.205974,
+    "ast_hash": "309440d0badffa32ddb2446ef26828f9",
+    "semantic_hash": "309440d0badffa32ddb2446ef26828f9"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/tool/tool.go": {
+    "mtime": 1777992826.2060893,
+    "ast_hash": "86fc67b110c041b69d359e3143ea8f8a",
+    "semantic_hash": "86fc67b110c041b69d359e3143ea8f8a"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/user/repository.go": {
+    "mtime": 1777992826.2060893,
+    "ast_hash": "fcc73ac2b5f9b5acb72313e44ec311f2",
+    "semantic_hash": "fcc73ac2b5f9b5acb72313e44ec311f2"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/user/user.go": {
+    "mtime": 1777992826.2061944,
+    "ast_hash": "200991fc4556332bc1184b4fc7dee946",
+    "semantic_hash": "200991fc4556332bc1184b4fc7dee946"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/vm/config.go": {
+    "mtime": 1778524311.2791643,
+    "ast_hash": "d0249b9528c4db2f527631cba1ce1e00",
+    "semantic_hash": "d0249b9528c4db2f527631cba1ce1e00"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/vm/lease.go": {
+    "mtime": 1777992826.2063406,
+    "ast_hash": "87d659e08365ebd59bd6341415168e77",
+    "semantic_hash": "87d659e08365ebd59bd6341415168e77"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/vm/metrics_history.go": {
+    "mtime": 1777992826.2063406,
+    "ast_hash": "52f95fa4b361d8b60e231625a38e49b6",
+    "semantic_hash": "52f95fa4b361d8b60e231625a38e49b6"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/vm/naming/adjectives.go": {
+    "mtime": 1782418254.0594783,
+    "ast_hash": "c15aaf2894a9b8c632071d57a4b15bc3",
+    "semantic_hash": "c15aaf2894a9b8c632071d57a4b15bc3"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/vm/naming/generator.go": {
+    "mtime": 1782418254.0595062,
+    "ast_hash": "df38f3353c6d3b9a3c93fd854a7d2b31",
+    "semantic_hash": "df38f3353c6d3b9a3c93fd854a7d2b31"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/vm/naming/generator_test.go": {
+    "mtime": 1782418254.0595543,
+    "ast_hash": "b056a77a596f47f640f8aad65ea78851",
+    "semantic_hash": "b056a77a596f47f640f8aad65ea78851"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/vm/naming/surnames.go": {
+    "mtime": 1782418254.059595,
+    "ast_hash": "5df57e564481c70cda1db33654fc7144",
+    "semantic_hash": "5df57e564481c70cda1db33654fc7144"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/vm/normalize_name_test.go": {
+    "mtime": 1782418254.0596404,
+    "ast_hash": "e7e37dc33573f5d51d9c4d740c7c3f7c",
+    "semantic_hash": "e7e37dc33573f5d51d9c4d740c7c3f7c"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/vm/provider.go": {
+    "mtime": 1782418254.0597205,
+    "ast_hash": "2eef7013037510b5458ac9c50f675a54",
+    "semantic_hash": "2eef7013037510b5458ac9c50f675a54"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/vm/repository.go": {
+    "mtime": 1782418254.059776,
+    "ast_hash": "5fbee97765ea01acedeb44c3a015a5bc",
+    "semantic_hash": "5fbee97765ea01acedeb44c3a015a5bc"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/vm/state.go": {
+    "mtime": 1777992826.2063406,
+    "ast_hash": "6d39f29f4b04a88574d287587971c596",
+    "semantic_hash": "6d39f29f4b04a88574d287587971c596"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/vm/vm.go": {
+    "mtime": 1782593280.1765676,
+    "ast_hash": "5dc664a195a75d4ed7a9ea46ceab4c26",
+    "semantic_hash": "5dc664a195a75d4ed7a9ea46ceab4c26"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/volume/repository.go": {
+    "mtime": 1777992826.2063406,
+    "ast_hash": "2f69dfccf6d74cf0f49b0f76ca0fe7f6",
+    "semantic_hash": "2f69dfccf6d74cf0f49b0f76ca0fe7f6"
+  },
+  "/home/soic/project/spacetrek/src/core/domain/volume/volume.go": {
+    "mtime": 1777992826.2067394,
+    "ast_hash": "5a75eb9aaa685c416bb2b3f7caadabc4",
+    "semantic_hash": "5a75eb9aaa685c416bb2b3f7caadabc4"
+  },
+  "/home/soic/project/spacetrek/src/core/ports/llm.go": {
+    "mtime": 1782574573.8322687,
+    "ast_hash": "2ecd197cffaa1b58dc154e681cb58b53",
+    "semantic_hash": "2ecd197cffaa1b58dc154e681cb58b53"
+  },
+  "/home/soic/project/spacetrek/src/core/ports/snapshot_store.go": {
+    "mtime": 1778323153.9002993,
+    "ast_hash": "341879a21d2db371cb99be560a71b990",
+    "semantic_hash": "341879a21d2db371cb99be560a71b990"
+  },
+  "/home/soic/project/spacetrek/src/core/ports/state_store.go": {
+    "mtime": 1777992826.2068636,
+    "ast_hash": "1b80a3184d16187d490e2cefb80f8cb0",
+    "semantic_hash": "1b80a3184d16187d490e2cefb80f8cb0"
+  },
+  "/home/soic/project/spacetrek/src/core/ports/tool_registry.go": {
+    "mtime": 1777992826.2068636,
+    "ast_hash": "c0c258439b5662ec96713b315f85dfa9",
+    "semantic_hash": "c0c258439b5662ec96713b315f85dfa9"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/llm/gemini/config.go": {
+    "mtime": 1777992826.207014,
+    "ast_hash": "1dde3cfba8b43c6e5a5f7fc06fd35cb4",
+    "semantic_hash": "1dde3cfba8b43c6e5a5f7fc06fd35cb4"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/llm/gemini/convert.go": {
+    "mtime": 1777992826.2071047,
+    "ast_hash": "bfc056c1129533de16fa6177e314e25a",
+    "semantic_hash": "bfc056c1129533de16fa6177e314e25a"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/llm/gemini/planner.go": {
+    "mtime": 1782661863.6113656,
+    "ast_hash": "c688d547bdc6c91402b352783f68590f",
+    "semantic_hash": "c688d547bdc6c91402b352783f68590f"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/storage/s3/config.go": {
+    "mtime": 1777992826.207398,
+    "ast_hash": "5d2801e50866fd0600f57f4ff90032be",
+    "semantic_hash": "5d2801e50866fd0600f57f4ff90032be"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/storage/s3/store.go": {
+    "mtime": 1778323153.9002993,
+    "ast_hash": "b0900c3d75e0d45d0eea5eca76eab6bb",
+    "semantic_hash": "b0900c3d75e0d45d0eea5eca76eab6bb"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/cid_allocator.go": {
+    "mtime": 1777992826.207561,
+    "ast_hash": "6c2bb4e37614b33b526c4f35a8638e64",
+    "semantic_hash": "6c2bb4e37614b33b526c4f35a8638e64"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/cid_allocator_test.go": {
+    "mtime": 1777992826.207633,
+    "ast_hash": "9c2f0325eda1a3e5b97f3691aebb1fb8",
+    "semantic_hash": "9c2f0325eda1a3e5b97f3691aebb1fb8"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/compress.go": {
+    "mtime": 1778838961.709151,
+    "ast_hash": "014bca17f64efab1301ba8316b75de68",
+    "semantic_hash": "014bca17f64efab1301ba8316b75de68"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/compress_test.go": {
+    "mtime": 1778752230.2955315,
+    "ast_hash": "f4177e64ac2520b53680af227733591a",
+    "semantic_hash": "f4177e64ac2520b53680af227733591a"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/config.go": {
+    "mtime": 1777992826.207633,
+    "ast_hash": "ba38b4546da78853eef36172709e39e6",
+    "semantic_hash": "ba38b4546da78853eef36172709e39e6"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/dm_snapshot.go": {
+    "mtime": 1782550692.3335376,
+    "ast_hash": "3259033a149b93c6686dd2282a3e5a1a",
+    "semantic_hash": "3259033a149b93c6686dd2282a3e5a1a"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/dm_snapshot_test.go": {
+    "mtime": 1778608439.9673998,
+    "ast_hash": "7022d4b16602ebc5452a91f5564313a2",
+    "semantic_hash": "7022d4b16602ebc5452a91f5564313a2"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/exec_protocol.go": {
+    "mtime": 1779379422.398198,
+    "ast_hash": "6e849e510bd47e23db01ec58de1e5170",
+    "semantic_hash": "6e849e510bd47e23db01ec58de1e5170"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/flatten.go": {
+    "mtime": 1779440798.6071749,
+    "ast_hash": "9e4f1903123526606674eb4ac9f05d18",
+    "semantic_hash": "9e4f1903123526606674eb4ac9f05d18"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/flatten_test.go": {
+    "mtime": 1779410023.7938473,
+    "ast_hash": "c70ad0862012dca2761489081b238147",
+    "semantic_hash": "c70ad0862012dca2761489081b238147"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/network.go": {
+    "mtime": 1777992826.207633,
+    "ast_hash": "d5ef95e7f4f8fcc3f50fe1cfc28fe3cb",
+    "semantic_hash": "d5ef95e7f4f8fcc3f50fe1cfc28fe3cb"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/provider.go": {
+    "mtime": 1782418254.0604448,
+    "ast_hash": "c91ccc7a0a4020bb22c3d6aeb71d6687",
+    "semantic_hash": "c91ccc7a0a4020bb22c3d6aeb71d6687"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/firecracker/provider_vsock_test.go": {
+    "mtime": 1777992826.207633,
+    "ast_hash": "e0a3b245054f62a16453c4f9e5ed6b17",
+    "semantic_hash": "e0a3b245054f62a16453c4f9e5ed6b17"
+  },
+  "/home/soic/project/spacetrek/src/infrastructure/vm/hostroute/hostroute.go": {
+    "mtime": 1782627921.716644,
+    "ast_hash": "eaf944cbe943118b9966e894844fbae8",
+    "semantic_hash": "eaf944cbe943118b9966e894844fbae8"
+  },
+  "/home/soic/project/spacetrek/src/middleware/auth.go": {
+    "mtime": 1777992826.207633,
+    "ast_hash": "c8fac25f008f5858e508de1c6b2c8196",
+    "semantic_hash": "c8fac25f008f5858e508de1c6b2c8196"
+  },
+  "/home/soic/project/spacetrek/src/middleware/correlationid.go": {
+    "mtime": 1777992826.2084785,
+    "ast_hash": "28221ee49d0598b0a603f48102e979a9",
+    "semantic_hash": "28221ee49d0598b0a603f48102e979a9"
+  },
+  "/home/soic/project/spacetrek/src/middleware/grpc/interceptors.go": {
+    "mtime": 1779379422.399198,
+    "ast_hash": "f525632473d4bd0dd6db9217796ea04a",
+    "semantic_hash": "f525632473d4bd0dd6db9217796ea04a"
+  },
+  "/home/soic/project/spacetrek/src/middleware/logging.go": {
+    "mtime": 1777992826.2084785,
+    "ast_hash": "72aee667c6a468480409055cd7f29dad",
+    "semantic_hash": "72aee667c6a468480409055cd7f29dad"
+  },
+  "/home/soic/project/spacetrek/src/middleware/recovery.go": {
+    "mtime": 1777992826.2084785,
+    "ast_hash": "fcc75100d6d40758ea1a026623610593",
+    "semantic_hash": "fcc75100d6d40758ea1a026623610593"
+  },
+  "/home/soic/project/spacetrek/src/middleware/requestid.go": {
+    "mtime": 1777992826.2084785,
+    "ast_hash": "e28923638c52e69181e649b40c09423f",
+    "semantic_hash": "e28923638c52e69181e649b40c09423f"
+  },
+  "/home/soic/project/spacetrek/src/repository/memory/agent.go": {
+    "mtime": 1777992826.2088132,
+    "ast_hash": "cf87acbcbeb984f53324bf618ad539b0",
+    "semantic_hash": "cf87acbcbeb984f53324bf618ad539b0"
+  },
+  "/home/soic/project/spacetrek/src/repository/memory/chat.go": {
+    "mtime": 1782574620.1333458,
+    "ast_hash": "5350ec9f862d1b6a44345ac236b62936",
+    "semantic_hash": "5350ec9f862d1b6a44345ac236b62936"
+  },
+  "/home/soic/project/spacetrek/src/repository/memory/environment.go": {
+    "mtime": 1777992826.2088804,
+    "ast_hash": "15e9a77ce51933860f78c7fc612ec9cc",
+    "semantic_hash": "15e9a77ce51933860f78c7fc612ec9cc"
+  },
+  "/home/soic/project/spacetrek/src/repository/memory/runtime_event.go": {
+    "mtime": 1779379422.399198,
+    "ast_hash": "fda8757d63588121ec9a6dc677b8d087",
+    "semantic_hash": "fda8757d63588121ec9a6dc677b8d087"
+  },
+  "/home/soic/project/spacetrek/src/repository/memory/vm.go": {
+    "mtime": 1782418254.0605328,
+    "ast_hash": "6db0f96b1d400d6cad6e2054f4bf38b6",
+    "semantic_hash": "6db0f96b1d400d6cad6e2054f4bf38b6"
+  },
+  "/home/soic/project/spacetrek/src/repository/postgres/agent.go": {
+    "mtime": 1777992826.2088804,
+    "ast_hash": "2527fe8db0c5805b7b14201fae7d4fd7",
+    "semantic_hash": "2527fe8db0c5805b7b14201fae7d4fd7"
+  },
+  "/home/soic/project/spacetrek/src/repository/postgres/auth.go": {
+    "mtime": 1777992826.2093532,
+    "ast_hash": "209fdcf495cde8445a89dd59748f0604",
+    "semantic_hash": "209fdcf495cde8445a89dd59748f0604"
+  },
+  "/home/soic/project/spacetrek/src/repository/postgres/chat.go": {
+    "mtime": 1782574597.080804,
+    "ast_hash": "e4592f8e130c70baf16f06e1f02a7ad7",
+    "semantic_hash": "e4592f8e130c70baf16f06e1f02a7ad7"
+  },
+  "/home/soic/project/spacetrek/src/repository/postgres/db.go": {
+    "mtime": 1777992826.2093532,
+    "ast_hash": "ecdf88363de615bf98d4ddf2893aef43",
+    "semantic_hash": "ecdf88363de615bf98d4ddf2893aef43"
+  },
+  "/home/soic/project/spacetrek/src/repository/postgres/environment.go": {
+    "mtime": 1778685874.212271,
+    "ast_hash": "24418333cac8c97c6111cb7ace341218",
+    "semantic_hash": "24418333cac8c97c6111cb7ace341218"
+  },
+  "/home/soic/project/spacetrek/src/repository/postgres/runtime_event.go": {
+    "mtime": 1779379422.399198,
+    "ast_hash": "e0a5f0755bb159f1529b2bda961836c8",
+    "semantic_hash": "e0a5f0755bb159f1529b2bda961836c8"
+  },
+  "/home/soic/project/spacetrek/src/repository/postgres/snapshot.go": {
+    "mtime": 1779407769.203473,
+    "ast_hash": "fb78837d2ff03b14136adeb76c83ba32",
+    "semantic_hash": "fb78837d2ff03b14136adeb76c83ba32"
+  },
+  "/home/soic/project/spacetrek/src/repository/postgres/snapshot_metrics.go": {
+    "mtime": 1782418254.0606134,
+    "ast_hash": "93b2742778955bae48e4122993626d48",
+    "semantic_hash": "93b2742778955bae48e4122993626d48"
+  },
+  "/home/soic/project/spacetrek/src/repository/postgres/user.go": {
+    "mtime": 1777992826.2093532,
+    "ast_hash": "5277bb09910acf08c463482c5ba0dc32",
+    "semantic_hash": "5277bb09910acf08c463482c5ba0dc32"
+  },
+  "/home/soic/project/spacetrek/src/repository/postgres/vm.go": {
+    "mtime": 1782593370.0360973,
+    "ast_hash": "70ed80d5a6914e1068e3806c5a9c653a",
+    "semantic_hash": "70ed80d5a6914e1068e3806c5a9c653a"
+  },
+  "/home/soic/project/spacetrek/src/repository/postgres/vm_metrics_history.go": {
+    "mtime": 1777992826.2093532,
+    "ast_hash": "f303004e571e52734b704847f4ac9c73",
+    "semantic_hash": "f303004e571e52734b704847f4ac9c73"
+  },
+  "/home/soic/project/spacetrek/src/service/agent/service.go": {
+    "mtime": 1777992826.2100809,
+    "ast_hash": "8cc508ea01bcb7b1482fd7042c486a72",
+    "semantic_hash": "8cc508ea01bcb7b1482fd7042c486a72"
+  },
+  "/home/soic/project/spacetrek/src/service/auth/service.go": {
+    "mtime": 1777992826.2100809,
+    "ast_hash": "ef048fb3a867de7d402efc798afdeb5e",
+    "semantic_hash": "ef048fb3a867de7d402efc798afdeb5e"
+  },
+  "/home/soic/project/spacetrek/src/service/chat/service.go": {
+    "mtime": 1782574709.3445914,
+    "ast_hash": "d6ca34bc752a8de9d916f96b95dd449e",
+    "semantic_hash": "d6ca34bc752a8de9d916f96b95dd449e"
+  },
+  "/home/soic/project/spacetrek/src/service/chat/service_test.go": {
+    "mtime": 1782574790.4603963,
+    "ast_hash": "b22d1df9499090c7ae07a4cf96c91be1",
+    "semantic_hash": "b22d1df9499090c7ae07a4cf96c91be1"
+  },
+  "/home/soic/project/spacetrek/src/service/chat/vm_resolver.go": {
+    "mtime": 1778781019.4391024,
+    "ast_hash": "2c638e67aea40ce1447c97214bf4c75c",
+    "semantic_hash": "2c638e67aea40ce1447c97214bf4c75c"
+  },
+  "/home/soic/project/spacetrek/src/service/chat/vm_resolver_test.go": {
+    "mtime": 1778781929.2531092,
+    "ast_hash": "a96b3cea22008662bdbe7ec99f828982",
+    "semantic_hash": "a96b3cea22008662bdbe7ec99f828982"
+  },
+  "/home/soic/project/spacetrek/src/service/orchestrator/rule_planner.go": {
+    "mtime": 1778781648.9436858,
+    "ast_hash": "4c0db276167954f2281bbc14bbd0c400",
+    "semantic_hash": "4c0db276167954f2281bbc14bbd0c400"
+  },
+  "/home/soic/project/spacetrek/src/service/orchestrator/service.go": {
+    "mtime": 1782569587.738765,
+    "ast_hash": "5c78f09106dec4d9ec8d418285565be9",
+    "semantic_hash": "5c78f09106dec4d9ec8d418285565be9"
+  },
+  "/home/soic/project/spacetrek/src/service/orchestrator/service_test.go": {
+    "mtime": 1778781764.5700378,
+    "ast_hash": "3f569d88d9e776301e8945edfe8d7642",
+    "semantic_hash": "3f569d88d9e776301e8945edfe8d7642"
+  },
+  "/home/soic/project/spacetrek/src/service/orchestrator/state_store_memory.go": {
+    "mtime": 1777992826.210687,
+    "ast_hash": "d68e2ed68ab6c219efdc7d98fb636e74",
+    "semantic_hash": "d68e2ed68ab6c219efdc7d98fb636e74"
+  },
+  "/home/soic/project/spacetrek/src/service/orchestrator/tool_registry.go": {
+    "mtime": 1777992826.210687,
+    "ast_hash": "ad4d3892f1eab172eb6990569a0d5fac",
+    "semantic_hash": "ad4d3892f1eab172eb6990569a0d5fac"
+  },
+  "/home/soic/project/spacetrek/src/service/tool/payload.go": {
+    "mtime": 1782665289.7609205,
+    "ast_hash": "823dd3bd76079977da3d675cbeb03b30",
+    "semantic_hash": "823dd3bd76079977da3d675cbeb03b30"
+  },
+  "/home/soic/project/spacetrek/src/service/tool/payload_test.go": {
+    "mtime": 1782665619.5352058,
+    "ast_hash": "a74f7eb98b481ae30a9246217da36c96",
+    "semantic_hash": "a74f7eb98b481ae30a9246217da36c96"
+  },
+  "/home/soic/project/spacetrek/src/service/tool/vm_command.go": {
+    "mtime": 1779379422.399198,
+    "ast_hash": "64702d9fd17f5185b41aa1782c078f6f",
+    "semantic_hash": "64702d9fd17f5185b41aa1782c078f6f"
+  },
+  "/home/soic/project/spacetrek/src/service/tool/vm_create.go": {
+    "mtime": 1782665314.6110022,
+    "ast_hash": "a8e97d0c40fb0f4898a34fece7d5b19c",
+    "semantic_hash": "a8e97d0c40fb0f4898a34fece7d5b19c"
+  },
+  "/home/soic/project/spacetrek/src/service/tool/vm_edit_file.go": {
+    "mtime": 1782552824.3470871,
+    "ast_hash": "bf329454b9b34ff948275bdf19bc9bb4",
+    "semantic_hash": "bf329454b9b34ff948275bdf19bc9bb4"
+  },
+  "/home/soic/project/spacetrek/src/service/tool/vm_list.go": {
+    "mtime": 1782665315.3710046,
+    "ast_hash": "7607b9d979f0b993bbeece244fa6a388",
+    "semantic_hash": "7607b9d979f0b993bbeece244fa6a388"
+  },
+  "/home/soic/project/spacetrek/src/service/tool/vm_read_file.go": {
+    "mtime": 1779379422.400198,
+    "ast_hash": "bde10f0b58a65ab0de446c53667bb5d0",
+    "semantic_hash": "bde10f0b58a65ab0de446c53667bb5d0"
+  },
+  "/home/soic/project/spacetrek/src/service/tool/vm_snapshot.go": {
+    "mtime": 1777992826.2110543,
+    "ast_hash": "6ecb93e2c9c24ddeb9a47730a9840f45",
+    "semantic_hash": "6ecb93e2c9c24ddeb9a47730a9840f45"
+  },
+  "/home/soic/project/spacetrek/src/service/tool/vm_start.go": {
+    "mtime": 1782665315.2584426,
+    "ast_hash": "2d50f87e703d06e6ec8bad9d0ee3b2be",
+    "semantic_hash": "2d50f87e703d06e6ec8bad9d0ee3b2be"
+  },
+  "/home/soic/project/spacetrek/src/service/tool/vm_stop.go": {
+    "mtime": 1777992826.2110543,
+    "ast_hash": "c77cca8d4d2453256a52c22e7bb4a6a7",
+    "semantic_hash": "c77cca8d4d2453256a52c22e7bb4a6a7"
+  },
+  "/home/soic/project/spacetrek/src/service/tool/vm_write_file.go": {
+    "mtime": 1782552817.5352933,
+    "ast_hash": "df438541e5a0d6edbb7bbf6ff859d0df",
+    "semantic_hash": "df438541e5a0d6edbb7bbf6ff859d0df"
+  },
+  "/home/soic/project/spacetrek/src/service/user/service.go": {
+    "mtime": 1777992826.2113543,
+    "ast_hash": "925cf527bea2c7d46d9e55b07e0a1ff7",
+    "semantic_hash": "925cf527bea2c7d46d9e55b07e0a1ff7"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/activitybroadcaster/broadcaster.go": {
+    "mtime": 1782583099.3698516,
+    "ast_hash": "866fc10ec6ec39973b1c1c87312154f6",
+    "semantic_hash": "866fc10ec6ec39973b1c1c87312154f6"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/event.go": {
+    "mtime": 1782665619.5352058,
+    "ast_hash": "4c19aaf13feb167c7db36d8edd0dc665",
+    "semantic_hash": "4c19aaf13feb167c7db36d8edd0dc665"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/event_test.go": {
+    "mtime": 1782665619.5365758,
+    "ast_hash": "d586ccc606585570b7bde91fbdfcae85",
+    "semantic_hash": "d586ccc606585570b7bde91fbdfcae85"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/fleetbroadcaster/broadcaster.go": {
+    "mtime": 1782578697.748758,
+    "ast_hash": "6f50a515887f30fc636760d3fb39ee6a",
+    "semantic_hash": "6f50a515887f30fc636760d3fb39ee6a"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/hostswriter/hook.go": {
+    "mtime": 1782664717.829833,
+    "ast_hash": "2d56166362e7ef37ff2f87c3e444cdb7",
+    "semantic_hash": "2d56166362e7ef37ff2f87c3e444cdb7"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/hostswriter/hook_test.go": {
+    "mtime": 1782665232.498396,
+    "ast_hash": "dd78debf6284b4fc2008da55b34915dd",
+    "semantic_hash": "dd78debf6284b4fc2008da55b34915dd"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/hostswriter/writer.go": {
+    "mtime": 1782418254.0609174,
+    "ast_hash": "95465f9f5d4459fa0d5a30a70c56ecc8",
+    "semantic_hash": "95465f9f5d4459fa0d5a30a70c56ecc8"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/hostswriter/writer_test.go": {
+    "mtime": 1782418254.0610433,
+    "ast_hash": "5aeb6f45eb749b3eb79c5f29a6461bc3",
+    "semantic_hash": "5aeb6f45eb749b3eb79c5f29a6461bc3"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/multihook.go": {
+    "mtime": 1782664666.8422716,
+    "ast_hash": "0c7da734f6a431ca14c8da26bad3dc5d",
+    "semantic_hash": "0c7da734f6a431ca14c8da26bad3dc5d"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/service.go": {
+    "mtime": 1782665619.5433657,
+    "ast_hash": "453569f8ede7cfeaae6176d8461dff1a",
+    "semantic_hash": "453569f8ede7cfeaae6176d8461dff1a"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/service_name_test.go": {
+    "mtime": 1782665619.5366642,
+    "ast_hash": "9470a9bf33831dd0df529bc7b3cfed97",
+    "semantic_hash": "9470a9bf33831dd0df529bc7b3cfed97"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/tunnelwriter/hook.go": {
+    "mtime": 1782664717.8898325,
+    "ast_hash": "dbd3332b9bcef470229be54f602a91eb",
+    "semantic_hash": "dbd3332b9bcef470229be54f602a91eb"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/tunnelwriter/hook_test.go": {
+    "mtime": 1782665268.5476367,
+    "ast_hash": "bf3ba893636ea67c44c98475829f0c1b",
+    "semantic_hash": "bf3ba893636ea67c44c98475829f0c1b"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/tunnelwriter/writer.go": {
+    "mtime": 1782633597.5465806,
+    "ast_hash": "1fde13ed6be1d0f2cf2c25cb725a24d0",
+    "semantic_hash": "1fde13ed6be1d0f2cf2c25cb725a24d0"
+  },
+  "/home/soic/project/spacetrek/src/service/vm/tunnelwriter/writer_test.go": {
+    "mtime": 1782633681.7330244,
+    "ast_hash": "b69ac4868267d23e4f98a2ba9560c228",
+    "semantic_hash": "b69ac4868267d23e4f98a2ba9560c228"
+  },
+  "/home/soic/project/spacetrek/.github/workflows/cd.yml": {
+    "mtime": 1777992826.1988873,
+    "ast_hash": "f36314745e125e1c0f4bef9e0cf77bbd",
+    "semantic_hash": "f36314745e125e1c0f4bef9e0cf77bbd"
+  },
+  "/home/soic/project/spacetrek/.github/workflows/ci.yml": {
+    "mtime": 1777992826.1989963,
+    "ast_hash": "f434c5bf6aefc4539af3492b80f5ca14",
+    "semantic_hash": "f434c5bf6aefc4539af3492b80f5ca14"
+  },
+  "/home/soic/project/spacetrek/ARCHITECTURE.md": {
+    "mtime": 1778606246.6189458,
+    "ast_hash": "b691de09b1cff608276544cdf65a6665",
+    "semantic_hash": "b691de09b1cff608276544cdf65a6665"
+  },
+  "/home/soic/project/spacetrek/CLAUDE.md": {
+    "mtime": 1782627831.2528212,
+    "ast_hash": "0b8215dfcec3310c922e54795da12e29",
+    "semantic_hash": "0b8215dfcec3310c922e54795da12e29"
+  },
+  "/home/soic/project/spacetrek/README.md": {
+    "mtime": 1777992826.1990678,
+    "ast_hash": "2561035c2c34d5d70542e692b3aacde8",
+    "semantic_hash": "2561035c2c34d5d70542e692b3aacde8"
+  },
+  "/home/soic/project/spacetrek/docker-compose.yml": {
+    "mtime": 1782633728.8897185,
+    "ast_hash": "c9270c3b7ce22f22a650f62ad73cc562",
+    "semantic_hash": "c9270c3b7ce22f22a650f62ad73cc562"
+  },
+  "/home/soic/project/spacetrek/openapi.yml": {
+    "mtime": 1782659780.5986183,
+    "ast_hash": "c5e1915639e1cb8f82f145fa8cf5c047",
+    "semantic_hash": "c5e1915639e1cb8f82f145fa8cf5c047"
+  },
+  "/home/soic/project/spacetrek/tests/trace_runtime_test_results.md": {
+    "mtime": 1777992826.2113543,
+    "ast_hash": "228f32bdf0e045728ee405adc2d8efee",
+    "semantic_hash": "228f32bdf0e045728ee405adc2d8efee"
+  }
+}
