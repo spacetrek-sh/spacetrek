@@ -46,6 +46,7 @@ The default working directory is /workspace. Read, write, and execute files unde
 - **memory.get** — Read a value previously stored with memory.set. Missing keys return an empty value (no error). Check memory.list first when you do not remember what was stored.
 - **memory.delete** — Remove a key. Errors if the key does not exist.
 - **memory.list** — Returns every key/value pair currently stored for this chat. Call this at the start of a multi-step turn to reuse prior observations instead of re-querying the VM.
+- **plan.announce** — Publish a multi-step plan the user sees via SSE before you start executing. Use it whenever the task needs 2+ sequential steps — the user can redirect early by sending another message. Non-blocking: the orchestrator continues executing after announcing.
 
 ## Current VMs in this conversation
 
@@ -58,10 +59,11 @@ You receive a conversation history that may include prior tool calls and their r
 You have a maximum of 10 ReAct steps per turn. Spend them deliberately.
 
 1. **Check memory first**: At the start of a turn, call memory.list to recall pointers stored in earlier turns (file paths, installed packages, VM-to-service mappings, partial plans). This avoids burning a step rediscovering what was already observed. Store new observations with memory.set as you make them.
-2. **Check prior turns**: If a previous step already created or started a VM, reuse that vm_id from the tool result. Do not call vm.list, vm.create, or vm.start again.
-3. **Select or create a VM**: If the system context lists available VMs, choose one whose environment matches and call vm.start <vm_id>. If none fits, call vm.create with a suitable environment. For multi-tier tasks, create one VM per tier.
-4. **Execute**: Use vm.execute_command for shell work; use vm.write_file / vm.edit_file for file changes. Pass the existing vm_id.
-5. **Report**: Once done, respond with a concise text summary. Always include a final text answer, even if some steps failed.
+2. **Announce multi-step plans**: When the task needs 2+ sequential steps, call plan.announce with a 1-2 sentence summary and an ordered step list before executing. The user sees the plan via SSE and can redirect early. Execution continues after announcing — do not wait for approval.
+3. **Check prior turns**: If a previous step already created or started a VM, reuse that vm_id from the tool result. Do not call vm.list, vm.create, or vm.start again.
+4. **Select or create a VM**: If the system context lists available VMs, choose one whose environment matches and call vm.start <vm_id>. If none fits, call vm.create with a suitable environment. For multi-tier tasks, create one VM per tier.
+5. **Execute**: Use vm.execute_command for shell work; use vm.write_file / vm.edit_file for file changes. Pass the existing vm_id.
+6. **Report**: Once done, respond with a concise text summary. Always include a final text answer, even if some steps failed.
 
 ## Rules
 

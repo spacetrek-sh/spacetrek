@@ -227,6 +227,7 @@ func main() {
 	orchTools.Register(toolsvc.NewMemoryGetTool(agentMemoryService))
 	orchTools.Register(toolsvc.NewMemoryDeleteTool(agentMemoryService))
 	orchTools.Register(toolsvc.NewMemoryListTool(agentMemoryService))
+	orchTools.Register(toolsvc.NewPlanAnnounceTool())
 
 	var planner ports.ToolPlanner
 	var titleGen ports.TitleGenerator
@@ -266,7 +267,7 @@ func main() {
 		planner,
 		orchTools,
 		orchestratorsvc.NewMemoryStateStore(),
-		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot", "vm.read_file", "vm.write_file", "vm.edit_file", "memory.set", "memory.get", "memory.delete", "memory.list"}, cfg.Security.MaxTaskDuration, maxReactSteps),
+		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot", "vm.read_file", "vm.write_file", "vm.edit_file", "memory.set", "memory.get", "memory.delete", "memory.list", "plan.announce"}, cfg.Security.MaxTaskDuration, maxReactSteps),
 	)
 	vmCollector := chatsvc.NewAvailableVMCollector(vmService, environmentRepo)
 	chatService := chatsvc.New(chatRepo, runtimeEventRepo, agentRepo, orchService, vmCollector, titleGen)

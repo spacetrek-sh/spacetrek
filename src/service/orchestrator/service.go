@@ -245,6 +245,27 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 				toolEvent.Command = cmd
 			}
 		}
+		// plan.announce emits a structured plan event ahead of the generic
+		// tool_call event so the frontend can render a checklist. Only fires
+		// when the tool validated successfully — a malformed announce surfaces
+		// only the tool_call error.
+		if next.Name == "plan.announce" && result.OK {
+			if payload, ok := result.Payload.(map[string]any); ok {
+				planEvent := orchdomain.RuntimeEvent{
+					Type:    orchdomain.EventPlan,
+					ChatID:  input.ChatID,
+					TraceID: trace.TraceID,
+					Step:    step,
+					Data:    asString(payload["summary"]),
+					Metadata: map[string]any{
+						"summary": payload["summary"],
+						"steps":   payload["steps"],
+					},
+					At: time.Now().UTC(),
+				}
+				emitRuntimeEvent(input.EmitEvent, planEvent)
+			}
+		}
 		emitRuntimeEvent(input.EmitEvent, toolEvent)
 
 		trace.Steps = append(trace.Steps, orchdomain.TraceStep{
@@ -396,4 +417,13 @@ func emitRuntimeEvent(emitFn func(event orchdomain.RuntimeEvent), event orchdoma
 		return
 	}
 	emitFn(event)
+}
+
+// asString returns v as a string when the underlying type is string, "" otherwise.
+// Used to project typed payload fields into the Data column of RuntimeEvent.
+func asString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }

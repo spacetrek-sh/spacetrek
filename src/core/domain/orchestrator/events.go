@@ -13,6 +13,7 @@ const (
 	EventError   RuntimeEventType = "error"
 	EventDone    RuntimeEventType = "done"
 	EventTitle   RuntimeEventType = "title"
+	EventPlan    RuntimeEventType = "plan"
 )
 
 // RuntimeEvent is the transport-neutral runtime streaming payload.
