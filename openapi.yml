@@ -105,11 +105,15 @@ components:
           - `tool_call` → `metadata.tool` is the tool name, `metadata.arguments`
             is the args map, `result` is the tool's observation, `error` is set
             on failure. `command` is only populated for `vm.execute_command`.
+          - `plan` → `data` is the summary string; `metadata.summary` mirrors
+            it and `metadata.steps` is the ordered checklist (array of
+            `{description: string}`). Emitted once per `plan.announce` call,
+            before the matching `tool_call` event.
           - `error` → `error` holds the orchestration failure message.
       properties:
         type:
           type: string
-          enum: [token, thinking, answer, tool_call, title, error, done]
+          enum: [token, thinking, answer, tool_call, plan, title, error, done]
         chat_id:
           type: string
           format: uuid
@@ -516,6 +520,10 @@ paths:
                           in `metadata.arguments`, observation in `result`,
                           failure message in `error`. `command` is only set
                           for `vm.execute_command`.
+          - `plan`     — multi-step plan announcement from `plan.announce`;
+                          `data` is the summary, `metadata.steps` is the
+                          ordered `{description}` checklist. Emitted before
+                          the matching `tool_call`.
           - `title`     — LLM-generated conversation title (first message only,
                           emitted once within ~1-3s of the initial POST)
           - `error`     — orchestration failure (`error` = message)
