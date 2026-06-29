@@ -60,6 +60,7 @@ func main() {
 
 	// ── Repositories ───────────────────────────────────────────────────────
 	agentRepo := postgresrepo.NewAgentRepository(db)
+	agentMemoryRepo := postgresrepo.NewAgentMemoryRepository(db)
 	chatRepo := postgresrepo.NewChatRepository(db)
 	environmentRepo := postgresrepo.NewEnvironmentRepository(db)
 	vmRepo := postgresrepo.NewVMRepository(db)
@@ -75,6 +76,7 @@ func main() {
 
 	// ── Services ────────────────────────────────────────────────────────────
 	agentService := agentsvc.New(agentRepo)
+	agentMemoryService := agentsvc.NewMemoryService(agentMemoryRepo)
 	userService := usersvc.NewService(userRepo)
 	authService := authservice.NewService(jwtManager, authRepo, userRepo)
 
@@ -221,6 +223,10 @@ func main() {
 	orchTools.Register(toolsvc.NewVMReadFileTool(vmService))
 	orchTools.Register(toolsvc.NewVMWriteFileTool(vmService))
 	orchTools.Register(toolsvc.NewVMEditFileTool(vmService))
+	orchTools.Register(toolsvc.NewMemorySetTool(agentMemoryService))
+	orchTools.Register(toolsvc.NewMemoryGetTool(agentMemoryService))
+	orchTools.Register(toolsvc.NewMemoryDeleteTool(agentMemoryService))
+	orchTools.Register(toolsvc.NewMemoryListTool(agentMemoryService))
 
 	var planner ports.ToolPlanner
 	var titleGen ports.TitleGenerator
@@ -260,7 +266,7 @@ func main() {
 		planner,
 		orchTools,
 		orchestratorsvc.NewMemoryStateStore(),
-		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot", "vm.read_file", "vm.write_file", "vm.edit_file"}, cfg.Security.MaxTaskDuration, maxReactSteps),
+		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot", "vm.read_file", "vm.write_file", "vm.edit_file", "memory.set", "memory.get", "memory.delete", "memory.list"}, cfg.Security.MaxTaskDuration, maxReactSteps),
 	)
 	vmCollector := chatsvc.NewAvailableVMCollector(vmService, environmentRepo)
 	chatService := chatsvc.New(chatRepo, runtimeEventRepo, agentRepo, orchService, vmCollector, titleGen)
