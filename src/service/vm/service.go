@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -446,6 +447,13 @@ func (s *Service) reconcileRuntimeStates(ctx context.Context) {
 	}
 
 	for _, vm := range vms {
+		// Idle VMs are expected to be absent from Firecracker (cold-stopped
+		// but resumable from snapshot). Skip the backend.Status call so the
+		// reconciler doesn't busy-ping cold VMs every tick.
+		if vm.Status == vmdomain.StatusIdle {
+			continue
+		}
+
 		runtimeID := vm.ID
 		if vm.RuntimeID != nil && *vm.RuntimeID != "" {
 			runtimeID = *vm.RuntimeID
@@ -454,34 +462,52 @@ func (s *Service) reconcileRuntimeStates(ctx context.Context) {
 		runtimeStatus, statusErr := s.backend.Status(ctx, runtimeID)
 		if statusErr != nil {
 			if strings.Contains(strings.ToLower(statusErr.Error()), "not found") {
-				state := "stopped"
-				vm.RuntimeState = &state
-				vm.PID = nil
-				vm.LastHeartbeatAt = &now
-				vm.IdleDeadlineAt = nil
-				vm.Terminate()
-				s.releaseIPOnTerminate(ctx, vm)
-				if repoErr := s.repo.ReleaseActiveLeaseByVM(ctx, vm.ID); repoErr != nil {
-					logger.WarnContext(ctx, "VM runtime reconciler failed to release lease for not-found VM", "vm_id", vm.ID, "error", repoErr)
-				}
-				if err := s.repo.Update(ctx, vm); err != nil {
-					logger.WarnContext(ctx, "VM runtime reconciler failed to persist not-found state", "vm_id", vm.ID, "error", err)
-				}
-				logger.InfoContext(ctx, "VM runtime reconciler: terminated not-found VM", "vm_id", vm.ID)
+				s.markColdAfterLostRuntime(ctx, vm, "stopped", now, logger)
 			}
 			continue
 		}
 
-		vm.SetRuntimeMetadata(runtimeID, "", runtimeStatus.PID, runtimeStatus.State)
 		if runtimeStatus.State == "stopped" || runtimeStatus.State == "terminated" {
-			vm.PID = nil
-			vm.Terminate()
-			s.releaseIPOnTerminate(ctx, vm)
+			s.markColdAfterLostRuntime(ctx, vm, runtimeStatus.State, now, logger)
+			continue
 		}
 
+		vm.SetRuntimeMetadata(runtimeID, "", runtimeStatus.PID, runtimeStatus.State)
 		if err := s.repo.Update(ctx, vm); err != nil {
 			logger.WarnContext(ctx, "VM runtime reconciler failed to persist runtime state", "vm_id", vm.ID, "error", err)
 		}
+	}
+}
+
+// markColdAfterLostRuntime transitions a VM to idle after Firecracker reports
+// it missing ("not found") or stopped. Unlike the explicit destroy path, the
+// IP and lease are preserved so the activator can resume the VM on the next
+// inbound request. Mirrors the idle reaper's event emission so downstream
+// consumers (hostswriter, fleet broadcaster, etc.) see the same transitions.
+func (s *Service) markColdAfterLostRuntime(ctx context.Context, vm *vmdomain.VM, runtimeState string, now time.Time, logger *slog.Logger) {
+	oldStatus := vm.Status
+	priorChatID := ""
+	if vm.ChatID != nil {
+		priorChatID = *vm.ChatID
+	}
+
+	vm.Unassign()
+	state := runtimeState
+	vm.RuntimeState = &state
+	vm.PID = nil
+	vm.LastHeartbeatAt = &now
+	vm.IdleDeadlineAt = nil
+
+	if err := s.repo.Update(ctx, vm); err != nil {
+		logger.WarnContext(ctx, "VM runtime reconciler failed to persist cold state", "vm_id", vm.ID, "error", err)
+		return
+	}
+
+	logger.InfoContext(ctx, "VM runtime reconciler: transitioned lost runtime to idle",
+		"vm_id", vm.ID, "prior_status", oldStatus)
+	s.notifyHook(ctx, NewStatusChangedEvent(vm, oldStatus))
+	if priorChatID != "" {
+		s.notifyHook(ctx, NewUnassignedEvent(vm, priorChatID))
 	}
 }
 
@@ -632,6 +658,18 @@ func (s *Service) reapIdleVMs(ctx context.Context) {
 func (s *Service) refreshIdleDeadline(vm *vmdomain.VM) {
 	deadline := time.Now().UTC().Add(s.idleTimeout)
 	vm.IdleDeadlineAt = &deadline
+}
+
+// MarkActive bumps a VM's IdleDeadlineAt to now + idleTimeout and persists it.
+// Called by the ingress activator on every forwarded request so that an
+// actively-served-but-quiet VM is not reaped mid-traffic. Idempotent.
+func (s *Service) MarkActive(ctx context.Context, vmID string) error {
+	vm, err := s.repo.GetByID(ctx, vmID)
+	if err != nil {
+		return err
+	}
+	s.refreshIdleDeadline(vm)
+	return s.repo.Update(ctx, vm)
 }
 
 func (s *Service) collectAndPersistMetrics(ctx context.Context) {
@@ -1831,8 +1869,13 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 	// Try to find a snapshot for this VM.
 	snap, snapErr := s.snapRepo.GetLatestByVMID(ctx, vmID)
 	if snapErr != nil {
-		// No snapshot — fall back to simple assignment if VM is available.
+		// No snapshot — nothing to restore. If a chatID was provided, fall back
+		// to plain assignment; otherwise (activator wake) just return the VM
+		// in its current state.
 		logger.InfoContext(ctx, "no snapshot found, falling back to simple assignment", "vm_id", vmID, "error", snapErr)
+		if strings.TrimSpace(chatID) == "" {
+			return s.repo.GetByID(ctx, vmID)
+		}
 		return s.AssignToChat(ctx, vmID, chatID)
 	}
 
@@ -1896,14 +1939,27 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 		},
 	}
 
-	// Reuse the VM's existing IP for networking after restore.
-	if vm.IPAddress != nil && *vm.IPAddress != "" && s.ipAllocator != nil {
-		// Verify no other active VM holds this IP.
-		allocated, checkErr := s.repo.GetAllocatedIPsExclude(ctx, vmID)
-		if checkErr == nil {
-			for _, usedIP := range allocated {
-				if usedIP == *vm.IPAddress {
-					return nil, exception.Internal(fmt.Errorf("IP %s is already in use by another VM, cannot restore", *vm.IPAddress))
+	// Ensure the VM has an IP for networking after restore. Without this,
+	// hostswriter filters the VM out of dnsmasq's addn-hosts and DNS for
+	// <name>.vm.internal returns NXDOMAIN — see docs/issues/vm-dns-stale-after-restore.md.
+	if s.ipAllocator != nil {
+		if vm.IPAddress == nil || *vm.IPAddress == "" {
+			// VM lost its persisted IP (e.g. row was cleared between snapshot
+			// and resume). Allocate a fresh one; ipAllocator.Allocate persists
+			// it via repo.SetIPAddress.
+			ip, allocErr := s.ipAllocator.Allocate(ctx, vm.ID)
+			if allocErr != nil {
+				return nil, exception.Internal(fmt.Errorf("allocate ip on restore: %w", allocErr))
+			}
+			vm.IPAddress = &ip
+		} else {
+			// Verify no other active VM holds this IP.
+			allocated, checkErr := s.repo.GetAllocatedIPsExclude(ctx, vmID)
+			if checkErr == nil {
+				for _, usedIP := range allocated {
+					if usedIP == *vm.IPAddress {
+						return nil, exception.Internal(fmt.Errorf("IP %s is already in use by another VM, cannot restore", *vm.IPAddress))
+					}
 				}
 			}
 		}
@@ -2343,11 +2399,17 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 		return nil, err
 	}
 
-	// Assign to chat and create lease (single transactional operation).
-	assignedVM, err := s.repo.AssignToChatIfAvailable(ctx, vmID, chatID, vm.IdleDeadlineAt)
-	if err != nil {
-		logger.ErrorContext(ctx, "failed to assign restored VM to chat", "vm_id", vmID, "chat_id", chatID, "error", err)
-		return nil, err
+	// Bind to chat if requested. Activator wakes pass empty chatID — the VM
+	// just needs to be running so traffic can be forwarded; no lease is
+	// created, and the VM's existing lease records (if any) are left intact.
+	assignedVM := vm
+	if strings.TrimSpace(chatID) != "" {
+		assigned, assignErr := s.repo.AssignToChatIfAvailable(ctx, vmID, chatID, vm.IdleDeadlineAt)
+		if assignErr != nil {
+			logger.ErrorContext(ctx, "failed to assign restored VM to chat", "vm_id", vmID, "chat_id", chatID, "error", assignErr)
+			return nil, assignErr
+		}
+		assignedVM = assigned
 	}
 
 	// Record resume metrics.
@@ -2368,9 +2430,12 @@ func (s *Service) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.
 
 	logger.InfoContext(ctx, "VM restored from snapshot", "vm_id", vmID, "chat_id", chatID, "snapshot_id", snap.ID)
 
-	// Notify subscribers: status changed (stopped → running), then assigned.
+	// Notify subscribers: status changed (stopped → running), then assigned
+	// (only when a chat binding was requested).
 	s.notifyHook(ctx, NewStatusChangedEvent(assignedVM, preResumeStatus))
-	s.notifyHook(ctx, NewAssignedEvent(assignedVM, chatID))
+	if strings.TrimSpace(chatID) != "" {
+		s.notifyHook(ctx, NewAssignedEvent(assignedVM, chatID))
+	}
 
 	// GC: after resume the VM is self-contained (flattened), safe to delete all.
 	go func() {

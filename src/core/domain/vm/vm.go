@@ -30,6 +30,11 @@ const (
 	ProviderCloudHypervisor Provider = "cloud-hypervisor"
 )
 
+// publicDomainSuffix is the public hostname suffix cloudflared ingress maps
+// each VM to. Kept in sync with the suffix passed to tunnelwriter in
+// cmd/main.go.
+const publicDomainSuffix = ".box.spacetrek.xyz"
+
 // VM represents a microVM instance for secure task execution.
 // Aligned with database table vm_instances.
 type VM struct {
@@ -276,4 +281,14 @@ func (v *VM) IsRecentlyResumed(gracePeriod time.Duration) bool {
 		return false
 	}
 	return time.Since(*v.LastResumedAt) < gracePeriod
+}
+
+// PublicURL returns the user-facing URL for reaching this VM through the
+// Cloudflare Tunnel (https://<name>.box.spacetrek.xyz), or "" when the VM is
+// not publicly exposed (no name or no service port).
+func (v *VM) PublicURL() string {
+	if v == nil || v.Name == "" || v.ServicePort <= 0 {
+		return ""
+	}
+	return "https://" + v.Name + publicDomainSuffix
 }

@@ -111,6 +111,76 @@ services:
       rustfs:
         condition: service_started
 
+  # Serverless ingress activator. Receives *.box.spacetrek.xyz traffic from
+  # host cloudflared, looks up the target VM by hostname, wakes it from
+  # snapshot if idle (blocking the request during cold-start), then forwards
+  # to vmIP:service_port. Shares spacetrek-api's netns so it can dial both
+  # the orchestrator's localhost:8081 internal API and the VM mesh directly.
+  activator:
+    build:
+      context: .
+      dockerfile: Dockerfile.activator
+    restart: unless-stopped
+    container_name: spacetrek-activator
+    network_mode: "service:api"
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      ACTIVATOR_LISTEN_ADDR: ":8090"
+      ORCHESTRATOR_INTERNAL_URL: "http://localhost:8081"
+      DOMAIN_SUFFIX: ".box.spacetrek.xyz"
+      COLD_START_BUDGET: "60s"
+      MAX_CONCURRENT_ACTIVATIONS: "5"
+    healthcheck:
+      # Two checks: activator liveness (its own /healthz) and netns correctness
+      # (localhost:8081 only exists in spacetrek-api's netns — when the activator
+      # is orphaned pointing at a stale api container ID, this fails and the
+      # container shows unhealthy instead of silently broken).
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/healthz >/dev/null && wget -qO- http://localhost:8081/internal/v1/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # In-mesh HTTP forward proxy. Used by VMs that have HTTP-based dependencies
+  # on other VMs: a frontend VM sets HTTP_PROXY=http://10.200.0.1:8091 and
+  # its HTTP client routes through this proxy, which looks up the target VM
+  # by hostname, resumes it from idle if needed, then forwards to
+  # vmIP:service_port. Same code/binary as the public activator, just running
+  # in ModeMeshProxy (extracts hostname from URL.Host instead of Host header).
+  # Refuses non-*.box.spacetrek.xyz destinations so a misconfigured NO_PROXY
+  # can't turn it into an open proxy. HTTPS CONNECT is not supported — only
+  # plaintext HTTP between VMs. Same network_mode: "service:api" so it shares
+  # the api netns (and therefore the VM mesh + orchestrator's localhost:8081).
+  mesh-activator:
+    build:
+      context: .
+      dockerfile: Dockerfile.activator
+    restart: unless-stopped
+    container_name: spacetrek-mesh-activator
+    network_mode: "service:api"
+    depends_on:
+      api:
+        condition: service_started
+      activator:
+        condition: service_started
+    environment:
+      ACTIVATOR_MODE: "mesh-proxy"
+      ACTIVATOR_LISTEN_ADDR: ":8091"
+      ORCHESTRATOR_INTERNAL_URL: "http://localhost:8081"
+      DOMAIN_SUFFIX: ".box.spacetrek.xyz"
+      COLD_START_BUDGET: "60s"
+      MAX_CONCURRENT_ACTIVATIONS: "5"
+    healthcheck:
+      # Same dual-check pattern as the public activator: own liveness on
+      # :8091 plus netns correctness via localhost:8081.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8091/healthz >/dev/null && wget -qO- http://localhost:8081/internal/v1/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
 volumes:
   spacetrek-psql-data:
   spacetrek-rustfs-data:

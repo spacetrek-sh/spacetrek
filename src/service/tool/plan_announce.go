@@ -36,6 +36,15 @@ func (t *PlanAnnounceTool) Definition() tool.Definition {
 				Type:        "array",
 				Required:    true,
 				Description: "Ordered list of 1-10 steps. Each item is an object {\"description\": string}.",
+				Items: &tool.Parameter{
+					Type: "object",
+					Properties: map[string]tool.Parameter{
+						"description": {
+							Type:        "string",
+							Description: "What this step does, in one sentence.",
+						},
+					},
+				},
 			},
 		},
 	}

@@ -32,6 +32,7 @@ func TestVMBaseFields_AllFieldsPresent(t *testing.T) {
 		"provider":     "firecracker",
 		"service_port": 8000,
 		"public_url":   "https://admiring-turing.box.spacetrek.xyz",
+		"ip_address":   "10.200.0.5",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("vmBaseFields mismatch:\n got: %v\nwant: %v", got, want)
@@ -93,6 +94,7 @@ func TestEnrichedPayload_IncludesBaseAndExtras(t *testing.T) {
 		"provider":     "firecracker",
 		"service_port": 3000,
 		"public_url":   "https://nervous-lovelace.box.spacetrek.xyz",
+		"ip_address":   "10.200.0.5",
 		"restored":     true,
 		"environment":  "bun",
 	}

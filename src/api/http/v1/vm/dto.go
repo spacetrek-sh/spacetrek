@@ -36,6 +36,8 @@ type createVMResponse struct {
 	DiskMB   int `json:"disk_mb"`
 	// Backend port cloudflared forwards to
 	ServicePort int `json:"service_port"`
+	// Public URL routing to this VM through the Cloudflare Tunnel
+	PublicURL string `json:"public_url"`
 }
 
 // getVMResponse is the JSON response for GET /api/v1/vm/{id}.
@@ -62,6 +64,8 @@ type getVMResponse struct {
 	IPAddress *string `json:"ip_address,omitempty"`
 	// Backend port cloudflared forwards to
 	ServicePort int `json:"service_port"`
+	// Public URL routing to this VM through the Cloudflare Tunnel
+	PublicURL string `json:"public_url"`
 	// Session binding
 	ChatID     *string `json:"chat_id,omitempty"`
 	AssignedAt *string `json:"assigned_at,omitempty"`
@@ -113,6 +117,8 @@ type runtimeSnapshotResponse struct {
 	IdleDeadlineAt       *string `json:"idle_deadline_at,omitempty"`
 	ChatID               *string `json:"chat_id,omitempty"`
 	ServicePort          int     `json:"service_port"`
+	// Public URL routing to this VM through the Cloudflare Tunnel
+	PublicURL            string  `json:"public_url"`
 	CPUUsagePercent      float64 `json:"cpu_usage_percent"`
 	MemoryUsedMB         int     `json:"memory_used_mb"`
 	MemoryLimitMB        int     `json:"memory_limit_mb"`
@@ -175,19 +181,21 @@ type resumeVMRequest struct {
 
 // fleetVMResponse is a single VM in the fleet SSE stream.
 type fleetVMResponse struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	Agent       string  `json:"agent,omitempty"`
-	Uptime      string  `json:"uptime"`
-	Mem         string  `json:"mem"`
-	MemPct      float64 `json:"memPct"`
-	CPU         string  `json:"cpu"`
-	Disk        string  `json:"disk"`
-	DiskPct     float64 `json:"diskPct"`
-	Status      string  `json:"status"`
-	IP          string  `json:"ip,omitempty"`
-	ServicePort int     `json:"service_port"`
-	Created     string  `json:"created"`
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	Agent          string  `json:"agent,omitempty"`
+	ConversationID string  `json:"conversation_id"`
+	Uptime         string  `json:"uptime"`
+	Mem            string  `json:"mem"`
+	MemPct         float64 `json:"memPct"`
+	CPU            string  `json:"cpu"`
+	Disk           string  `json:"disk"`
+	DiskPct        float64 `json:"diskPct"`
+	Status         string  `json:"status"`
+	IP             string  `json:"ip,omitempty"`
+	ServicePort    int     `json:"service_port"`
+	PublicURL      string  `json:"public_url"`
+	Created        string  `json:"created"`
 }
 
 // fleetPageResponse is the paginated payload emitted by /vm/fleet/stream.

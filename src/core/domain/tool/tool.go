@@ -4,9 +4,11 @@ import "context"
 
 // Parameter describes one argument accepted by a tool.
 type Parameter struct {
-	Type        string `json:"type"`
-	Description string `json:"description"`
-	Required    bool   `json:"required"`
+	Type        string               `json:"type"`
+	Description string               `json:"description"`
+	Required    bool                 `json:"required"`
+	Items       *Parameter           `json:"items,omitempty"`      // set when Type == "array"
+	Properties  map[string]Parameter `json:"properties,omitempty"` // set when Type == "object"
 }
 
 // Definition is metadata exposed to the orchestrator and LLM planner.

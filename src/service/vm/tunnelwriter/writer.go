@@ -1,8 +1,18 @@
-// Package tunnelwriter renders a cloudflared ingress config from VM state.
+// Package tunnelwriter renders the cloudflared ingress config that routes
+// public *.box.spacetrek.xyz traffic to the spacetrek-activator container.
+//
+// All VM traffic is collapsed into a single wildcard rule pointing at the
+// activator's listener (http://<orchestrator-eth0-ip>:8090). The activator
+// then resolves the VM by hostname, wakes it if idle, and forwards to
+// vmIP:service_port. Per-VM ingress rules are no longer needed — the
+// activator reads VM state from the orchestrator's internal API on every
+// request.
+//
 // cloudflared does not hot-reload a file-based config; the cloudflared
 // container's entrypoint watches this file via inotifywait and re-execs
-// cloudflared when it changes. Triggered on VM lifecycle transitions and
-// by a periodic reconciler that catches missed events.
+// cloudflared when it changes. Triggered on VM lifecycle transitions (so
+// the file is rewrited at least once after boot) and by a periodic
+// reconciler that catches external edits to the static-rules file.
 package tunnelwriter
 
 import (
@@ -13,73 +23,59 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
-	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 )
 
-// VMReader is the subset of vmdomain.Repository the writer needs. Declared
-// locally so tests can substitute a stub without spinning up a full repo.
-type VMReader interface {
-	List(ctx context.Context) ([]*vmdomain.VM, error)
-}
-
-// Writer renders the cloudflared ingress config from VM state.
+// Writer renders the cloudflared ingress config. The rendered file is
+// stable given fixed inputs — it does not depend on VM state.
 type Writer struct {
-	reader          VMReader
 	ingressPath     string
 	domainSuffix    string // e.g. ".box.spacetrek.xyz"
+	orchestratorIP  string // e.g. "172.19.0.4" — orchestrator's eth0 IP
 	header          string // static preamble (tunnel:, credentials-file:, etc.)
-	staticRulesPath string // optional file with extra ingress entries (static services)
+	staticRulesPath string // optional file with extra ingress entries (non-VM services)
 
 	mu       sync.Mutex
 	lastHash string
 }
 
-// New returns a Writer that reads VMs from reader, writes to ingressPath,
-// and produces hostnames of the form <vm-name><domainSuffix>. header is
-// written verbatim before the ingress: block — it carries the tunnel UUID
-// and credentials-file directives that cloudflared requires.
-//
-// staticRulesPath, when non-empty and pointing at a readable file, supplies
-// verbatim YAML entries inserted between `ingress:` and the dynamic VM
-// entries — used for non-VM services (api, www) that share the tunnel.
-// Missing file is treated as empty (no static rules); other read errors
-// fail the Refresh.
-func New(reader VMReader, ingressPath, domainSuffix, header, staticRulesPath string) *Writer {
+// New returns a Writer that writes to ingressPath, producing hostnames of
+// the form *<domainSuffix> routed at http://<orchestratorIP>:8090 (the
+// activator). header is written verbatim before the ingress: block — it
+// carries the tunnel UUID and credentials-file directives that cloudflared
+// requires. staticRulesPath, when non-empty and pointing at a readable
+// file, supplies verbatim YAML entries inserted between `ingress:` and the
+// wildcard VM rule — used for non-VM services (api, www) that share the
+// tunnel. Missing file is treated as empty (no static rules); other read
+// errors fail the Refresh.
+func New(ingressPath, domainSuffix, orchestratorIP, header, staticRulesPath string) *Writer {
 	return &Writer{
-		reader:          reader,
 		ingressPath:     ingressPath,
 		domainSuffix:    domainSuffix,
+		orchestratorIP:  orchestratorIP,
 		header:          header,
 		staticRulesPath: staticRulesPath,
 	}
 }
 
-// Refresh queries VMs, rewrites the ingress file if the rendered content
-// changed. No-op (no write) if the rendered content matches the last
-// successful write. Safe to call repeatedly.
+// Refresh rewrites the ingress file if the rendered content changed since
+// the last successful write. No-op if unchanged. Safe to call repeatedly.
 //
 // Refresh does not signal cloudflared — the host's systemd .path unit
 // watches the file and reload-or-restarts cloudflared on change.
 func (w *Writer) Refresh(ctx context.Context) error {
 	logger := pkglog.FromContext(ctx)
 
-	vms, err := w.reader.List(ctx)
-	if err != nil {
-		return fmt.Errorf("list vms: %w", err)
-	}
-
 	static, err := w.readStaticRules()
 	if err != nil {
 		return fmt.Errorf("read static rules: %w", err)
 	}
 
-	content := render(vms, w.domainSuffix, w.header, static)
+	content := render(w.domainSuffix, w.orchestratorIP, w.header, static)
 	hash := hashContent(content)
 
 	w.mu.Lock()
@@ -97,7 +93,8 @@ func (w *Writer) Refresh(ctx context.Context) error {
 	w.lastHash = hash
 	w.mu.Unlock()
 
-	logger.InfoContext(ctx, "cloudflared ingress rewritten", "path", w.ingressPath, "vm_count", countEligible(vms))
+	logger.InfoContext(ctx, "cloudflared ingress rewritten",
+		"path", w.ingressPath, "target", w.orchestratorIP)
 	return nil
 }
 
@@ -132,43 +129,22 @@ func (w *Writer) StartReconciler(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// render produces the ingress YAML from a VM slice. Pure function for
-// golden-file testing. Format:
+// render produces the ingress YAML. Pure function for golden-file testing.
+// Format:
 //
 //	# managed by spacetrk orchestrator — do not edit
 //	<header>
 //	ingress:
 //	  <static rules, if any>
-//	  - hostname: <name><suffix>
-//	    service: http://<ip>:<port>
+//	  - hostname: *<suffix>
+//	    service: http://<orchestratorIP>:8090
 //	  - service: http_status:404
 //
 // The trailing http_status:404 is required by cloudflared — every ingress
 // ruleset must terminate in a catch-all. header carries the static tunnel:
 // and credentials-file: directives. staticRules is inserted verbatim
-// between `ingress:` and the dynamic VM entries when non-empty.
-func render(vms []*vmdomain.VM, domainSuffix, header, staticRules string) []byte {
-	eligible := make([]*vmdomain.VM, 0, len(vms))
-	for _, vm := range vms {
-		if vm == nil || vm.IsTerminated() {
-			continue
-		}
-		if vm.Name == "" {
-			continue
-		}
-		if vm.IPAddress == nil || *vm.IPAddress == "" {
-			continue
-		}
-		if vm.ServicePort <= 0 {
-			continue
-		}
-		eligible = append(eligible, vm)
-	}
-
-	sort.Slice(eligible, func(i, j int) bool {
-		return eligible[i].Name < eligible[j].Name
-	})
-
+// between `ingress:` and the wildcard rule when non-empty.
+func render(domainSuffix, orchestratorIP, header, staticRules string) []byte {
 	var buf bytes.Buffer
 	buf.WriteString("# managed by spacetrk orchestrator — do not edit\n")
 	if header != "" {
@@ -184,10 +160,8 @@ func render(vms []*vmdomain.VM, domainSuffix, header, staticRules string) []byte
 			buf.WriteString("\n")
 		}
 	}
-	for _, vm := range eligible {
-		fmt.Fprintf(&buf, "  - hostname: %s%s\n", vm.Name, domainSuffix)
-		fmt.Fprintf(&buf, "    service: http://%s:%d\n", *vm.IPAddress, vm.ServicePort)
-	}
+	fmt.Fprintf(&buf, "  - hostname: \"*%s\"\n", domainSuffix)
+	fmt.Fprintf(&buf, "    service: http://%s:8090\n", orchestratorIP)
 	buf.WriteString("  - service: http_status:404\n")
 	return buf.Bytes()
 }
@@ -206,20 +180,6 @@ func (w *Writer) readStaticRules() (string, error) {
 		return "", err
 	}
 	return string(b), nil
-}
-
-func countEligible(vms []*vmdomain.VM) int {
-	n := 0
-	for _, vm := range vms {
-		if vm == nil || vm.IsTerminated() || vm.Name == "" {
-			continue
-		}
-		if vm.IPAddress == nil || *vm.IPAddress == "" || vm.ServicePort <= 0 {
-			continue
-		}
-		n++
-	}
-	return n
 }
 
 func (w *Writer) writeAtomic(content []byte) error {

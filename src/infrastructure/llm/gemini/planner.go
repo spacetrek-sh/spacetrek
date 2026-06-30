@@ -63,7 +63,11 @@ You have a maximum of 10 ReAct steps per turn. Spend them deliberately.
 3. **Check prior turns**: If a previous step already created or started a VM, reuse that vm_id from the tool result. Do not call vm.list, vm.create, or vm.start again.
 4. **Select or create a VM**: If the system context lists available VMs, choose one whose environment matches and call vm.start <vm_id>. If none fits, call vm.create with a suitable environment. For multi-tier tasks, create one VM per tier.
 5. **Execute**: Use vm.execute_command for shell work; use vm.write_file / vm.edit_file for file changes. Pass the existing vm_id.
-6. **Report**: Once done, respond with a concise text summary. Always include a final text answer, even if some steps failed.
+6. **Report**: Once done, respond with a concise text summary. Always include a final text answer, even if some steps failed. Before reporting success on a server, proxy, or any service that another VM or the user will call, execute one ` + "`vm.execute_command`" + ` against the endpoint from inside a VM (or curl from the same VM that runs the service). Only report success if the verification returns the expected response. If verification fails, report failure with the observed error.
+
+## Failure modes
+
+If ` + "`<peer>.vm.internal`" + ` fails to resolve or connect, do not guess the peer's IP from memory — IPs are not stable across VM restore. Instead, find the peer's current ` + "`ip_address`" + ` in the most recent ` + "`vm.create`" + ` / ` + "`vm.start`" + ` / ` + "`vm.list`" + ` tool result, or call ` + "`vm.list`" + ` to refresh. Restore the DNS-name URL after the underlying DNS state is fixed; do not hardcode IPs into source files.
 
 ## Rules
 

@@ -807,6 +807,7 @@ func toCreateVMResponse(vm *vmdomain.VM, env *environment.Environment) createVMR
 		MemoryMB:        vm.GetMemoryMB(env.GetMemoryMB()),
 		DiskMB:          vm.GetDiskMB(env.GetDiskMB()),
 		ServicePort:     vm.ServicePort,
+		PublicURL:       vm.PublicURL(),
 	}
 }
 
@@ -831,6 +832,7 @@ func toGetVMResponse(vm *vmdomain.VM) getVMResponse {
 		HasOverrides:    vm.HasCustomResources(),
 		IPAddress:       vm.IPAddress,
 		ServicePort:     vm.ServicePort,
+		PublicURL:       vm.PublicURL(),
 		ChatID:          vm.ChatID,
 		CreatedAt:       vm.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		TerminatedAt:    formatTimePtr(vm.TerminatedAt),
@@ -877,6 +879,7 @@ func toRuntimeSnapshotResponse(vm *vmdomain.VM, metrics vmdomain.Metrics) runtim
 		IdleDeadlineAt:       formatTimePtr(vm.IdleDeadlineAt),
 		ChatID:               vm.ChatID,
 		ServicePort:          vm.ServicePort,
+		PublicURL:            vm.PublicURL(),
 		CPUUsagePercent:      metrics.CPUUsagePercent,
 		MemoryUsedMB:         metrics.MemoryUsedMB,
 		MemoryLimitMB:        metrics.MemoryLimitMB,
@@ -895,18 +898,20 @@ func toFleetVMResponse(vm *vmdomain.VM, metrics vmdomain.Metrics) fleetVMRespons
 		ip = *vm.IPAddress
 	}
 	return fleetVMResponse{
-		ID:      vm.ID,
-		Name:    vm.Name,
-		Uptime:  formatDuration(time.Since(vm.CreatedAt)),
-		Mem:     fmt.Sprintf("%d / %dmb", metrics.MemoryUsedMB, metrics.MemoryLimitMB),
-		MemPct:  metrics.MemoryPercent,
-		CPU:     fmt.Sprintf("%.0f%%", metrics.CPUUsagePercent),
-		Disk:    fmt.Sprintf("%dmb / %dmb", metrics.DiskUsedMB, metrics.DiskLimitMB),
-		DiskPct: metrics.DiskPercent,
-		Status:  string(vm.Status),
-		IP:      ip,
-		ServicePort: vm.ServicePort,
-		Created: vm.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		ID:             vm.ID,
+		Name:           vm.Name,
+		ConversationID: vm.ConversationID,
+		Uptime:         formatDuration(time.Since(vm.CreatedAt)),
+		Mem:            fmt.Sprintf("%d / %dmb", metrics.MemoryUsedMB, metrics.MemoryLimitMB),
+		MemPct:         metrics.MemoryPercent,
+		CPU:            fmt.Sprintf("%.0f%%", metrics.CPUUsagePercent),
+		Disk:           fmt.Sprintf("%dmb / %dmb", metrics.DiskUsedMB, metrics.DiskLimitMB),
+		DiskPct:        metrics.DiskPercent,
+		Status:         string(vm.Status),
+		IP:             ip,
+		ServicePort:    vm.ServicePort,
+		PublicURL:      vm.PublicURL(),
+		Created:        vm.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 }
 

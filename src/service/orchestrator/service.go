@@ -85,7 +85,7 @@ func NewWithConfig(planner ports.ToolPlanner, tools ports.ToolRegistry, states p
 		cfg.ToolTimeout = 30 * time.Second
 	}
 	if cfg.MaxReactSteps <= 0 {
-		cfg.MaxReactSteps = 30
+		cfg.MaxReactSteps = 70
 	}
 
 	return &Service{

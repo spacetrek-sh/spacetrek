@@ -90,10 +90,7 @@ func convertParams(params map[string]tool.Parameter) *genai.Schema {
 	var ordering []string
 
 	for name, p := range params {
-		properties[name] = &genai.Schema{
-			Type:        mapParamType(p.Type),
-			Description: p.Description,
-		}
+		properties[name] = convertParamSchema(&p)
 		ordering = append(ordering, name)
 		if p.Required {
 			required = append(required, name)
@@ -101,11 +98,34 @@ func convertParams(params map[string]tool.Parameter) *genai.Schema {
 	}
 
 	return &genai.Schema{
-		Type:            genai.TypeObject,
-		Properties:      properties,
-		Required:        required,
+		Type:             genai.TypeObject,
+		Properties:       properties,
+		Required:         required,
 		PropertyOrdering: ordering,
 	}
+}
+
+// convertParamSchema converts a single domain Parameter into a genai Schema,
+// recursing into Items (for arrays) and Properties (for nested objects).
+func convertParamSchema(p *tool.Parameter) *genai.Schema {
+	if p == nil {
+		return nil
+	}
+	schema := &genai.Schema{
+		Type:        mapParamType(p.Type),
+		Description: p.Description,
+	}
+	if p.Items != nil {
+		schema.Items = convertParamSchema(p.Items)
+	}
+	if len(p.Properties) > 0 {
+		schema.Properties = make(map[string]*genai.Schema, len(p.Properties))
+		for name, child := range p.Properties {
+			childCopy := child
+			schema.Properties[name] = convertParamSchema(&childCopy)
+		}
+	}
+	return schema
 }
 
 func mapParamType(t string) genai.Type {
@@ -120,6 +140,8 @@ func mapParamType(t string) genai.Type {
 		return genai.TypeBoolean
 	case "array":
 		return genai.TypeArray
+	case "object":
+		return genai.TypeObject
 	default:
 		return genai.TypeString
 	}

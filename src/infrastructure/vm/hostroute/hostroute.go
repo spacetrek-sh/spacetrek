@@ -30,7 +30,7 @@ import (
 func EnsureRoute(ctx context.Context, subnet string) error {
 	logger := pkglog.FromContext(ctx)
 
-	ownIP, err := ownContainerIP()
+	ownIP, err := OwnContainerIP()
 	if err != nil {
 		return fmt.Errorf("detect own eth0 IP: %w", err)
 	}
@@ -50,10 +50,10 @@ func EnsureRoute(ctx context.Context, subnet string) error {
 	return nil
 }
 
-// ownContainerIP returns the first non-loopback IPv4 address assigned to
+// OwnContainerIP returns the first non-loopback IPv4 address assigned to
 // any interface in the orchestrator's netns. This is the IP the host will
 // route VM-subnet traffic to.
-func ownContainerIP() (string, error) {
+func OwnContainerIP() (string, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return "", fmt.Errorf("enumerate interface addrs: %w", err)

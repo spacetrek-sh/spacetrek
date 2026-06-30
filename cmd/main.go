@@ -14,6 +14,8 @@ import (
 	"github.com/spacetrek-sh/spacetrek/pkg/config"
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 	apihttp "github.com/spacetrek-sh/spacetrek/src/api/http"
+	internalhttp "github.com/spacetrek-sh/spacetrek/src/api/http/intra"
+	internalvm "github.com/spacetrek-sh/spacetrek/src/api/http/intra/vm"
 	agenthttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/agent"
 	authhttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/auth"
 	chathttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/chat"
@@ -206,7 +208,15 @@ func main() {
 	if staticRulesPath == "" {
 		staticRulesPath = "/var/lib/spacetrek/cloudflared-static.yml"
 	}
-	tunnelWriter := tunnelwriter.New(vmRepo, "/var/lib/spacetrek/cloudflared-config.yml", ".box.spacetrek.xyz", tunnelHeader, staticRulesPath)
+	// Detect own eth0 IP so tunnelwriter can route *.box.spacetrek.xyz at
+	// the activator container, which shares this netns and thus this IP.
+	orchIP, err := hostroute.OwnContainerIP()
+	if err != nil {
+		logger.Warn("could not detect own eth0 IP; tunnelwriter will emit a placeholder target",
+			slog.Any("error", err))
+		orchIP = "127.0.0.1"
+	}
+	tunnelWriter := tunnelwriter.New("/var/lib/spacetrek/cloudflared-config.yml", ".box.spacetrek.xyz", orchIP, tunnelHeader, staticRulesPath)
 
 	vmService.SetLifecycleHook(vmsvc.MultiHook(
 		&hostswriter.Hook{W: hostsWriter},
@@ -261,7 +271,7 @@ func main() {
 
 	maxReactSteps := cfg.LLM.MaxReactSteps
 	if maxReactSteps <= 0 {
-		maxReactSteps = 30
+		maxReactSteps = 70
 	}
 	orchService := orchestratorsvc.NewWithConfig(
 		planner,
@@ -278,6 +288,9 @@ func main() {
 	authHandler := authhttp.NewHandler(userService, authService, jwtManager)
 	vmHandler := vmhttp.NewHandler(vmService, jwtManager, environmentRepo)
 
+	// Internal handler: localhost-only, no auth. Consumed by spacetrek-activator.
+	internalVMHandler := internalvm.NewHandler(vmService, vmRepo)
+
 	// ── HTTP Server ───────────────────────────────────────────────────────
 	srv := apihttp.New(apihttp.Config{
 		Addr:           cfg.Server.HTTPAddr,
@@ -291,6 +304,15 @@ func main() {
 		VMHandler:      vmHandler,
 	})
 
+	// Internal server: localhost-bound, no auth. The spacetrek-activator
+	// container shares this netns (network_mode: "service:spacetrek-api")
+	// and reaches it on localhost:8081.
+	internalSrv := internalhttp.NewServer(internalhttp.Config{
+		Addr:      "127.0.0.1:8081",
+		Logger:    logger,
+		VMHandler: internalVMHandler,
+	})
+
 	// ── Graceful Shutdown ─────────────────────────────────────────────────
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -299,6 +321,14 @@ func main() {
 		logger.Info("server started", slog.String("addr", srv.Addr))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("server error", slog.Any("error", err))
+			os.Exit(1)
+		}
+	}()
+
+	go func() {
+		logger.Info("internal API started", slog.String("addr", internalSrv.Addr))
+		if err := internalSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("internal API error", slog.Any("error", err))
 			os.Exit(1)
 		}
 	}()
@@ -319,6 +349,9 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", slog.Any("error", err))
+	}
+	if err := internalSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("internal API shutdown error", slog.Any("error", err))
 	}
 	logger.Info("server stopped")
 }
