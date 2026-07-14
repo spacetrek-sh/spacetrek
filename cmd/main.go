@@ -14,6 +14,8 @@ import (
 	"github.com/spacetrek-sh/spacetrek/pkg/config"
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
 	apihttp "github.com/spacetrek-sh/spacetrek/src/api/http"
+	internalhttp "github.com/spacetrek-sh/spacetrek/src/api/http/intra"
+	internalvm "github.com/spacetrek-sh/spacetrek/src/api/http/intra/vm"
 	agenthttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/agent"
 	authhttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/auth"
 	chathttp "github.com/spacetrek-sh/spacetrek/src/api/http/v1/chat"
@@ -22,6 +24,7 @@ import (
 	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 	geminiadapter "github.com/spacetrek-sh/spacetrek/src/infrastructure/llm/gemini"
 	"github.com/spacetrek-sh/spacetrek/src/infrastructure/vm/firecracker"
+	"github.com/spacetrek-sh/spacetrek/src/infrastructure/vm/hostroute"
 	s3storage "github.com/spacetrek-sh/spacetrek/src/infrastructure/storage/s3"
 	postgresrepo "github.com/spacetrek-sh/spacetrek/src/repository/postgres"
 	agentsvc "github.com/spacetrek-sh/spacetrek/src/service/agent"
@@ -31,6 +34,8 @@ import (
 	toolsvc "github.com/spacetrek-sh/spacetrek/src/service/tool"
 	usersvc "github.com/spacetrek-sh/spacetrek/src/service/user"
 	vmsvc "github.com/spacetrek-sh/spacetrek/src/service/vm"
+	"github.com/spacetrek-sh/spacetrek/src/service/vm/hostswriter"
+	"github.com/spacetrek-sh/spacetrek/src/service/vm/tunnelwriter"
 )
 
 func main() {
@@ -57,19 +62,23 @@ func main() {
 
 	// ── Repositories ───────────────────────────────────────────────────────
 	agentRepo := postgresrepo.NewAgentRepository(db)
+	agentMemoryRepo := postgresrepo.NewAgentMemoryRepository(db)
 	chatRepo := postgresrepo.NewChatRepository(db)
 	environmentRepo := postgresrepo.NewEnvironmentRepository(db)
 	vmRepo := postgresrepo.NewVMRepository(db)
 	vmMetricsHistoryRepo := postgresrepo.NewVMMetricsHistoryRepository(db)
 	snapRepo := postgresrepo.NewSnapshotRepository(db)
+	snapMetricsRepo := postgresrepo.NewSnapshotMetricsRepository(db)
 	userRepo := postgresrepo.NewUserRepository(db)
 	authRepo := postgresrepo.NewAuthRepository(db)
+	runtimeEventRepo := postgresrepo.NewRuntimeEventRepository(db)
 
 	// ── JWT Manager ────────────────────────────────────────────────────────
 	jwtManager := jwt.NewManager(cfg.Security.JWTSecret, cfg.Security.AccessTokenExpiry)
 
 	// ── Services ────────────────────────────────────────────────────────────
 	agentService := agentsvc.New(agentRepo)
+	agentMemoryService := agentsvc.NewMemoryService(agentMemoryRepo)
 	userService := usersvc.NewService(userRepo)
 	authService := authservice.NewService(jwtManager, authRepo, userRepo)
 
@@ -114,6 +123,19 @@ func main() {
 		vmBackend = provider
 	}
 
+	// Install a host-side route into the VM subnet so host cloudflared can
+	// dial VM IPs directly. Requires pid: host on the api container; logs a
+	// warning and continues on failure (VMs work fine without host reachability,
+	// only host cloudflared depends on the route).
+	if cfg.VM.NetworkEnabled && cfg.VM.Firecracker.Network.Subnet != "" {
+		ctx := pkglog.WithLogger(context.Background(), logger)
+		if err := hostroute.EnsureRoute(ctx, cfg.VM.Firecracker.Network.Subnet); err != nil {
+			logger.Warn("failed to install host route into VM subnet; host cloudflared will not reach VMs",
+				slog.String("subnet", cfg.VM.Firecracker.Network.Subnet),
+				slog.Any("error", err))
+		}
+	}
+
 	// ── Snapshot Storage ─────────────────────────────────────────────────────
 	var snapshotStore ports.SnapshotStore
 	if cfg.Storage.Endpoint != "" {
@@ -156,7 +178,51 @@ func main() {
 		}
 	}
 
-	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, snapRepo, snapshotStore, cfg.VM.IdleTimeout, cfg.VM.AutoSnapshot, cfg.VM.ResumeGrace, vmNetworkCfg, vmIPAllocator)
+	vmService := vmsvc.NewService(vmRepo, vmMetricsHistoryRepo, vmBackend, environmentRepo, snapRepo, snapMetricsRepo, snapshotStore, runtimeEventRepo, cfg.VM.IdleTimeout, cfg.VM.AutoSnapshot, cfg.VM.ResumeGrace, vmNetworkCfg, vmIPAllocator, vmsvc.SnapshotDiskConfig{
+		DiskMode:           cfg.VM.DiskMode,
+		MaxChainLength:     cfg.VM.MaxChainLength,
+		MaxChainAgeMinutes: cfg.VM.MaxChainAgeMinutes,
+	})
+
+	// Hosts-file writer: rebuilds /var/lib/spacetrek/vm-hosts whenever a VM is
+	// created or destroyed, plus a 60s reconciliation tick to catch drift.
+	hostsWriter := hostswriter.New(vmRepo, "/var/lib/spacetrek/vm-hosts")
+
+	// Cloudflared config writer: rebuilds /var/lib/spacetrek/cloudflared-config.yml
+	// on the same lifecycle. Read by the host's cloudflared service; reload is
+	// driven by a systemd .path unit (see docs/operations/cloudflare-access.md).
+	// The header carries the static tunnel / credentials-file directives from
+	// env vars; when unset, the writer emits ingress-only and cloudflared
+	// refuses to start until creds are provided.
+	tunnelHeader := ""
+	if tid := os.Getenv("CLOUDFLARE_TUNNEL_ID"); tid != "" {
+		creds := os.Getenv("CLOUDFLARE_TUNNEL_CREDENTIALS_FILE")
+		if creds == "" {
+			creds = "/etc/cloudflared/" + tid + ".json"
+		}
+		tunnelHeader = "tunnel: " + tid + "\ncredentials-file: " + creds + "\n"
+	}
+	// Optional: path to a file with extra ingress entries for non-VM services
+	// (api, www, etc.) that share the tunnel. Missing file = no static rules.
+	staticRulesPath := os.Getenv("CLOUDFLARE_STATIC_INGRESS_FILE")
+	if staticRulesPath == "" {
+		staticRulesPath = "/var/lib/spacetrek/cloudflared-static.yml"
+	}
+	// Detect own eth0 IP so tunnelwriter can route *.box.spacetrek.xyz at
+	// the activator container, which shares this netns and thus this IP.
+	orchIP, err := hostroute.OwnContainerIP()
+	if err != nil {
+		logger.Warn("could not detect own eth0 IP; tunnelwriter will emit a placeholder target",
+			slog.Any("error", err))
+		orchIP = "127.0.0.1"
+	}
+	tunnelWriter := tunnelwriter.New("/var/lib/spacetrek/cloudflared-config.yml", ".box.spacetrek.xyz", orchIP, tunnelHeader, staticRulesPath)
+
+	vmService.SetLifecycleHook(vmsvc.MultiHook(
+		&hostswriter.Hook{W: hostsWriter},
+		&tunnelwriter.Hook{W: tunnelWriter},
+	))
+
 	orchTools := orchestratorsvc.NewInMemoryToolRegistry(nil)
 	orchTools.Register(toolsvc.NewVMCommandTool(vmService))
 	orchTools.Register(toolsvc.NewVMCreateTool(vmService))
@@ -164,8 +230,17 @@ func main() {
 	orchTools.Register(toolsvc.NewVMListTool(vmService))
 	orchTools.Register(toolsvc.NewVMStopTool(vmService))
 	orchTools.Register(toolsvc.NewVMSnapshotTool(vmService))
+	orchTools.Register(toolsvc.NewVMReadFileTool(vmService))
+	orchTools.Register(toolsvc.NewVMWriteFileTool(vmService))
+	orchTools.Register(toolsvc.NewVMEditFileTool(vmService))
+	orchTools.Register(toolsvc.NewMemorySetTool(agentMemoryService))
+	orchTools.Register(toolsvc.NewMemoryGetTool(agentMemoryService))
+	orchTools.Register(toolsvc.NewMemoryDeleteTool(agentMemoryService))
+	orchTools.Register(toolsvc.NewMemoryListTool(agentMemoryService))
+	orchTools.Register(toolsvc.NewPlanAnnounceTool())
 
 	var planner ports.ToolPlanner
+	var titleGen ports.TitleGenerator
 	if cfg.LLM.DefaultProvider == "gemini" && cfg.LLM.Gemini.APIKey != "" {
 		geminiCfg := geminiadapter.Config{
 			APIKey:          cfg.LLM.Gemini.APIKey,
@@ -186,6 +261,7 @@ func main() {
 			planner = orchestratorsvc.NewRulePlanner()
 		} else {
 			planner = gp
+			titleGen = gp
 			logger.Info("using gemini planner", slog.String("model", geminiCfg.Model))
 		}
 	} else {
@@ -195,23 +271,25 @@ func main() {
 
 	maxReactSteps := cfg.LLM.MaxReactSteps
 	if maxReactSteps <= 0 {
-		maxReactSteps = 30
+		maxReactSteps = 70
 	}
 	orchService := orchestratorsvc.NewWithConfig(
 		planner,
 		orchTools,
 		orchestratorsvc.NewMemoryStateStore(),
-		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot"}, cfg.Security.MaxTaskDuration, maxReactSteps),
+		orchestratorsvc.NewConfig([]string{"vm.execute_command", "vm.create", "vm.start", "vm.list", "vm.stop", "vm.snapshot", "vm.read_file", "vm.write_file", "vm.edit_file", "memory.set", "memory.get", "memory.delete", "memory.list", "plan.announce"}, cfg.Security.MaxTaskDuration, maxReactSteps),
 	)
-	runtimeEventRepo := postgresrepo.NewRuntimeEventRepository(db)
-	vmResolver := chatsvc.NewVMResolver(vmService)
-	chatService := chatsvc.New(chatRepo, runtimeEventRepo, agentRepo, orchService, vmResolver, vmService)
+	vmCollector := chatsvc.NewAvailableVMCollector(vmService, environmentRepo)
+	chatService := chatsvc.New(chatRepo, runtimeEventRepo, agentRepo, orchService, vmCollector, titleGen)
 
 	// ── Handlers ────────────────────────────────────────────────────────────
 	agentHandler := agenthttp.NewHandler(agentService, jwtManager)
 	chatHandler := chathttp.NewHandler(chatService, jwtManager)
 	authHandler := authhttp.NewHandler(userService, authService, jwtManager)
 	vmHandler := vmhttp.NewHandler(vmService, jwtManager, environmentRepo)
+
+	// Internal handler: localhost-only, no auth. Consumed by spacetrek-activator.
+	internalVMHandler := internalvm.NewHandler(vmService, vmRepo)
 
 	// ── HTTP Server ───────────────────────────────────────────────────────
 	srv := apihttp.New(apihttp.Config{
@@ -226,6 +304,15 @@ func main() {
 		VMHandler:      vmHandler,
 	})
 
+	// Internal server: localhost-bound, no auth. The spacetrek-activator
+	// container shares this netns (network_mode: "service:spacetrek-api")
+	// and reaches it on localhost:8081.
+	internalSrv := internalhttp.NewServer(internalhttp.Config{
+		Addr:      "127.0.0.1:8081",
+		Logger:    logger,
+		VMHandler: internalVMHandler,
+	})
+
 	// ── Graceful Shutdown ─────────────────────────────────────────────────
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -238,9 +325,22 @@ func main() {
 		}
 	}()
 
+	go func() {
+		logger.Info("internal API started", slog.String("addr", internalSrv.Addr))
+		if err := internalSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("internal API error", slog.Any("error", err))
+			os.Exit(1)
+		}
+	}()
+
 	go vmService.StartIdleReaper(pkglog.WithLogger(ctx, logger), time.Minute)
 	go vmService.StartRuntimeReconciler(pkglog.WithLogger(ctx, logger), 30*time.Second)
 	go vmService.StartMetricsCollector(pkglog.WithLogger(ctx, logger), 10*time.Second)
+	go vmService.StartSnapshotGC(pkglog.WithLogger(ctx, logger), 24*time.Hour)
+	go vmService.StartFleetBroadcaster(pkglog.WithLogger(ctx, logger))
+	go vmService.StartActivityBroadcaster(pkglog.WithLogger(ctx, logger))
+	go hostsWriter.StartReconciler(pkglog.WithLogger(ctx, logger), 60*time.Second)
+	go tunnelWriter.StartReconciler(pkglog.WithLogger(ctx, logger), 60*time.Second)
 
 	<-ctx.Done()
 	logger.Info("shutting down...")
@@ -249,6 +349,9 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", slog.Any("error", err))
+	}
+	if err := internalSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("internal API shutdown error", slog.Any("error", err))
 	}
 	logger.Info("server stopped")
 }
@@ -285,8 +388,8 @@ func (b unavailableBackend) GetMetrics(context.Context, string) (vmdomain.Metric
 	return vmdomain.Metrics{}, b.err()
 }
 
-func (b unavailableBackend) CreateSnapshot(context.Context, string) (string, int64, error) {
-	return "", 0, b.err()
+func (b unavailableBackend) CreateSnapshot(context.Context, string, vmdomain.SnapshotOptions) (*vmdomain.SnapshotResult, error) {
+	return nil, b.err()
 }
 
 func (b unavailableBackend) RestoreFromSnapshot(context.Context, vmdomain.CreateSpec, string) (string, error) {
@@ -294,6 +397,18 @@ func (b unavailableBackend) RestoreFromSnapshot(context.Context, vmdomain.Create
 }
 
 func (b unavailableBackend) StopPreserving(context.Context, string) error {
+	return b.err()
+}
+
+func (b unavailableBackend) ReadFile(context.Context, string, string, int, int) (string, error) {
+	return "", b.err()
+}
+
+func (b unavailableBackend) WriteFile(context.Context, string, string, string, int) error {
+	return b.err()
+}
+
+func (b unavailableBackend) EditFile(context.Context, string, string, string, string, bool) error {
 	return b.err()
 }
 

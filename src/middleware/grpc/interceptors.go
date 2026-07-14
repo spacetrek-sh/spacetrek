@@ -31,6 +31,23 @@ type Validatable interface {
 // Unary interceptors
 // ---------------------------------------------------------------------------
 
+// UnaryPathValidation rejects any RPC whose FullMethod does not start with a
+// leading slash. This prevents HTTP/2 :path pseudo-header bypass attacks
+// against path-based authorization interceptors (e.g. grpc/authz).
+func UnaryPathValidation() grpc.UnaryServerInterceptor {
+	return func(
+		ctx context.Context,
+		req any,
+		info *grpc.UnaryServerInfo,
+		handler grpc.UnaryHandler,
+	) (any, error) {
+		if info.FullMethod == "" || info.FullMethod[0] != '/' {
+			return nil, status.Errorf(codes.Unimplemented, "malformed method name")
+		}
+		return handler(ctx, req)
+	}
+}
+
 // UnaryLogging returns a unary interceptor that attaches a request-scoped
 // logger to the context and logs each RPC with its duration and status code.
 func UnaryLogging(base *slog.Logger) grpc.UnaryServerInterceptor {
@@ -154,6 +171,21 @@ func StreamLogging(base *slog.Logger) grpc.StreamServerInterceptor {
 	}
 }
 
+// StreamPathValidation is the stream equivalent of UnaryPathValidation.
+func StreamPathValidation() grpc.StreamServerInterceptor {
+	return func(
+		srv any,
+		ss grpc.ServerStream,
+		info *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
+		if info.FullMethod == "" || info.FullMethod[0] != '/' {
+			return status.Errorf(codes.Unimplemented, "malformed method name")
+		}
+		return handler(srv, ss)
+	}
+}
+
 // StreamRecovery returns a stream interceptor that catches panics.
 func StreamRecovery() grpc.StreamServerInterceptor {
 	return func(
@@ -195,11 +227,13 @@ func StreamRecovery() grpc.StreamServerInterceptor {
 func ServerOptions(logger *slog.Logger) []grpc.ServerOption {
 	return []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(
+			UnaryPathValidation(),
 			UnaryLogging(logger),
 			UnaryRecovery(),
 			UnaryValidation(),
 		),
 		grpc.ChainStreamInterceptor(
+			StreamPathValidation(),
 			StreamLogging(logger),
 			StreamRecovery(),
 		),

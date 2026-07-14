@@ -60,11 +60,7 @@ func (t *VMListTool) Execute(ctx context.Context, call tool.Call) (tool.Result, 
 			logger.WarnContext(ctx, "vm list tool: failed to get vm", "vm_id", lease.VMID, "error", err)
 			continue
 		}
-		active = append(active, map[string]any{
-			"vm_id":    vm.ID,
-			"status":   string(vm.Status),
-			"provider": string(vm.Provider),
-		})
+		active = append(active, vmBaseFields(vm))
 	}
 
 	// Previous VMs that can be restored.
@@ -74,12 +70,9 @@ func (t *VMListTool) Execute(ctx context.Context, call tool.Call) (tool.Result, 
 		logger.DebugContext(ctx, "vm list tool: no previous VMs found", "chat_id", chatID, "error", err)
 	}
 	for _, vm := range prevVMs {
-		previous = append(previous, map[string]any{
-			"vm_id":        vm.ID,
-			"status":       string(vm.Status),
-			"provider":     string(vm.Provider),
-			"has_snapshot": t.lister.HasSnapshot(ctx, vm.ID),
-		})
+		entry := vmBaseFields(vm)
+		entry["has_snapshot"] = t.lister.HasSnapshot(ctx, vm.ID)
+		previous = append(previous, entry)
 	}
 
 	result.OK = true

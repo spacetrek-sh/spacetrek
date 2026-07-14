@@ -11,6 +11,7 @@ import (
 	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/tool"
 	"github.com/spacetrek-sh/spacetrek/src/core/ports"
+	toolsvc "github.com/spacetrek-sh/spacetrek/src/service/tool"
 )
 
 type fakePlanner struct {
@@ -23,10 +24,14 @@ func (p *fakePlanner) PlanTools(ctx context.Context, req ports.PlanRequest) (por
 }
 
 func (p *fakePlanner) PlanToolsWithMetadata(_ context.Context, req ports.PlanRequest) (ports.ToolPlan, ports.PlanMetadata, error) {
+	vmID := ""
+	if len(req.AvailableVMs) > 0 {
+		vmID = req.AvailableVMs[0].VMID
+	}
 	p.planCalls++
 	switch p.planCalls {
 	case 1:
-		return ports.ToolPlan{Steps: []ports.ToolPlanStep{{Name: "vm.execute_command", Arguments: map[string]any{"vm_id": req.VMID, "command": "echo step1"}}}}, ports.PlanMetadata{
+		return ports.ToolPlan{Steps: []ports.ToolPlanStep{{Name: "vm.execute_command", Arguments: map[string]any{"vm_id": vmID, "command": "echo step1"}}}}, ports.PlanMetadata{
 			Reasoning: "Need first execution step.",
 			TokenUsage: orchdomain.TokenUsage{
 				PromptTokens:     10,
@@ -35,7 +40,7 @@ func (p *fakePlanner) PlanToolsWithMetadata(_ context.Context, req ports.PlanReq
 			},
 		}, nil
 	case 2:
-		return ports.ToolPlan{Steps: []ports.ToolPlanStep{{Name: "vm.execute_command", Arguments: map[string]any{"vm_id": req.VMID, "command": "echo step2"}}}}, ports.PlanMetadata{
+		return ports.ToolPlan{Steps: []ports.ToolPlanStep{{Name: "vm.execute_command", Arguments: map[string]any{"vm_id": vmID, "command": "echo step2"}}}}, ports.PlanMetadata{
 			Reasoning: "Need second execution step.",
 			TokenUsage: orchdomain.TokenUsage{
 				PromptTokens:     8,
@@ -117,7 +122,9 @@ func TestProcess_ReactLoopExecutesIterativeSteps(t *testing.T) {
 		AgentID: "a-1",
 		UserID:  "u-1",
 		Message: "hello",
-		VMID:    "vm-1",
+		AvailableVMs: []ports.AvailableVM{
+			{VMID: "vm-1", Environment: "ubuntu", Status: "running"},
+		},
 		History: []chat.Message{},
 	})
 	if err != nil {
@@ -154,8 +161,6 @@ func TestProcess_ReactLoopExecutesIterativeSteps(t *testing.T) {
 }
 
 func TestProcess_StructuredPayloadObservation(t *testing.T) {
-	// Tests that tools returning structured payloads (no "output" key) produce
-	// JSON-marshaled observations instead of "(no observation)".
 	planner := &fakeVMListPlanner{}
 	vmListTool := &fakeVMListTool{}
 	reg := &fakeToolRegistry{tool: vmListTool}
@@ -172,7 +177,6 @@ func TestProcess_StructuredPayloadObservation(t *testing.T) {
 		AgentID: "a-1",
 		UserID:  "u-1",
 		Message: "list my VMs",
-		VMID:    "",
 		History: []chat.Message{},
 	})
 	if err != nil {
@@ -189,7 +193,6 @@ func TestProcess_StructuredPayloadObservation(t *testing.T) {
 	if obs == "" || obs == "(no observation)" {
 		t.Fatalf("expected JSON observation, got %q", obs)
 	}
-	// Observation must contain the vm_id from the structured payload.
 	if !strings.Contains(obs, "vm-abc") {
 		t.Fatalf("expected observation to contain vm_id 'vm-abc', got %q", obs)
 	}
@@ -253,4 +256,100 @@ func (t *fakeVMListTool) Execute(_ context.Context, call tool.Call) (tool.Result
 			},
 		},
 	}, nil
+}
+
+// TestProcess_PlanAnnounceEmitsPlanEvent asserts the orchestrator fires a
+// structured plan SSE event when the LLM calls plan.announce. The plan event
+// must precede the generic tool_call event for the same step so frontends can
+// render the checklist before reporting the tool result.
+func TestProcess_PlanAnnounceEmitsPlanEvent(t *testing.T) {
+	planner := &fakePlanAnnouncePlanner{}
+	reg := &fakeToolRegistry{tool: toolsvc.NewPlanAnnounceTool()}
+	store := NewMemoryStateStore()
+
+	var emitted []orchdomain.RuntimeEvent
+	emit := func(e orchdomain.RuntimeEvent) { emitted = append(emitted, e) }
+
+	svc := NewWithConfig(planner, reg, store, Config{
+		AllowedTools:  map[string]struct{}{"plan.announce": {}},
+		ToolTimeout:   2 * time.Second,
+		MaxReactSteps: 4,
+	})
+
+	if _, err := svc.Process(context.Background(), ProcessInput{
+		ChatID:  "s-plan",
+		AgentID: "a-1",
+		UserID:  "u-1",
+		Message: "build it",
+		History: []chat.Message{},
+		EmitEvent: emit,
+	}); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+
+	var planEvents []orchdomain.RuntimeEvent
+	var toolCalls []orchdomain.RuntimeEvent
+	for _, e := range emitted {
+		switch e.Type {
+		case orchdomain.EventPlan:
+			planEvents = append(planEvents, e)
+		case orchdomain.EventToolCall:
+			toolCalls = append(toolCalls, e)
+		}
+	}
+
+	if len(planEvents) != 1 {
+		t.Fatalf("expected 1 plan event, got %d", len(planEvents))
+	}
+	pe := planEvents[0]
+	if pe.Data != "summary-text" {
+		t.Fatalf("plan Data = %q, want %q", pe.Data, "summary-text")
+	}
+	if pe.Metadata["summary"] != "summary-text" {
+		t.Fatalf("plan metadata.summary = %v", pe.Metadata["summary"])
+	}
+	steps, ok := pe.Metadata["steps"].([]map[string]string)
+	if !ok {
+		t.Fatalf("plan metadata.steps type: %T", pe.Metadata["steps"])
+	}
+	if len(steps) != 2 || steps[0]["description"] != "first" {
+		t.Fatalf("plan steps mismatch: %+v", steps)
+	}
+
+	if len(toolCalls) == 0 {
+		t.Fatal("expected a tool_call event after plan event")
+	}
+}
+
+// fakePlanAnnouncePlanner returns plan.announce once, then text-only.
+type fakePlanAnnouncePlanner struct {
+	calls int
+}
+
+func (p *fakePlanAnnouncePlanner) PlanTools(ctx context.Context, req ports.PlanRequest) (ports.ToolPlan, error) {
+	plan, _, err := p.PlanToolsWithMetadata(ctx, req)
+	return plan, err
+}
+
+func (p *fakePlanAnnouncePlanner) PlanToolsWithMetadata(_ context.Context, _ ports.PlanRequest) (ports.ToolPlan, ports.PlanMetadata, error) {
+	p.calls++
+	if p.calls == 1 {
+		return ports.ToolPlan{Steps: []ports.ToolPlanStep{{Name: "plan.announce", Arguments: map[string]any{
+			"summary": "summary-text",
+			"steps": []any{
+				map[string]any{"description": "first"},
+				map[string]any{"description": "second"},
+			},
+		}}}}, ports.PlanMetadata{}, nil
+	}
+	return ports.ToolPlan{}, ports.PlanMetadata{}, nil
+}
+
+func (p *fakePlanAnnouncePlanner) FinalResponse(ctx context.Context, req ports.FinalResponseRequest) (string, error) {
+	text, _, err := p.FinalResponseWithMetadata(ctx, req)
+	return text, err
+}
+
+func (p *fakePlanAnnouncePlanner) FinalResponseWithMetadata(_ context.Context, _ ports.FinalResponseRequest) (string, ports.FinalResponseMetadata, error) {
+	return "announced", ports.FinalResponseMetadata{}, nil
 }

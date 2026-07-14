@@ -36,6 +36,7 @@ type Environment struct {
 	ResourceLimits ResourceLimits   `db:"resource_limits"`
 	Description    string           `db:"description"`
 	Metadata       *json.RawMessage `db:"metadata"` // Flexible metadata (nullable)
+	DiffSnapshots  bool             `db:"diff_snapshots"`
 	CreatedAt      time.Time        `db:"created_at"`
 	UpdatedAt      time.Time        `db:"updated_at"`
 }
@@ -47,6 +48,7 @@ type CreateParams struct {
 	ResourceLimits ResourceLimits
 	Description    string
 	Metadata       *json.RawMessage
+	DiffSnapshots  bool
 }
 
 // New creates a new Environment with a generated ID and timestamps.
@@ -63,6 +65,7 @@ func New(params CreateParams) *Environment {
 		ResourceLimits: params.ResourceLimits,
 		Description:    params.Description,
 		Metadata:       metadata,
+		DiffSnapshots:  params.DiffSnapshots,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}

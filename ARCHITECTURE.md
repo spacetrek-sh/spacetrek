@@ -407,6 +407,22 @@ Reference detail:
 
 ---
 
+## Incremental VM Snapshots
+
+Spacetrk supports two-layer incremental snapshots using Linux dm-snapshot (device-mapper) for block-level CoW disk deltas on top of Firecracker's native memory + CPU state snapshots. When enabled per-environment, only changed disk blocks are captured instead of the full rootfs.
+
+**How it works**: A dm-snapshot device layers a writable CoW file over a shared read-only base image. On snapshot, the CoW file is copied out alongside Firecracker's memory/state files. On restore, the dm device is reconstructed from base image + CoW delta.
+
+**Snapshot chain**: First snapshot is always full. Subsequent snapshots are incremental, each referencing the full snapshot as parent. Chain depth is always 1.
+
+**Configuration**: Set `diff_snapshots = true` on the environment (e.g., `bun`, `python`). All VMs created from that environment will use dm-snapshot CoW devices automatically.
+
+**Metrics**: Both creation and resume operations are instrumented with timing data (pause duration, download/restore/agent-ready times, memory and CoW sizes) persisted to `snapshot_metrics` for analysis.
+
+Full design documentation: [`docs/incremental-snapshots.md`](docs/incremental-snapshots.md)
+
+---
+
 ## Technology Stack Recommendations
 
 ### Core

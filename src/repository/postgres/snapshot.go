@@ -158,6 +158,30 @@ func (r *snapshotRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (r *snapshotRepository) ListOrphaned(ctx context.Context, olderThan time.Duration) ([]*snapshot.Snapshot, error) {
+	logger := pkglog.FromContext(ctx)
+	query := `
+		SELECT s.id, s.vm_id, s.parent_snapshot_id, s.type, s.snapshot_path, s.size_bytes, s.metadata, s.created_at
+		FROM vm_snapshots s
+		JOIN vm_instances v ON v.id = s.vm_id
+		WHERE v.status = 'terminated'
+		  AND s.created_at < NOW() - $1::interval
+		ORDER BY s.created_at ASC
+	`
+
+	var rows []snapshotRow
+	if err := r.db.SelectContext(ctx, &rows, query, fmt.Sprintf("%d seconds", int(olderThan.Seconds()))); err != nil {
+		logger.ErrorContext(ctx, "postgres: list orphaned snapshots failed", "error", err)
+		return nil, exception.Internal(fmt.Errorf("list orphaned snapshots: %w", err))
+	}
+
+	result := make([]*snapshot.Snapshot, len(rows))
+	for i, row := range rows {
+		result[i] = mapSnapshotRow(row)
+	}
+	return result, nil
+}
+
 func mapSnapshotRow(row snapshotRow) *snapshot.Snapshot {
 	return &snapshot.Snapshot{
 		ID:               row.ID,

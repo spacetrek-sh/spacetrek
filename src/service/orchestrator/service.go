@@ -16,14 +16,14 @@ import (
 
 // ProcessInput is one runtime turn passed to the orchestrator.
 type ProcessInput struct {
-	ChatID           string
-	AgentID          string
-	UserID           string
-	Message          string
-	VMID             string
-	EnvironmentHint  string
-	History          []chat.Message
-	EmitEvent        func(event orchdomain.RuntimeEvent)
+	ChatID          string
+	AgentID         string
+	UserID          string
+	Message         string
+	AvailableVMs    []ports.AvailableVM
+	EnvironmentHint string
+	History         []chat.Message
+	EmitEvent       func(event orchdomain.RuntimeEvent)
 }
 
 // ProcessResult is the orchestrator output for one user turn.
@@ -85,7 +85,7 @@ func NewWithConfig(planner ports.ToolPlanner, tools ports.ToolRegistry, states p
 		cfg.ToolTimeout = 30 * time.Second
 	}
 	if cfg.MaxReactSteps <= 0 {
-		cfg.MaxReactSteps = 30
+		cfg.MaxReactSteps = 70
 	}
 
 	return &Service{
@@ -140,7 +140,7 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 			AgentID:         input.AgentID,
 			UserID:          input.UserID,
 			Message:         input.Message,
-			VMID:            input.VMID,
+			AvailableVMs:    input.AvailableVMs,
 			EnvironmentHint: input.EnvironmentHint,
 			History:         input.History,
 			PriorTurns:      priorTurns,
@@ -202,6 +202,15 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 
 		logger.DebugContext(ctx, "react step executed", "chat_id", input.ChatID, "step", step, "tool", next.Name, "ok", result.OK)
 
+		// Extract environment hint from vm.start/vm.create tool results.
+		if result.OK && (next.Name == "vm.start" || next.Name == "vm.create") {
+			if payload, ok := result.Payload.(map[string]any); ok {
+				if envType, ok := payload["environment"].(string); ok && envType != "" {
+					input.EnvironmentHint = envType
+				}
+			}
+		}
+
 		observation := ""
 		if payload, ok := result.Payload.(map[string]any); ok {
 			if out, ok := payload["output"].(string); ok {
@@ -214,20 +223,50 @@ func (s *Service) processReactLoop(ctx context.Context, input ProcessInput) (Pro
 			observation = "error: " + result.Error
 		}
 
-		// Only emit tool_call for vm.execute_command.
-		if next.Name == "vm.execute_command" {
-			cmd, _ := next.Arguments["command"].(string)
-			emitRuntimeEvent(input.EmitEvent, orchdomain.RuntimeEvent{
-				Type:    orchdomain.EventToolCall,
-				ChatID:  input.ChatID,
-				TraceID: trace.TraceID,
-				Step:    step,
-				Command: cmd,
-				Result:  observation,
-				Error:   result.Error,
-				At:      time.Now().UTC(),
-			})
+		// Emit a tool_call event for every tool execution so the frontend sees
+		// VM lifecycle and file operations in real time. vm.execute_command keeps
+		// the legacy Command/Result shape; other tools surface structured data
+		// via Metadata (tool name + arguments).
+		toolEvent := orchdomain.RuntimeEvent{
+			Type:    orchdomain.EventToolCall,
+			ChatID:  input.ChatID,
+			TraceID: trace.TraceID,
+			Step:    step,
+			Result:  observation,
+			Error:   result.Error,
+			Metadata: map[string]any{
+				"tool":      next.Name,
+				"arguments": next.Arguments,
+			},
+			At: time.Now().UTC(),
 		}
+		if next.Name == "vm.execute_command" {
+			if cmd, ok := next.Arguments["command"].(string); ok {
+				toolEvent.Command = cmd
+			}
+		}
+		// plan.announce emits a structured plan event ahead of the generic
+		// tool_call event so the frontend can render a checklist. Only fires
+		// when the tool validated successfully — a malformed announce surfaces
+		// only the tool_call error.
+		if next.Name == "plan.announce" && result.OK {
+			if payload, ok := result.Payload.(map[string]any); ok {
+				planEvent := orchdomain.RuntimeEvent{
+					Type:    orchdomain.EventPlan,
+					ChatID:  input.ChatID,
+					TraceID: trace.TraceID,
+					Step:    step,
+					Data:    asString(payload["summary"]),
+					Metadata: map[string]any{
+						"summary": payload["summary"],
+						"steps":   payload["steps"],
+					},
+					At: time.Now().UTC(),
+				}
+				emitRuntimeEvent(input.EmitEvent, planEvent)
+			}
+		}
+		emitRuntimeEvent(input.EmitEvent, toolEvent)
 
 		trace.Steps = append(trace.Steps, orchdomain.TraceStep{
 			Step:          step,
@@ -378,4 +417,13 @@ func emitRuntimeEvent(emitFn func(event orchdomain.RuntimeEvent), event orchdoma
 		return
 	}
 	emitFn(event)
+}
+
+// asString returns v as a string when the underlying type is string, "" otherwise.
+// Used to project typed payload fields into the Data column of RuntimeEvent.
+func asString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }

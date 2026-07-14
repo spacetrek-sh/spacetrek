@@ -12,6 +12,8 @@ const (
 	EventToolCall RuntimeEventType = "tool_call"
 	EventError   RuntimeEventType = "error"
 	EventDone    RuntimeEventType = "done"
+	EventTitle   RuntimeEventType = "title"
+	EventPlan    RuntimeEventType = "plan"
 )
 
 // RuntimeEvent is the transport-neutral runtime streaming payload.
@@ -25,6 +27,7 @@ type RuntimeEvent struct {
 	Result     string           `json:"result,omitempty"`
 	Error      string           `json:"error,omitempty"`
 	TokenUsage *TokenUsage      `json:"token_usage,omitempty"`
+	Metadata   map[string]any   `json:"metadata,omitempty"`
 	At         time.Time        `json:"at"`
 }
 
@@ -41,6 +44,7 @@ func (e RuntimeEvent) ToPersisted() *PersistedRuntimeEvent {
 		Result:     e.Result,
 		Error:      e.Error,
 		TokenUsage: e.TokenUsage,
+		Metadata:   e.Metadata,
 		CreatedAt:  e.At,
 	}
 }

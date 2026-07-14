@@ -1,50 +1,53 @@
-name: spacetrk
+name: spacetrek
 
 services:
-  db:
-    container_name: spacetrk-db
+  psql:
+    container_name: spacetrek-psql
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: spacetrk
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: spacetrk
+      POSTGRES_USER: ${POSTGRES_USER:?set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set in .env}
     ports:
       - "5432:5432"
     volumes:
-      - spacetrk-psql-data:/var/lib/postgresql/data
+      - spacetrek-psql-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U spacetrk -d spacetrk"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   migrate:
     image: migrate/migrate:v4.19.1
-    container_name: spacetrk-migrate
+    container_name: spacetrek-migrate
     profiles: ["migrate"]
     volumes:
       - ./migrations:/migrations
-    # Run migrations on startup, then exit successfully
-    command: ["-path", "/migrations", "-database", "postgres://spacetrk:password@db:5432/spacetrk?sslmode=disable", "up"]
+    # Global flags (-path, -database) live in entrypoint so they survive
+    # `docker compose run --rm migrate <subcommand>` overrides; command is the
+    # default subcommand for `docker compose up migrate`.
+    entrypoint: ["migrate", "-path", "/migrations", "-database", "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@psql:5432/${POSTGRES_DB}?sslmode=disable"]
+    command: ["up"]
     depends_on:
-      db:
+      psql:
         condition: service_healthy
     restart: "no"
 
   rustfs:
-    container_name: spacetrk-rustfs
+    container_name: spacetrek-rustfs
     image: rustfs/rustfs:latest
     restart: unless-stopped
     environment:
-      RUSTFS_ACCESS_KEY: rustfsadmin
-      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?set in .env}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?set in .env}
       RUSTFS_CONSOLE_ENABLE: "true"
     ports:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - spacetrk-rustfs-data:/data
+      - spacetrek-rustfs-data:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
       interval: 10s
@@ -54,11 +57,22 @@ services:
   api:
     build: .
     restart: unless-stopped
-    container_name: spacetrk-api
+    container_name: spacetrek-api
     environment:
       CONFIG_PATH: /app/configs/config.yaml
-      RUSTFS_ACCESS_KEY: rustfsadmin
-      RUSTFS_SECRET_KEY: rustfsadmin
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      # Tunnel UUID + optional creds path. The orchestrator renders these into
+      # /var/lib/spacetrek/cloudflared-config.yml as the static header.
+      CLOUDFLARE_TUNNEL_ID: ${CLOUDFLARE_TUNNEL_ID:-}
+      CLOUDFLARE_TUNNEL_CREDENTIALS_FILE: ${CLOUDFLARE_TUNNEL_CREDENTIALS_FILE:-}
+      # Optional override — defaults to /var/lib/spacetrek/cloudflared-static.yml
+      CLOUDFLARE_STATIC_INGRESS_FILE: ${CLOUDFLARE_STATIC_INGRESS_FILE:-}
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       - ./configs:/app/configs:ro
@@ -69,28 +83,104 @@ services:
       - /usr/local/bin/firecracker:/usr/local/bin/firecracker:ro
       # Firecracker kernel
       - /usr/share/firecracker:/usr/share/firecracker:ro
+      # Shared with host cloudflared: orchestrator renders vm-hosts and
+      # cloudflared-config.yml here; host cloudflared reads the latter.
+      - /var/lib/spacetrek:/var/lib/spacetrek
     devices:
       # KVM device passthrough for hardware virtualization
       - /dev/kvm:/dev/kvm
       # TUN device for TAP network interfaces
       - /dev/net/tun:/dev/net/tun
+      # Device-mapper control for dm-snapshot (incremental snapshots)
+      - /dev/mapper/control:/dev/mapper/control
+      # Loop devices for losetup (dm-snapshot CoW)
+      - /dev/loop-control:/dev/loop-control
     ports:
       - "8080:8080"
-    cap_add:
-      - SYS_ADMIN  # Required for Firecracker
-      - NET_ADMIN  # Required for bridge/TAP/iptables (VM networking)
-    security_opt:
-      - seccomp=unconfined  # Required for Firecracker syscall filtering
+    privileged: true
+    # pid: host lets the orchestrator install a host-side route into the VM
+    # subnet via `nsenter -t 1 -n ip route replace ...`. Required for host
+    # cloudflared to reach 10.200.x.y. See src/infrastructure/vm/hostroute.
+    pid: host
     sysctls:
       - net.ipv4.ip_forward=1
-      - net.bridge.bridge-nf-call-iptables=0
       - net.ipv4.conf.all.forwarding=1
     depends_on:
-      db:
+      psql:
         condition: service_healthy
       rustfs:
         condition: service_started
 
+  # Serverless ingress activator. Receives *.box.spacetrek.xyz traffic from
+  # host cloudflared, looks up the target VM by hostname, wakes it from
+  # snapshot if idle (blocking the request during cold-start), then forwards
+  # to vmIP:service_port. Shares spacetrek-api's netns so it can dial both
+  # the orchestrator's localhost:8081 internal API and the VM mesh directly.
+  activator:
+    build:
+      context: .
+      dockerfile: Dockerfile.activator
+    restart: unless-stopped
+    container_name: spacetrek-activator
+    network_mode: "service:api"
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      ACTIVATOR_LISTEN_ADDR: ":8090"
+      ORCHESTRATOR_INTERNAL_URL: "http://localhost:8081"
+      DOMAIN_SUFFIX: ".box.spacetrek.xyz"
+      COLD_START_BUDGET: "60s"
+      MAX_CONCURRENT_ACTIVATIONS: "5"
+    healthcheck:
+      # Two checks: activator liveness (its own /healthz) and netns correctness
+      # (localhost:8081 only exists in spacetrek-api's netns — when the activator
+      # is orphaned pointing at a stale api container ID, this fails and the
+      # container shows unhealthy instead of silently broken).
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/healthz >/dev/null && wget -qO- http://localhost:8081/internal/v1/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # In-mesh HTTP forward proxy. Used by VMs that have HTTP-based dependencies
+  # on other VMs: a frontend VM sets HTTP_PROXY=http://10.200.0.1:8091 and
+  # its HTTP client routes through this proxy, which looks up the target VM
+  # by hostname, resumes it from idle if needed, then forwards to
+  # vmIP:service_port. Same code/binary as the public activator, just running
+  # in ModeMeshProxy (extracts hostname from URL.Host instead of Host header).
+  # Refuses non-*.box.spacetrek.xyz destinations so a misconfigured NO_PROXY
+  # can't turn it into an open proxy. HTTPS CONNECT is not supported — only
+  # plaintext HTTP between VMs. Same network_mode: "service:api" so it shares
+  # the api netns (and therefore the VM mesh + orchestrator's localhost:8081).
+  mesh-activator:
+    build:
+      context: .
+      dockerfile: Dockerfile.activator
+    restart: unless-stopped
+    container_name: spacetrek-mesh-activator
+    network_mode: "service:api"
+    depends_on:
+      api:
+        condition: service_started
+      activator:
+        condition: service_started
+    environment:
+      ACTIVATOR_MODE: "mesh-proxy"
+      ACTIVATOR_LISTEN_ADDR: ":8091"
+      ORCHESTRATOR_INTERNAL_URL: "http://localhost:8081"
+      DOMAIN_SUFFIX: ".box.spacetrek.xyz"
+      COLD_START_BUDGET: "60s"
+      MAX_CONCURRENT_ACTIVATIONS: "5"
+    healthcheck:
+      # Same dual-check pattern as the public activator: own liveness on
+      # :8091 plus netns correctness via localhost:8081.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8091/healthz >/dev/null && wget -qO- http://localhost:8081/internal/v1/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
 volumes:
-  spacetrk-psql-data:
-  spacetrk-rustfs-data:
+  spacetrek-psql-data:
+  spacetrek-rustfs-data:

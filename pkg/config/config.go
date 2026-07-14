@@ -49,8 +49,11 @@ type VMConfig struct {
 	NetworkEnabled bool          `yaml:"network_enabled"`
 	IdleTimeout    time.Duration `yaml:"idle_timeout"`
 	MaxLifetime    time.Duration `yaml:"max_lifetime"`
-	AutoSnapshot   bool          `yaml:"auto_snapshot"`
-	ResumeGrace    time.Duration `yaml:"resume_grace"`
+	AutoSnapshot       bool          `yaml:"auto_snapshot"`
+	ResumeGrace        time.Duration `yaml:"resume_grace"`
+	DiskMode           string        `yaml:"disk_mode"`
+	MaxChainLength     int           `yaml:"max_chain_length"`
+	MaxChainAgeMinutes int           `yaml:"max_chain_age_minutes"`
 
 	Firecracker VMFirecrackerConfig `yaml:"firecracker"`
 }

@@ -15,6 +15,7 @@ type VMRestarter interface {
 	AssignToChat(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error)
 	HasSnapshot(ctx context.Context, vmID string) bool
 	ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error)
+	ResolveEnvironmentHint(ctx context.Context, vmID string) (string, error)
 }
 
 // VMStartTool finds a previously used VM for the chat and reassigns it.
@@ -88,12 +89,7 @@ func (t *VMStartTool) Execute(ctx context.Context, call tool.Call) (tool.Result,
 		}
 
 		result.OK = true
-		result.Payload = map[string]any{
-			"vm_id":    assigned.ID,
-			"status":   string(assigned.Status),
-			"provider": string(assigned.Provider),
-			"restored": true,
-		}
+		result.Payload = enrichedPayload(assigned, t.restarter, ctx, true)
 		logger.InfoContext(ctx, "vm start tool: restored from snapshot", "vm_id", assigned.ID, "chat_id", chatID)
 		return result, nil
 	}
@@ -107,13 +103,21 @@ func (t *VMStartTool) Execute(ctx context.Context, call tool.Call) (tool.Result,
 	}
 
 	result.OK = true
-	result.Payload = map[string]any{
-		"vm_id":    assigned.ID,
-		"status":   string(assigned.Status),
-		"provider": string(assigned.Provider),
-	}
+	result.Payload = enrichedPayload(assigned, t.restarter, ctx, false)
 	logger.InfoContext(ctx, "vm start tool: reassigned previous vm", "vm_id", assigned.ID, "chat_id", chatID)
 	return result, nil
+}
+
+// enrichedPayload builds a tool result payload with the environment type name.
+func enrichedPayload(vm *vmdomain.VM, restarter VMRestarter, ctx context.Context, restored bool) map[string]any {
+	payload := vmBaseFields(vm)
+	if restored {
+		payload["restored"] = true
+	}
+	if envType, err := restarter.ResolveEnvironmentHint(ctx, vm.ID); err == nil && envType != "" {
+		payload["environment"] = envType
+	}
+	return payload
 }
 
 var _ tool.Tool = (*VMStartTool)(nil)

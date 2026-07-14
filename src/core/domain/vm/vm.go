@@ -2,9 +2,13 @@
 package vm
 
 import (
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/vm/naming"
 )
 
 // Status represents the lifecycle state of a VM.
@@ -26,10 +30,16 @@ const (
 	ProviderCloudHypervisor Provider = "cloud-hypervisor"
 )
 
+// publicDomainSuffix is the public hostname suffix cloudflared ingress maps
+// each VM to. Kept in sync with the suffix passed to tunnelwriter in
+// cmd/main.go.
+const publicDomainSuffix = ".box.spacetrek.xyz"
+
 // VM represents a microVM instance for secure task execution.
 // Aligned with database table vm_instances.
 type VM struct {
 	ID              string   `db:"id"`
+	Name            string   `db:"name"` // DNS label, unique, human-readable
 	EnvironmentID   string   `db:"environment_id"` // FK to environments
 	ConversationID  string   `db:"conversation_id"`
 	Provider        Provider `db:"provider"`
@@ -53,6 +63,7 @@ type VM struct {
 
 	// Network
 	IPAddress *string `db:"ip_address"` // Assigned IP (nullable)
+	ServicePort int `db:"service_port"` // Backend port for cloudflared ingress (default 80)
 
 	// Session binding (mapped from chat_id in DB)
 	ChatID     *string    `db:"chat_id"`     // Bound chat (nullable)
@@ -60,6 +71,9 @@ type VM struct {
 
 	// Resume tracking
 	LastResumedAt *time.Time `db:"last_resumed_at"` // When VM was last resumed from snapshot
+
+	// Snapshot configuration
+	DiffSnapshotsEnabled bool `db:"diff_snapshots_enabled"`
 
 	// Lifecycle
 	TerminatedAt *time.Time `db:"terminated_at"` // When VM was terminated
@@ -72,10 +86,16 @@ type CreateParams struct {
 	ConversationID  string
 	Provider        Provider
 	WorkspaceSizeGB int
+	// Name is optional. nil = generate a random Docker-style name.
+	// Non-nil is normalized via NormalizeName; the caller is responsible
+	// for rejecting an empty post-normalization result.
+	Name *string
 	// Optional resource overrides
 	VCPU     *int // nil = use environment default
 	MemoryMB *int // nil = use environment default
 	DiskMB   *int // nil = use environment default
+	// ServicePort is the backend port cloudflared forwards to. nil = 80.
+	ServicePort *int
 }
 
 // New creates a new VM entity with a generated ID and timestamp.
@@ -93,8 +113,14 @@ func New(params CreateParams) *VM {
 		workspaceSizeGB = 2
 	}
 
+	servicePort := 80
+	if params.ServicePort != nil && *params.ServicePort > 0 {
+		servicePort = *params.ServicePort
+	}
+
 	return &VM{
 		ID:              uuid.NewString(),
+		Name:            resolveName(params.Name),
 		EnvironmentID:   params.EnvironmentID,
 		ConversationID:  params.ConversationID,
 		Provider:        provider,
@@ -103,8 +129,41 @@ func New(params CreateParams) *VM {
 		VCPU:            params.VCPU,
 		MemoryMB:        params.MemoryMB,
 		DiskMB:          params.DiskMB,
+		ServicePort:     servicePort,
 		CreatedAt:       now,
 	}
+}
+
+// resolveName picks the initial VM name: a normalized user-provided name, or a
+// random Docker-style name if none was supplied. An empty result means the
+// user-provided name normalized to nothing; callers reject that case.
+func resolveName(provided *string) string {
+	if provided == nil {
+		return naming.Generate()
+	}
+	return NormalizeName(*provided)
+}
+
+var (
+	nonNameChar    = regexp.MustCompile(`[^a-z0-9-]+`)
+	consecutiveDsh = regexp.MustCompile(`-{2,}`)
+)
+
+// NormalizeName lowercases, replaces any non-[a-z0-9-] rune with a hyphen,
+// collapses consecutive hyphens, trims leading/trailing hyphens, and truncates
+// to 63 chars (DNS label limit per RFC 1123). Returns "" for input that
+// produces an empty label (e.g. "!!!", "   "). Callers decide whether empty is
+// an error.
+func NormalizeName(s string) string {
+	s = strings.ToLower(s)
+	s = nonNameChar.ReplaceAllString(s, "-")
+	s = consecutiveDsh.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	if len(s) > naming.MaxLen {
+		s = s[:naming.MaxLen]
+		s = strings.TrimRight(s, "-")
+	}
+	return s
 }
 
 // HasCustomResources returns true if the VM has custom resource overrides.
@@ -137,8 +196,10 @@ func (v *VM) GetDiskMB(defaultMB int) int {
 }
 
 // IsAvailable checks if the VM is available for chat assignment.
+// A VM in Ready (fresh from pool), Running (restored from snapshot), or Idle
+// (stopped but recoverable) state with no chat assignment can be assigned.
 func (v *VM) IsAvailable() bool {
-	return v.Status == StatusReady && v.ChatID == nil
+	return (v.Status == StatusReady || v.Status == StatusRunning || v.Status == StatusIdle) && v.ChatID == nil
 }
 
 // AssignTo assigns the VM to a chat.
@@ -220,4 +281,14 @@ func (v *VM) IsRecentlyResumed(gracePeriod time.Duration) bool {
 		return false
 	}
 	return time.Since(*v.LastResumedAt) < gracePeriod
+}
+
+// PublicURL returns the user-facing URL for reaching this VM through the
+// Cloudflare Tunnel (https://<name>.box.spacetrek.xyz), or "" when the VM is
+// not publicly exposed (no name or no service port).
+func (v *VM) PublicURL() string {
+	if v == nil || v.Name == "" || v.ServicePort <= 0 {
+		return ""
+	}
+	return "https://" + v.Name + publicDomainSuffix
 }

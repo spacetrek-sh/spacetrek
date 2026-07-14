@@ -1,0 +1,1 @@
+ALTER TABLE environments ADD COLUMN diff_snapshots BOOLEAN NOT NULL DEFAULT FALSE;

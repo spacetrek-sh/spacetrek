@@ -24,6 +24,9 @@ type RuntimeConfig struct {
 	// Security options
 	EnableSeccomp bool `json:"enable_seccomp"` // Enable syscall filtering
 	EnableDebug   bool `json:"enable_debug"`   // Enable debug mode (dev only)
+
+	// Snapshot options
+	EnableDiffSnapshots bool `json:"enable_diff_snapshots"` // Enable incremental (dirty-page) memory + dm-snapshot disk diffs
 }
 
 // VsockConfig defines vsock settings for a VM.

@@ -24,7 +24,11 @@ func (p *RulePlanner) PlanToolsWithMetadata(_ context.Context, req ports.PlanReq
 	trimmed := strings.TrimSpace(req.Message)
 	if strings.HasPrefix(trimmed, "/exec ") {
 		command := strings.TrimSpace(strings.TrimPrefix(trimmed, "/exec "))
-		if command == "" || strings.TrimSpace(req.VMID) == "" {
+		vmID := ""
+		if len(req.AvailableVMs) > 0 {
+			vmID = req.AvailableVMs[0].VMID
+		}
+		if command == "" || strings.TrimSpace(vmID) == "" {
 			return ports.ToolPlan{}, ports.PlanMetadata{}, nil
 		}
 		return ports.ToolPlan{
@@ -32,7 +36,7 @@ func (p *RulePlanner) PlanToolsWithMetadata(_ context.Context, req ports.PlanReq
 				{
 					Name: "vm.execute_command",
 					Arguments: map[string]any{
-						"vm_id":   req.VMID,
+						"vm_id":   vmID,
 						"command": command,
 					},
 				},

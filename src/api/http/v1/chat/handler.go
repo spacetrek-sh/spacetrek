@@ -350,8 +350,9 @@ func (h *Handler) Stream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.DebugContext(ctx, "chat stream opened", "chat_id", id)
-	prepareSSE(w)
+	httputil.PrepareSSE(w)
 	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 
@@ -360,13 +361,17 @@ func (h *Handler) Stream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-heartbeat.C:
-			writeSSEEvent(w, "heartbeat", map[string]any{"ts": time.Now().UTC()})
+			if err := httputil.WriteSSEHeartbeat(w); err != nil {
+				return
+			}
 			_ = rc.Flush()
 		case event, ok := <-events:
 			if !ok {
 				return
 			}
-			writeSSEEvent(w, string(event.Type), event)
+			if err := httputil.WriteSSEEvent(w, string(event.Type), event); err != nil {
+				return
+			}
 			_ = rc.Flush()
 		}
 	}
@@ -410,28 +415,10 @@ func toResponse(c *chat.Chat) *chatResponse {
 		ID:        c.ID,
 		AgentID:   c.AgentID,
 		UserID:    c.UserID,
+		Title:     c.Title,
 		Status:    string(c.Status),
 		Messages:  msgs,
 		CreatedAt: c.CreatedAt,
 		UpdatedAt: c.UpdatedAt,
 	}
-}
-
-func prepareSSE(w http.ResponseWriter) {
-	header := w.Header()
-	header.Set("Content-Type", "text/event-stream")
-	header.Set("Cache-Control", "no-cache")
-	header.Set("Connection", "keep-alive")
-	header.Set("X-Accel-Buffering", "no")
-
-	_ = http.NewResponseController(w).Flush()
-}
-
-func writeSSEEvent(w http.ResponseWriter, event string, payload any) {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	_, _ = w.Write([]byte("event: " + event + "\n"))
-	_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
 }

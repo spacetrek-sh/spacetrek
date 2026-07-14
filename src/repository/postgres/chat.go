@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/spacetrek-sh/spacetrek/pkg/exception"
@@ -100,13 +101,13 @@ func (r *chatRepository) Update(ctx context.Context, c *chat.Chat) error {
 
 	query := `
 		UPDATE chats
-		SET agent_id = $2, vm_id = $3, title = $4, status = $5, updated_at = $6
+		SET agent_id = $2, vm_id = $3, status = $4, updated_at = $5
 		WHERE id = $1 AND deleted_at IS NULL
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
 		c.ID, c.AgentID,
-		toNullString(c.VMID), c.Title,
+		toNullString(c.VMID),
 		string(c.Status), c.UpdatedAt,
 	)
 	if err != nil {
@@ -135,6 +136,32 @@ func (r *chatRepository) Update(ctx context.Context, c *chat.Chat) error {
 		if err := r.insertMessages(ctx, c.ID, newMessages, int(existingCount)); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+func (r *chatRepository) UpdateTitle(ctx context.Context, id, title string) error {
+	logger := pkglog.FromContext(ctx)
+
+	query := `
+		UPDATE chats
+		SET title = $2, updated_at = $3
+		WHERE id = $1 AND deleted_at IS NULL
+	`
+
+	result, err := r.db.ExecContext(ctx, query, id, title, time.Now().UTC())
+	if err != nil {
+		logger.ErrorContext(ctx, "postgres: update chat title failed", "chat_id", id, "error", err)
+		return exception.Internal(fmt.Errorf("update chat title: %w", err))
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return exception.Internal(fmt.Errorf("update chat title rows affected: %w", err))
+	}
+	if rowsAffected == 0 {
+		return exception.NotFound("chat", id)
 	}
 
 	return nil

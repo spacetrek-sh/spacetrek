@@ -23,6 +23,7 @@ type environmentRow struct {
 	ResourceLimits json.RawMessage  `db:"resource_limits"`
 	Description    string           `db:"description"`
 	Metadata       *json.RawMessage `db:"metadata"`
+	DiffSnapshots  bool             `db:"diff_snapshots"`
 	CreatedAt      sql.NullTime     `db:"created_at"`
 	UpdatedAt      sql.NullTime     `db:"updated_at"`
 }
@@ -42,8 +43,8 @@ func (r *environmentRepository) Create(ctx context.Context, env *environment.Env
 	}
 
 	query := `
-		INSERT INTO environments (id, type, image_path, resource_limits, description, metadata, created_at, updated_at)
-		VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8)
+		INSERT INTO environments (id, type, image_path, resource_limits, description, metadata, diff_snapshots, created_at, updated_at)
+		VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9)
 	`
 
 	if _, err := r.db.ExecContext(
@@ -55,6 +56,7 @@ func (r *environmentRepository) Create(ctx context.Context, env *environment.Env
 		resourceLimitsJSON,
 		env.Description,
 		env.Metadata,
+		env.DiffSnapshots,
 		env.CreatedAt,
 		env.UpdatedAt,
 	); err != nil {
@@ -69,7 +71,7 @@ func (r *environmentRepository) GetByID(ctx context.Context, id string) (*enviro
 	logger := pkglog.FromContext(ctx)
 
 	query := `
-		SELECT id, type, image_path, resource_limits, description, metadata, created_at, updated_at
+		SELECT id, type, image_path, resource_limits, description, metadata, diff_snapshots, created_at, updated_at
 		FROM environments
 		WHERE id = $1
 	`
@@ -90,7 +92,7 @@ func (r *environmentRepository) List(ctx context.Context) ([]*environment.Enviro
 	logger := pkglog.FromContext(ctx)
 
 	query := `
-		SELECT id, type, image_path, resource_limits, description, metadata, created_at, updated_at
+		SELECT id, type, image_path, resource_limits, description, metadata, diff_snapshots, created_at, updated_at
 		FROM environments
 		ORDER BY created_at DESC
 	`
@@ -129,7 +131,8 @@ func (r *environmentRepository) Update(ctx context.Context, env *environment.Env
 		    resource_limits = $4::jsonb,
 		    description = $5,
 		    metadata = $6::jsonb,
-		    updated_at = $7
+		    diff_snapshots = $7,
+		    updated_at = $8
 		WHERE id = $1
 	`
 
@@ -142,6 +145,7 @@ func (r *environmentRepository) Update(ctx context.Context, env *environment.Env
 		resourceLimitsJSON,
 		env.Description,
 		env.Metadata,
+		env.DiffSnapshots,
 		env.UpdatedAt,
 	)
 	if err != nil {
@@ -199,6 +203,7 @@ func mapEnvironmentRow(row environmentRow) (*environment.Environment, error) {
 		ResourceLimits: resourceLimits,
 		Description:    row.Description,
 		Metadata:       row.Metadata,
+		DiffSnapshots:  row.DiffSnapshots,
 	}
 
 	if row.CreatedAt.Valid {

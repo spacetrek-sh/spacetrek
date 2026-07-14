@@ -1,30 +1,30 @@
-.PHONY: migrate-up migrate-down migrate-down-one migrate-create migrate-version migrate-force seed-env seed-env-local
+.PHONY: migrate-up migrate-down migrate-down-one migrate-create migrate-version migrate-force seed-env seed-env-local rebuild-api rebuild-activator rebuild-mesh-activator
 
-DB_URL="postgres://spacetrk:password@db:5432/spacetrk?sslmode=disable"
+COMPOSE := docker compose --profile migrate
 
 migrate-up:
 	@echo "Running migrations up..."
-	docker compose run --rm migrate -path /migrations -database "$(DB_URL)" up
+	$(COMPOSE) run --rm migrate up
 
 migrate-down:
 	@echo "Running migrations down..."
-	docker compose run --rm migrate -path /migrations -database "$(DB_URL)" down
+	$(COMPOSE) run --rm migrate down
 
 migrate-down-one:
 	@echo "Rolling back 1 migration..."
-	docker compose run --rm migrate -path /migrations -database "$(DB_URL)" down 1
+	$(COMPOSE) run --rm migrate down 1
 
 migrate-create:
 	@echo "Creating new migration: $(NAME)"
-	docker compose run --rm migrate create -ext sql -dir /migrations -seq $(NAME)
+	$(COMPOSE) run --rm migrate create -ext sql -dir /migrations -seq $(NAME)
 
 migrate-version:
-	@echo "Current migration version:"
-	docker compose run --rm migrate -path /migrations -database "$(DB_URL)" version
+	@echo "Current migration version..."
+	$(COMPOSE) run --rm migrate version
 
 migrate-force:
 	@echo "Forcing version to $(VERSION)..."
-	docker compose run --rm migrate -path /migrations -database "$(DB_URL)" force $(VERSION)
+	$(COMPOSE) run --rm migrate force $(VERSION)
 
 seed-env:
 	@echo "Seeding environments from JSON (docker compose)..."
@@ -33,3 +33,23 @@ seed-env:
 seed-env-local:
 	@echo "Seeding environments from JSON (local)..."
 	go run ./cmd/seed
+
+# Rebuild spacetrek-api AND both activators together. The activators use
+# network_mode: "service:api", which resolves to a specific container ID at
+# creation time; if you rebuild api alone, the activators are left pointing
+# at the old (deleted) api container and silently die. Always rebuild all
+# three so the netns reference stays live.
+rebuild-api:
+	@echo "Rebuilding api + activators (activators share api's netns)..."
+	docker compose up -d --build --force-recreate api activator mesh-activator
+
+# Recover from a stale activator after an api rebuild that didn't include it.
+rebuild-activator:
+	@echo "Force-recreating activator to rejoin current api netns..."
+	docker compose up -d --force-recreate activator
+
+# Recover from a stale mesh-activator after an api rebuild that didn't
+# include it. Same netns-coupling issue as the public activator.
+rebuild-mesh-activator:
+	@echo "Force-recreating mesh-activator to rejoin current api netns..."
+	docker compose up -d --force-recreate mesh-activator

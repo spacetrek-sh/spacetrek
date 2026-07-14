@@ -3,7 +3,7 @@ package vm
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +14,7 @@ import (
 	"github.com/spacetrek-sh/spacetrek/pkg/exception"
 	httputil "github.com/spacetrek-sh/spacetrek/pkg/http"
 	pkglog "github.com/spacetrek-sh/spacetrek/pkg/log"
+	orchdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/orchestrator"
 	"github.com/spacetrek-sh/spacetrek/src/core/domain/environment"
 	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 	"github.com/spacetrek-sh/spacetrek/src/middleware"
@@ -45,6 +46,12 @@ func NewHandler(vmSvc *vmservice.Service, jwtMgr *jwt.Manager, envRepo Environme
 // All VM routes require admin role.
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Route("/vm", func(r chi.Router) {
+		// Authenticated routes (any role)
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.Authenticate(h.jwtManager))
+			r.Get("/fleet/stream", h.StreamFleet)
+		})
+
 		// Admin-only routes
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.Authenticate(h.jwtManager))
@@ -53,6 +60,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Get("/leases", h.ListLeases)
 			r.Get("/runtimes", h.ListRuntimes)
 			r.Get("/runtimes/stream", h.StreamRuntimes)
+			r.Get("/activity/stream", h.StreamActivity)
 			r.Get("/{id}/metrics", h.GetMetrics)
 			r.Get("/{id}/metrics/history", h.GetMetricsHistory)
 			r.Get("/{id}/stream", h.StreamRuntime)
@@ -238,7 +246,7 @@ func (h *Handler) ListRuntimes(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]runtimeSnapshotResponse, 0, len(runtimes))
 	for _, vm := range runtimes {
-		metrics, _ := h.vmservice.GetMetrics(ctx, vm.ID)
+		metrics, _ := h.vmservice.GetCachedMetrics(vm.ID)
 		out = append(out, toRuntimeSnapshotResponse(vm, metrics))
 	}
 
@@ -257,62 +265,282 @@ func (h *Handler) StreamRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.DebugContext(ctx, "VM runtime stream opened", "vm_id", id)
-	prepareSSE(w)
+	httputil.PrepareSSE(w)
 	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-heartbeat.C:
+			if err := httputil.WriteSSEHeartbeat(w); err != nil {
+				return
+			}
+			_ = rc.Flush()
 		case <-ticker.C:
 			vm, err := h.vmservice.GetRuntimeSnapshot(ctx, id)
 			if err != nil {
-				writeSSEEvent(w, "error", map[string]string{"error": err.Error()})
+				if writeErr := httputil.WriteSSEEvent(w, "error", map[string]string{"error": err.Error()}); writeErr != nil {
+					return
+				}
 				_ = rc.Flush()
 				continue
 			}
-			metrics, _ := h.vmservice.GetMetrics(ctx, vm.ID)
-			writeSSEEvent(w, "runtime", toRuntimeSnapshotResponse(vm, metrics))
+			metrics, _ := h.vmservice.GetCachedMetrics(vm.ID)
+			if err := httputil.WriteSSEEvent(w, "runtime", toRuntimeSnapshotResponse(vm, metrics)); err != nil {
+				return
+			}
 			_ = rc.Flush()
 		}
 	}
 }
 
 // StreamRuntimes handles GET /api/v1/vm/runtimes/stream with Server-Sent Events.
+// Admin-only. Subscribes to the shared fleet broadcaster (1 DB query per tick
+// across all clients) and emits a paginated snapshot every 2s.
 func (h *Handler) StreamRuntimes(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := pkglog.FromContext(ctx)
 
-	logger.DebugContext(ctx, "VM runtimes stream opened")
-	prepareSSE(w)
+	offset, limit := parseFleetPagination(r)
+	logger.DebugContext(ctx, "VM runtimes stream opened", "offset", offset, "limit", limit)
+
+	httputil.PrepareSSE(w)
 	rc := http.NewResponseController(w)
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	_ = rc.SetWriteDeadline(time.Time{})
+
+	ch, unsub := h.vmservice.SubscribeFleet()
+	defer unsub()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			runtimes, err := h.vmservice.ListRunningRuntimes(ctx)
-			if err != nil {
-				writeSSEEvent(w, "error", map[string]string{"error": err.Error()})
-				_ = rc.Flush()
-				continue
+		case <-heartbeat.C:
+			if err := httputil.WriteSSEHeartbeat(w); err != nil {
+				return
 			}
-
-			out := make([]runtimeSnapshotResponse, 0, len(runtimes))
-			for _, vm := range runtimes {
-				metrics, _ := h.vmservice.GetMetrics(ctx, vm.ID)
+			_ = rc.Flush()
+		case vms, ok := <-ch:
+			if !ok {
+				return
+			}
+			page, total := paginateVMs(vms, offset, limit)
+			out := make([]runtimeSnapshotResponse, 0, len(page))
+			for _, vm := range page {
+				metrics, _ := h.vmservice.GetCachedMetrics(vm.ID)
 				out = append(out, toRuntimeSnapshotResponse(vm, metrics))
 			}
-
-			writeSSEEvent(w, "runtimes", out)
+			if err := httputil.WriteSSEEvent(w, "runtimes", runtimeSnapshotPageResponse{
+				VMs:    out,
+				Offset: offset,
+				Limit:  limit,
+				Total:  total,
+			}); err != nil {
+				return
+			}
 			_ = rc.Flush()
 		}
 	}
+}
+
+// StreamFleet handles GET /api/v1/vm/fleet/stream with Server-Sent Events.
+// Emits paginated frontend-friendly fleet snapshots.
+// Admin users subscribe to the shared broadcaster (1 DB query per tick across
+// all admin clients). Regular users run a per-tick query scoped to their
+// own VMs (bounded by user count, naturally partitioned).
+func (h *Handler) StreamFleet(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
+	userID := middleware.GetUserID(ctx)
+	role := middleware.GetUserRole(ctx)
+	offset, limit := parseFleetPagination(r)
+	logger.DebugContext(ctx, "VM fleet stream opened", "user_id", userID, "role", role, "offset", offset, "limit", limit)
+
+	httputil.PrepareSSE(w)
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	emitPage := func(vms []*vmdomain.VM) error {
+		page, total := paginateVMs(vms, offset, limit)
+		out := make([]fleetVMResponse, 0, len(page))
+		for _, vm := range page {
+			metrics, _ := h.vmservice.GetCachedMetrics(vm.ID)
+			out = append(out, toFleetVMResponse(vm, metrics))
+		}
+		return httputil.WriteSSEEvent(w, "fleet", fleetPageResponse{
+			VMs:    out,
+			Offset: offset,
+			Limit:  limit,
+			Total:  total,
+		})
+	}
+
+	if role == "admin" {
+		ch, unsub := h.vmservice.SubscribeFleet()
+		defer unsub()
+		for {
+			select {
+			case <-ctx.Done():
+				logger.DebugContext(ctx, "VM fleet stream closed")
+				return
+			case <-heartbeat.C:
+				if err := httputil.WriteSSEHeartbeat(w); err != nil {
+					return
+				}
+				_ = rc.Flush()
+			case vms, ok := <-ch:
+				if !ok {
+					return
+				}
+				if err := emitPage(vms); err != nil {
+					return
+				}
+				_ = rc.Flush()
+			}
+		}
+	}
+
+	// User role: per-tick query scoped to this user's VMs.
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			logger.DebugContext(ctx, "VM fleet stream closed")
+			return
+		case <-heartbeat.C:
+			if err := httputil.WriteSSEHeartbeat(w); err != nil {
+				return
+			}
+			_ = rc.Flush()
+		case <-ticker.C:
+			entries, err := h.vmservice.ListCachedFleetSnapshot(ctx, userID, role)
+			if err != nil {
+				logger.WarnContext(ctx, "fleet stream: failed to list runtimes", "error", err)
+				if writeErr := httputil.WriteSSEEvent(w, "error", map[string]string{"error": err.Error()}); writeErr != nil {
+					return
+				}
+				_ = rc.Flush()
+				continue
+			}
+			vms := make([]*vmdomain.VM, 0, len(entries))
+			for _, e := range entries {
+				vms = append(vms, e.VM)
+			}
+			if err := emitPage(vms); err != nil {
+				return
+			}
+			_ = rc.Flush()
+		}
+	}
+}
+
+// StreamActivity handles GET /api/v1/vm/activity/stream with Server-Sent Events.
+// Admin-only. Subscribes to the shared activity broadcaster (1 DB query per tick
+// across all subscribers) and emits `activity` events with any runtime events
+// newer than the connection's last-seen cursor.
+//
+// On connect the last `?lookback=` events (default 50, max 200) are emitted as
+// the initial window; subsequent ticks emit only newly-observed events. Slow
+// subscribers drop ticks silently — the next tick's batch includes anything
+// they missed within the lookback window.
+func (h *Handler) StreamActivity(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := pkglog.FromContext(ctx)
+
+	lookback := parseActivityLookback(r)
+
+	logger.DebugContext(ctx, "VM activity stream opened", "lookback", lookback)
+
+	httputil.PrepareSSE(w)
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
+	ch, unsub := h.vmservice.SubscribeActivity()
+	defer unsub()
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	var lastSeen time.Time
+	firstBatch := true
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.DebugContext(ctx, "VM activity stream closed")
+			return
+		case <-heartbeat.C:
+			if err := httputil.WriteSSEHeartbeat(w); err != nil {
+				return
+			}
+			_ = rc.Flush()
+		case events, ok := <-ch:
+			if !ok {
+				return
+			}
+			// events is in DESC order (newest first). Walk oldest→newest,
+			// keeping only events newer than lastSeen.
+			var fresh []*orchdomain.PersistedRuntimeEvent
+			for i := len(events) - 1; i >= 0; i-- {
+				e := events[i]
+				if !e.CreatedAt.After(lastSeen) {
+					continue
+				}
+				fresh = append(fresh, e)
+			}
+			if len(fresh) == 0 {
+				continue
+			}
+			// Cap the initial emit at `lookback`. Subsequent ticks emit only
+			// newly-observed events (typically a handful), uncapped.
+			if firstBatch && len(fresh) > lookback {
+				fresh = fresh[len(fresh)-lookback:]
+			}
+			firstBatch = false
+			lastSeen = fresh[len(fresh)-1].CreatedAt
+
+			out := make([]activityEventResponse, 0, len(fresh))
+			// Emit newest→oldest to match the prior wire format.
+			for i := len(fresh) - 1; i >= 0; i-- {
+				out = append(out, toActivityEvent(fresh[i]))
+			}
+			if err := httputil.WriteSSEEvent(w, "activity", out); err != nil {
+				return
+			}
+			_ = rc.Flush()
+		}
+	}
+}
+
+// parseActivityLookback extracts ?lookback= from the query string.
+// Defaults to 50; clamped to [1, 200].
+func parseActivityLookback(r *http.Request) int {
+	raw := r.URL.Query().Get("lookback")
+	if raw == "" {
+		return 50
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 50
+	}
+	if n > 200 {
+		return 200
+	}
+	return n
 }
 
 // GetMetrics handles GET /api/v1/vm/{id}/metrics.
@@ -364,7 +592,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.DebugContext(ctx, "VM create requested", "env_id", req.EnvironmentID, "conversation_id", req.ConversationID, "provider", req.Provider, "workspace_size_gb", req.WorkspaceSizeGB, "vcpu", req.VCPU, "memory_mb", req.MemoryMB, "disk_mb", req.DiskMB)
+	logger.DebugContext(ctx, "VM create requested", "env_id", req.EnvironmentID, "conversation_id", req.ConversationID, "provider", req.Provider, "name", req.Name, "workspace_size_gb", req.WorkspaceSizeGB, "vcpu", req.VCPU, "memory_mb", req.MemoryMB, "disk_mb", req.DiskMB, "service_port", req.ServicePort)
 
 	// Parse provider
 	var provider vmdomain.Provider
@@ -372,7 +600,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		provider = vmdomain.Provider(req.Provider)
 	}
 
-	vm, err := h.vmservice.Create(ctx, req.EnvironmentID, req.ConversationID, provider, req.WorkspaceSizeGB, req.VCPU, req.MemoryMB, req.DiskMB)
+	vm, err := h.vmservice.Create(ctx, req.EnvironmentID, req.ConversationID, provider, req.Name, req.WorkspaceSizeGB, req.VCPU, req.MemoryMB, req.DiskMB, req.ServicePort)
 	if err != nil {
 		logger.WarnContext(ctx, "VM creation failed", "env_id", req.EnvironmentID, "error", err)
 		httputil.WriteError(w, err)
@@ -387,7 +615,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.InfoContext(ctx, "VM created", "vm_id", vm.ID, "env_id", req.EnvironmentID)
+	logger.InfoContext(ctx, "VM created", "vm_id", vm.ID, "vm_name", vm.Name, "env_id", req.EnvironmentID)
 	httputil.Created(w, "VM created", toCreateVMResponse(vm, env))
 }
 
@@ -435,7 +663,7 @@ func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.InfoContext(ctx, "VM stopped", "vm_id", id)
+	logger.InfoContext(ctx, "VM stopped", "vm_id", id, "vm_name", vm.Name)
 	httputil.WriteJSON(w, http.StatusOK, "VM stopped", deleteVMResponse{ID: vm.ID})
 }
 
@@ -564,6 +792,7 @@ func (h *Handler) ResumeVM(w http.ResponseWriter, r *http.Request) {
 func toCreateVMResponse(vm *vmdomain.VM, env *environment.Environment) createVMResponse {
 	return createVMResponse{
 		ID:              vm.ID,
+		Name:            vm.Name,
 		EnvironmentID:   vm.EnvironmentID,
 		ConversationID:  vm.ConversationID,
 		Provider:        string(vm.Provider),
@@ -577,6 +806,8 @@ func toCreateVMResponse(vm *vmdomain.VM, env *environment.Environment) createVMR
 		VCPU:            vm.GetVCPU(env.GetVCPU()),
 		MemoryMB:        vm.GetMemoryMB(env.GetMemoryMB()),
 		DiskMB:          vm.GetDiskMB(env.GetDiskMB()),
+		ServicePort:     vm.ServicePort,
+		PublicURL:       vm.PublicURL(),
 	}
 }
 
@@ -584,6 +815,7 @@ func toCreateVMResponse(vm *vmdomain.VM, env *environment.Environment) createVMR
 func toGetVMResponse(vm *vmdomain.VM) getVMResponse {
 	return getVMResponse{
 		ID:              vm.ID,
+		Name:            vm.Name,
 		EnvironmentID:   vm.EnvironmentID,
 		ConversationID:  vm.ConversationID,
 		Provider:        string(vm.Provider),
@@ -599,6 +831,8 @@ func toGetVMResponse(vm *vmdomain.VM) getVMResponse {
 		DiskMB:          vm.DiskMB,
 		HasOverrides:    vm.HasCustomResources(),
 		IPAddress:       vm.IPAddress,
+		ServicePort:     vm.ServicePort,
+		PublicURL:       vm.PublicURL(),
 		ChatID:          vm.ChatID,
 		CreatedAt:       vm.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		TerminatedAt:    formatTimePtr(vm.TerminatedAt),
@@ -634,6 +868,7 @@ func logPreview(text string, limit int) string {
 func toRuntimeSnapshotResponse(vm *vmdomain.VM, metrics vmdomain.Metrics) runtimeSnapshotResponse {
 	return runtimeSnapshotResponse{
 		ID:                   vm.ID,
+		Name:                 vm.Name,
 		EnvironmentID:        vm.EnvironmentID,
 		Provider:             string(vm.Provider),
 		Status:               string(vm.Status),
@@ -643,6 +878,8 @@ func toRuntimeSnapshotResponse(vm *vmdomain.VM, metrics vmdomain.Metrics) runtim
 		LastHeartbeatAt:      formatTimePtr(vm.LastHeartbeatAt),
 		IdleDeadlineAt:       formatTimePtr(vm.IdleDeadlineAt),
 		ChatID:               vm.ChatID,
+		ServicePort:          vm.ServicePort,
+		PublicURL:            vm.PublicURL(),
 		CPUUsagePercent:      metrics.CPUUsagePercent,
 		MemoryUsedMB:         metrics.MemoryUsedMB,
 		MemoryLimitMB:        metrics.MemoryLimitMB,
@@ -655,24 +892,96 @@ func toRuntimeSnapshotResponse(vm *vmdomain.VM, metrics vmdomain.Metrics) runtim
 	}
 }
 
-func prepareSSE(w http.ResponseWriter) {
-
-	header := w.Header()
-	header.Set("Content-Type", "text/event-stream")
-	header.Set("Cache-Control", "no-cache")
-	header.Set("Connection", "keep-alive")
-	header.Set("X-Accel-Buffering", "no")
-
-	_ = http.NewResponseController(w).Flush()
+func toFleetVMResponse(vm *vmdomain.VM, metrics vmdomain.Metrics) fleetVMResponse {
+	ip := ""
+	if vm.IPAddress != nil {
+		ip = *vm.IPAddress
+	}
+	return fleetVMResponse{
+		ID:             vm.ID,
+		Name:           vm.Name,
+		ConversationID: vm.ConversationID,
+		Uptime:         formatDuration(time.Since(vm.CreatedAt)),
+		Mem:            fmt.Sprintf("%d / %dmb", metrics.MemoryUsedMB, metrics.MemoryLimitMB),
+		MemPct:         metrics.MemoryPercent,
+		CPU:            fmt.Sprintf("%.0f%%", metrics.CPUUsagePercent),
+		Disk:           fmt.Sprintf("%dmb / %dmb", metrics.DiskUsedMB, metrics.DiskLimitMB),
+		DiskPct:        metrics.DiskPercent,
+		Status:         string(vm.Status),
+		IP:             ip,
+		ServicePort:    vm.ServicePort,
+		PublicURL:      vm.PublicURL(),
+		Created:        vm.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
 }
 
-func writeSSEEvent(w http.ResponseWriter, event string, payload any) {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return
+func toActivityEvent(e *orchdomain.PersistedRuntimeEvent) activityEventResponse {
+	vmID := ""
+	vmName := ""
+	if e.Metadata != nil {
+		if v, ok := e.Metadata["vm_id"].(string); ok {
+			vmID = v
+		}
+		if v, ok := e.Metadata["vm_name"].(string); ok {
+			vmName = v
+		}
 	}
-	_, _ = w.Write([]byte("event: " + event + "\n"))
-	_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
+
+	msg := e.Data
+	if e.Command != "" {
+		msg = e.Command
+	}
+	if e.Error != "" {
+		msg = e.Error
+	}
+
+	// Prefer the human-readable name; fall back to the UUID if the event
+	// predates vm_name enrichment. Until the orchestrator stamps vm_name
+	// into metadata at all emit sites this is a graceful degradation.
+	vmDisplay := vmName
+	if vmDisplay == "" {
+		vmDisplay = vmID
+	}
+
+	return activityEventResponse{
+		Time: e.CreatedAt.Format("15:04:05"),
+		Type: mapActivityType(e.Type, e.Data),
+		VM:   vmDisplay,
+		Msg:  msg,
+	}
+}
+
+func mapActivityType(t orchdomain.RuntimeEventType, data string) string {
+	switch t {
+	case orchdomain.EventToolCall:
+		switch data {
+		case "vm.write_file", "vm.edit_file":
+			return "write"
+		case "vm.create", "vm.start":
+			return "boot"
+		default:
+			return "exec"
+		}
+	case orchdomain.EventError:
+		return "error"
+	default:
+		return string(t)
+	}
+}
+
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	m := int(d.Minutes())
+	s := int(d.Seconds()) - m*60
+	if d < time.Hour {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	h := int(d.Hours())
+	m = m - h*60
+	return fmt.Sprintf("%dh %dm", h, m)
 }
 
 func parseHistoryTime(raw string) (*time.Time, error) {
@@ -691,4 +1000,36 @@ func parseHistoryTime(raw string) (*time.Time, error) {
 	}
 	t = t.UTC()
 	return &t, nil
+}
+
+// parseFleetPagination extracts ?offset and ?limit for the fleet SSE stream.
+// Defaults: offset=0, limit=20. Limit capped at 100.
+func parseFleetPagination(r *http.Request) (offset, limit int) {
+	offset, limit = 0, 20
+	q := r.URL.Query()
+	if v := q.Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	return offset, limit
+}
+
+// paginateVMs returns the requested page of VMs plus the total count.
+// Returns an empty (non-nil) slice for the page so callers can marshal cleanly.
+func paginateVMs(vms []*vmdomain.VM, offset, limit int) ([]*vmdomain.VM, int) {
+	total := len(vms)
+	if offset >= total {
+		return []*vmdomain.VM{}, total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return vms[offset:end], total
 }

@@ -25,6 +25,7 @@ type chatResponse struct {
 	ID        string            `json:"id"`
 	AgentID   string            `json:"agent_id"`
 	UserID    string            `json:"user_id"`
+	Title     string            `json:"title"`
 	Status    string            `json:"status"`
 	Messages  []messageResponse `json:"messages"`
 	CreatedAt time.Time         `json:"created_at"`

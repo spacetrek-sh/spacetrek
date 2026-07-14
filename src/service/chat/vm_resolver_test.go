@@ -4,282 +4,168 @@ import (
 	"context"
 	"testing"
 
+	"github.com/spacetrek-sh/spacetrek/src/core/domain/environment"
+	"github.com/spacetrek-sh/spacetrek/src/core/ports"
 	vmdomain "github.com/spacetrek-sh/spacetrek/src/core/domain/vm"
 )
 
-// fakeVMResolutionService mocks the VMResolutionService for testing.
-type fakeVMResolutionService struct {
-	getByChatIDFn             func(ctx context.Context, chatID string) (*vmdomain.VM, error)
-	findPreviousLeaseForChatFn func(ctx context.Context, chatID string) (*vmdomain.VM, error)
-	hasSnapshotFn             func(ctx context.Context, vmID string) bool
-	resumeVMFn                func(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error)
-	assignToChatFn            func(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error)
+// fakeVMCollectionService mocks VMCollectionService for testing.
+type fakeVMCollectionService struct {
+	getByChatIDFn              func(ctx context.Context, chatID string) (*vmdomain.VM, error)
+	listPreviousLeasesForChatFn func(ctx context.Context, chatID string) ([]*vmdomain.VM, error)
+	hasSnapshotFn              func(ctx context.Context, vmID string) bool
 }
 
-func (f *fakeVMResolutionService) GetByChatID(ctx context.Context, chatID string) (*vmdomain.VM, error) {
+func (f *fakeVMCollectionService) GetByChatID(ctx context.Context, chatID string) (*vmdomain.VM, error) {
 	if f.getByChatIDFn != nil {
 		return f.getByChatIDFn(ctx, chatID)
 	}
 	return nil, nil
 }
 
-func (f *fakeVMResolutionService) FindPreviousLeaseForChat(ctx context.Context, chatID string) (*vmdomain.VM, error) {
-	if f.findPreviousLeaseForChatFn != nil {
-		return f.findPreviousLeaseForChatFn(ctx, chatID)
+func (f *fakeVMCollectionService) ListPreviousLeasesForChat(ctx context.Context, chatID string) ([]*vmdomain.VM, error) {
+	if f.listPreviousLeasesForChatFn != nil {
+		return f.listPreviousLeasesForChatFn(ctx, chatID)
 	}
 	return nil, nil
 }
 
-func (f *fakeVMResolutionService) HasSnapshot(ctx context.Context, vmID string) bool {
+func (f *fakeVMCollectionService) HasSnapshot(ctx context.Context, vmID string) bool {
 	if f.hasSnapshotFn != nil {
 		return f.hasSnapshotFn(ctx, vmID)
 	}
 	return false
 }
 
-func (f *fakeVMResolutionService) ResumeVM(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error) {
-	if f.resumeVMFn != nil {
-		return f.resumeVMFn(ctx, vmID, chatID)
-	}
-	return &vmdomain.VM{ID: vmID, Status: vmdomain.StatusRunning}, nil
+// fakeEnvRepo mocks environment.Repository for testing.
+type fakeEnvRepo struct {
+	envs map[string]*environment.Environment
 }
 
-func (f *fakeVMResolutionService) AssignToChat(ctx context.Context, vmID, chatID string) (*vmdomain.VM, error) {
-	if f.assignToChatFn != nil {
-		return f.assignToChatFn(ctx, vmID, chatID)
+func (f *fakeEnvRepo) Create(_ context.Context, _ *environment.Environment) error { return nil }
+func (f *fakeEnvRepo) Delete(_ context.Context, _ string) error                   { return nil }
+func (f *fakeEnvRepo) Update(_ context.Context, _ *environment.Environment) error { return nil }
+func (f *fakeEnvRepo) List(_ context.Context) ([]*environment.Environment, error) { return nil, nil }
+func (f *fakeEnvRepo) GetByID(_ context.Context, id string) (*environment.Environment, error) {
+	if e, ok := f.envs[id]; ok {
+		return e, nil
 	}
-	return &vmdomain.VM{ID: vmID, Status: vmdomain.StatusRunning}, nil
+	return nil, &testError{"not found"}
 }
 
-func TestVMResolver_ActiveVMAssigned_ReturnsImmediately(t *testing.T) {
-	fake := &fakeVMResolutionService{
-		getByChatIDFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return &vmdomain.VM{ID: "vm-active", Status: vmdomain.StatusRunning}, nil
-		},
-	}
-
-	resolver := NewVMResolver(fake)
-	vmID, err := resolver.ResolveVMForChat(context.Background(), "chat-1")
+func TestCollector_NoVMs_ReturnsNil(t *testing.T) {
+	collector := NewAvailableVMCollector(
+		&fakeVMCollectionService{},
+		&fakeEnvRepo{envs: map[string]*environment.Environment{}},
+	)
+	vms, err := collector.CollectAvailableVMs(context.Background(), "chat-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if vmID != "vm-active" {
-		t.Fatalf("expected vm-active, got %q", vmID)
+	if vms != nil {
+		t.Fatalf("expected nil, got %v", vms)
 	}
 }
 
-func TestVMResolver_ActiveVMReady_ReturnsImmediately(t *testing.T) {
-	fake := &fakeVMResolutionService{
-		getByChatIDFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return &vmdomain.VM{ID: "vm-ready", Status: vmdomain.StatusReady}, nil
+func TestCollector_ActiveVM_IncludedWithEnvironment(t *testing.T) {
+	envID := "env-uv"
+	collector := NewAvailableVMCollector(
+		&fakeVMCollectionService{
+			getByChatIDFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
+				return &vmdomain.VM{ID: "vm-active", EnvironmentID: envID, Status: vmdomain.StatusRunning}, nil
+			},
 		},
-	}
-
-	resolver := NewVMResolver(fake)
-	vmID, err := resolver.ResolveVMForChat(context.Background(), "chat-1")
+		&fakeEnvRepo{envs: map[string]*environment.Environment{
+			envID: {ID: envID, Type: environment.Type("uv"), Description: "Python with uv"},
+		}},
+	)
+	vms, err := collector.CollectAvailableVMs(context.Background(), "chat-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if vmID != "vm-ready" {
-		t.Fatalf("expected vm-ready, got %q", vmID)
+	if len(vms) != 1 {
+		t.Fatalf("expected 1 VM, got %d", len(vms))
+	}
+	if vms[0].VMID != "vm-active" {
+		t.Fatalf("expected vm-active, got %q", vms[0].VMID)
+	}
+	if vms[0].Environment != "uv" {
+		t.Fatalf("expected uv, got %q", vms[0].Environment)
+	}
+	if vms[0].EnvDescription != "Python with uv" {
+		t.Fatalf("expected Python with uv, got %q", vms[0].EnvDescription)
 	}
 }
 
-func TestVMResolver_IdleVMWithNoPreviousLease_ReturnsEmpty(t *testing.T) {
-	fake := &fakeVMResolutionService{
-		getByChatIDFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return &vmdomain.VM{ID: "vm-idle", Status: vmdomain.StatusIdle}, nil
+func TestCollector_PreviousLeases_IncludedWithSnapshot(t *testing.T) {
+	collector := NewAvailableVMCollector(
+		&fakeVMCollectionService{
+			listPreviousLeasesForChatFn: func(_ context.Context, _ string) ([]*vmdomain.VM, error) {
+				return []*vmdomain.VM{
+					{ID: "vm-1", EnvironmentID: "env-uv", Status: vmdomain.StatusTerminated},
+					{ID: "vm-2", EnvironmentID: "env-bun", Status: vmdomain.StatusIdle},
+				}, nil
+			},
+			hasSnapshotFn: func(_ context.Context, vmID string) bool {
+				return vmID == "vm-1"
+			},
 		},
-		findPreviousLeaseForChatFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return nil, nil // no previous lease
-		},
-	}
-
-	resolver := NewVMResolver(fake)
-	vmID, err := resolver.ResolveVMForChat(context.Background(), "chat-1")
+		&fakeEnvRepo{envs: map[string]*environment.Environment{
+			"env-uv":  {ID: "env-uv", Type: environment.Type("uv"), Description: "Python env"},
+			"env-bun": {ID: "env-bun", Type: environment.Type("bun"), Description: "Bun env"},
+		}},
+	)
+	vms, err := collector.CollectAvailableVMs(context.Background(), "chat-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if vmID != "" {
-		t.Fatalf("expected empty vmID, got %q", vmID)
+	if len(vms) != 2 {
+		t.Fatalf("expected 2 VMs, got %d", len(vms))
+	}
+
+	// vm-1 has snapshot
+	if vms[0].VMID != "vm-1" || !vms[0].HasSnapshot {
+		t.Fatalf("expected vm-1 with snapshot, got %q hasSnapshot=%v", vms[0].VMID, vms[0].HasSnapshot)
+	}
+	// vm-2 no snapshot
+	if vms[1].VMID != "vm-2" || vms[1].HasSnapshot {
+		t.Fatalf("expected vm-2 without snapshot, got %q hasSnapshot=%v", vms[1].VMID, vms[1].HasSnapshot)
 	}
 }
 
-func TestVMResolver_PreviousLeaseActive_Reassigns(t *testing.T) {
-	fake := &fakeVMResolutionService{
-		getByChatIDFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return nil, nil // no current assignment
+func TestCollector_DeduplicatesActiveAndPrevious(t *testing.T) {
+	collector := NewAvailableVMCollector(
+		&fakeVMCollectionService{
+			getByChatIDFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
+				return &vmdomain.VM{ID: "vm-1", EnvironmentID: "env-uv", Status: vmdomain.StatusRunning}, nil
+			},
+			listPreviousLeasesForChatFn: func(_ context.Context, _ string) ([]*vmdomain.VM, error) {
+				return []*vmdomain.VM{
+					{ID: "vm-1", EnvironmentID: "env-uv", Status: vmdomain.StatusRunning}, // duplicate
+					{ID: "vm-2", EnvironmentID: "env-bun", Status: vmdomain.StatusIdle},
+				}, nil
+			},
 		},
-		findPreviousLeaseForChatFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return &vmdomain.VM{ID: "vm-prev", Status: vmdomain.StatusRunning}, nil
-		},
-		assignToChatFn: func(_ context.Context, vmID, chatID string) (*vmdomain.VM, error) {
-			return &vmdomain.VM{ID: vmID, Status: vmdomain.StatusRunning}, nil
-		},
-	}
-
-	resolver := NewVMResolver(fake)
-	vmID, err := resolver.ResolveVMForChat(context.Background(), "chat-1")
+		&fakeEnvRepo{envs: map[string]*environment.Environment{
+			"env-uv":  {ID: "env-uv", Type: environment.Type("uv"), Description: "Python"},
+			"env-bun": {ID: "env-bun", Type: environment.Type("bun"), Description: "Bun"},
+		}},
+	)
+	vms, err := collector.CollectAvailableVMs(context.Background(), "chat-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if vmID != "vm-prev" {
-		t.Fatalf("expected vm-prev, got %q", vmID)
+	if len(vms) != 2 {
+		t.Fatalf("expected 2 deduplicated VMs, got %d", len(vms))
 	}
 }
-
-func TestVMResolver_PreviousLeaseIdleWithSnapshot_Resumes(t *testing.T) {
-	resumeCalled := false
-	fake := &fakeVMResolutionService{
-		getByChatIDFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return nil, nil
-		},
-		findPreviousLeaseForChatFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return &vmdomain.VM{ID: "vm-snap", Status: vmdomain.StatusIdle}, nil
-		},
-		hasSnapshotFn: func(_ context.Context, vmID string) bool {
-			return vmID == "vm-snap"
-		},
-		resumeVMFn: func(_ context.Context, vmID, chatID string) (*vmdomain.VM, error) {
-			resumeCalled = true
-			return &vmdomain.VM{ID: vmID, Status: vmdomain.StatusRunning}, nil
-		},
-	}
-
-	resolver := NewVMResolver(fake)
-	vmID, err := resolver.ResolveVMForChat(context.Background(), "chat-1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !resumeCalled {
-		t.Fatal("expected ResumeVM to be called")
-	}
-	if vmID != "vm-snap" {
-		t.Fatalf("expected vm-snap, got %q", vmID)
-	}
-}
-
-func TestVMResolver_PreviousLeaseIdleNoSnapshot_ReturnsEmpty(t *testing.T) {
-	fake := &fakeVMResolutionService{
-		getByChatIDFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return nil, nil
-		},
-		findPreviousLeaseForChatFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return &vmdomain.VM{ID: "vm-idle", Status: vmdomain.StatusIdle}, nil
-		},
-		hasSnapshotFn: func(_ context.Context, _ string) bool {
-			return false
-		},
-	}
-
-	resolver := NewVMResolver(fake)
-	vmID, err := resolver.ResolveVMForChat(context.Background(), "chat-1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if vmID != "" {
-		t.Fatalf("expected empty vmID (no snapshot), got %q", vmID)
-	}
-}
-
-func TestVMResolver_PreviousLeaseTerminated_ReturnsEmpty(t *testing.T) {
-	fake := &fakeVMResolutionService{
-		getByChatIDFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return nil, nil
-		},
-		findPreviousLeaseForChatFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return &vmdomain.VM{ID: "vm-dead", Status: vmdomain.StatusTerminated}, nil
-		},
-	}
-
-	resolver := NewVMResolver(fake)
-	vmID, err := resolver.ResolveVMForChat(context.Background(), "chat-1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if vmID != "" {
-		t.Fatalf("expected empty vmID (terminated), got %q", vmID)
-	}
-}
-
-func TestVMResolver_ResumeFails_ReturnsEmptyGracefully(t *testing.T) {
-	fake := &fakeVMResolutionService{
-		getByChatIDFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return nil, nil
-		},
-		findPreviousLeaseForChatFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return &vmdomain.VM{ID: "vm-fail", Status: vmdomain.StatusIdle}, nil
-		},
-		hasSnapshotFn: func(_ context.Context, _ string) bool {
-			return true
-		},
-		resumeVMFn: func(_ context.Context, _, _ string) (*vmdomain.VM, error) {
-			return nil, errSnapRestoreFailed
-		},
-	}
-
-	resolver := NewVMResolver(fake)
-	vmID, err := resolver.ResolveVMForChat(context.Background(), "chat-1")
-	if err != nil {
-		t.Fatalf("expected no error (graceful fallback), got: %v", err)
-	}
-	if vmID != "" {
-		t.Fatalf("expected empty vmID on resume failure, got %q", vmID)
-	}
-}
-
-func TestVMResolver_AssignFails_ReturnsEmptyGracefully(t *testing.T) {
-	fake := &fakeVMResolutionService{
-		getByChatIDFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return nil, nil
-		},
-		findPreviousLeaseForChatFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return &vmdomain.VM{ID: "vm-assign-fail", Status: vmdomain.StatusRunning}, nil
-		},
-		assignToChatFn: func(_ context.Context, _, _ string) (*vmdomain.VM, error) {
-			return nil, errAlreadyAssigned
-		},
-	}
-
-	resolver := NewVMResolver(fake)
-	vmID, err := resolver.ResolveVMForChat(context.Background(), "chat-1")
-	if err != nil {
-		t.Fatalf("expected no error (graceful fallback), got: %v", err)
-	}
-	if vmID != "" {
-		t.Fatalf("expected empty vmID on assign failure, got %q", vmID)
-	}
-}
-
-func TestVMResolver_GetByChatIDError_ProceedsToPreviousLease(t *testing.T) {
-	fake := &fakeVMResolutionService{
-		getByChatIDFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return nil, errNotFound
-		},
-		findPreviousLeaseForChatFn: func(_ context.Context, _ string) (*vmdomain.VM, error) {
-			return &vmdomain.VM{ID: "vm-prev", Status: vmdomain.StatusRunning}, nil
-		},
-		assignToChatFn: func(_ context.Context, vmID, _ string) (*vmdomain.VM, error) {
-			return &vmdomain.VM{ID: vmID, Status: vmdomain.StatusRunning}, nil
-		},
-	}
-
-	resolver := NewVMResolver(fake)
-	vmID, err := resolver.ResolveVMForChat(context.Background(), "chat-1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if vmID != "vm-prev" {
-		t.Fatalf("expected vm-prev (from previous lease), got %q", vmID)
-	}
-}
-
-// --- sentinel errors for fake ---
-
-var errNotFound = &testError{"not found"}
-var errSnapRestoreFailed = &testError{"snapshot restore failed"}
-var errAlreadyAssigned = &testError{"already assigned to another chat"}
 
 type testError struct{ msg string }
 
 func (e *testError) Error() string { return e.msg }
+
+// Verify the collector implements AvailableVMCollector.
+var _ AvailableVMCollector = (*vmCollector)(nil)
+
+// Verify AvailableVM is in ports package (compile-time check).
+var _ ports.AvailableVM

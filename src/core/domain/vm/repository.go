@@ -11,6 +11,7 @@ type Repository interface {
 	// Basic CRUD
 	Create(ctx context.Context, vm *VM) error
 	GetByID(ctx context.Context, id string) (*VM, error)
+	GetByName(ctx context.Context, name string) (*VM, error)
 	Update(ctx context.Context, vm *VM) error
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]*VM, error)
@@ -20,6 +21,11 @@ type Repository interface {
 	GetByEnvironmentID(ctx context.Context, envID string) ([]*VM, error)
 	GetByChatID(ctx context.Context, chatID string) (*VM, error)
 	GetActiveVMs(ctx context.Context) ([]*VM, error)
+	GetActiveByUserID(ctx context.Context, userID string) ([]*VM, error)
+	GetAllByUserID(ctx context.Context, userID string) ([]*VM, error)
+
+	// Environment-scoped queries
+	GetByEnvironmentAndChatID(ctx context.Context, envID, chatID string) (*VM, error)
 
 	// Assignment lease operations
 	AssignToChatIfAvailable(ctx context.Context, vmID, chatID string, idleDeadlineAt *time.Time) (*VM, error)
@@ -30,6 +36,7 @@ type Repository interface {
 
 	// IP allocation
 	GetAllocatedIPs(ctx context.Context) ([]string, error)
+	GetAllocatedIPsExclude(ctx context.Context, excludeVMID string) ([]string, error)
 	SetIPAddress(ctx context.Context, vmID string, ip string) error
 	ReleaseIPAddress(ctx context.Context, vmID string) error
 }

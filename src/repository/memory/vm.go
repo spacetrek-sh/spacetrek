@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,19 @@ func (r *VMRepository) GetByID(_ context.Context, id string) (*vmdomain.VM, erro
 	}
 	cp := *vm
 	return &cp, nil
+}
+
+func (r *VMRepository) GetByName(_ context.Context, name string) (*vmdomain.VM, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	target := strings.ToLower(name)
+	for _, vm := range r.vms {
+		if strings.EqualFold(vm.Name, target) {
+			cp := *vm
+			return &cp, nil
+		}
+	}
+	return nil, exception.NotFound("vm name", name)
 }
 
 func (r *VMRepository) Update(_ context.Context, vm *vmdomain.VM) error {
@@ -151,6 +165,73 @@ func (r *VMRepository) GetActiveVMs(_ context.Context) ([]*vmdomain.VM, error) {
 	}
 
 	return out, nil
+}
+
+func (r *VMRepository) GetActiveByUserID(_ context.Context, userID string) ([]*vmdomain.VM, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Collect VM IDs that have active leases for this user's chats.
+	// Since the memory repo doesn't store user_id on chats, return all active VMs.
+	// This is acceptable for tests — production uses the postgres implementation.
+	out := make([]*vmdomain.VM, 0)
+	for _, vm := range r.vms {
+		if !vm.Status.IsActive() {
+			continue
+		}
+		cp := *vm
+		out = append(out, &cp)
+	}
+
+	return out, nil
+}
+
+func (r *VMRepository) GetAllByUserID(_ context.Context, _ string) ([]*vmdomain.VM, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Memory repo doesn't store user_id on chats; return all VMs.
+	// Acceptable for tests — production uses the postgres implementation.
+	out := make([]*vmdomain.VM, 0, len(r.vms))
+	for _, vm := range r.vms {
+		cp := *vm
+		out = append(out, &cp)
+	}
+
+	return out, nil
+}
+
+func (r *VMRepository) GetByEnvironmentAndChatID(_ context.Context, envID, chatID string) (*vmdomain.VM, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	type leaseEntry struct {
+		lease *vmdomain.Lease
+	}
+	var entries []leaseEntry
+	for _, lease := range r.leases {
+		if lease.ChatID != chatID {
+			continue
+		}
+		entries = append(entries, leaseEntry{lease: lease})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].lease.LeasedAt.After(entries[j].lease.LeasedAt)
+	})
+
+	for _, e := range entries {
+		vm, ok := r.vms[e.lease.VMID]
+		if !ok || vm.EnvironmentID != envID {
+			continue
+		}
+		if vm.Status == vmdomain.StatusTerminated {
+			continue
+		}
+		cp := *vm
+		return &cp, nil
+	}
+
+	return nil, exception.NotFound("vm by environment and chat", envID)
 }
 
 func (r *VMRepository) AssignToChatIfAvailable(_ context.Context, vmID, chatID string, idleDeadlineAt *time.Time) (*vmdomain.VM, error) {
